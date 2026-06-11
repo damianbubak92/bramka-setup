@@ -1,0 +1,17 @@
+# Local-only config copies (keep template, ignore filled-out versions if any)
+config.local.sh
+
+# Editor files
+*.swp
+*~
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backups
+*.bak
+*.orig
