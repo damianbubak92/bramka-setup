@@ -4,6 +4,9 @@
 # Installs:
 #  - m4f-watch  : live tail of M4F trace0 (smart polling, deduplication)
 #  - m4f-reload : hot-swap M4F firmware via remoteproc (stop/copy/start)
+#
+# NOTE: m4f-reload assumes M4F firmware implements graceful shutdown handler.
+# See docs/M4F_SHUTDOWN.md for required implementation in firmware code.
 
 set -e
 
@@ -39,8 +42,6 @@ fi
 
 echo "=== M4F live trace (Ctrl+C to stop, polling every ${INTERVAL}s) ==="
 
-# Awk extracts (timestamp_microseconds, line) tuples for sortable comparison.
-# Integer microseconds avoid floating point precision issues in shell comparisons.
 extract_sortable() {
     awk '
         /^\[m4f/ {
@@ -51,7 +52,6 @@ extract_sortable() {
         }'
 }
 
-# On start: show only the single newest entry as anchor.
 INITIAL=$(cat "$TRACE_FILE" | extract_sortable | sort -n | tail -1)
 if [ -z "$INITIAL" ]; then
     echo "(trace buffer is empty - waiting for first M4F log...)"
@@ -61,7 +61,6 @@ else
     echo "$INITIAL" | cut -d' ' -f2-
 fi
 
-# Polling loop: show only entries with timestamp > LAST_KEY.
 while true; do
     OUTPUT=$(cat "$TRACE_FILE" | extract_sortable | awk -v last="$LAST_KEY" '$1 > last' | sort -n)
     if [ -n "$OUTPUT" ]; then
@@ -76,17 +75,22 @@ chmod +x "$TOOLS_DIR/m4f-watch"
 echo "[*] Installed $TOOLS_DIR/m4f-watch"
 
 # ============================================================================
-# m4f-reload - hot-swap M4F firmware
+# m4f-reload - hot-swap M4F firmware via remoteproc stop/start
 # ============================================================================
+#
+# This assumes M4F firmware implements graceful shutdown handler.
+# Without it, 'echo stop' will timeout and this script will fail.
+# See docs/M4F_SHUTDOWN.md for shutdown handler implementation.
+#
+# NEVER use unbind/bind workaround - it permanently renumbers /sys/class/remoteproc/
+# (M4F moves from remoteproc0 to remoteproc4 etc), breaking all hardcoded paths.
 
-# Use printf to inject config variables, then heredoc for the rest:
 cat > "$TOOLS_DIR/m4f-reload" << RELOAD_EOF
 #!/bin/bash
 # Reload M4F firmware via Linux remoteproc framework.
 #
 # Workflow: stop M4F -> copy new .out to /lib/firmware/ -> start M4F
-# Linux remoteproc reads the new ELF, parses resource table, sets up VRINGs,
-# starts M4F with the new code.
+# Requires M4F firmware to have graceful shutdown handler.
 #
 # Usage: m4f-reload [path_to_firmware.out]   (default: /tmp/my_fw.out)
 
@@ -96,7 +100,23 @@ STATE_FILE="/sys/class/remoteproc/remoteproc0/state"
 
 if [ ! -f "\$FW_SRC" ]; then
     echo "Error: \$FW_SRC not found"
-    echo "Usage: m4f-reload [path_to_firmware.out]"
+    exit 1
+fi
+
+if [ ! -e "\$STATE_FILE" ]; then
+    echo "Error: \$STATE_FILE not found"
+    echo "Is M4F at remoteproc0? Check: ls /sys/class/remoteproc/"
+    echo ""
+    echo "If M4F moved elsewhere (e.g. after unbind/bind), REBOOT to restore."
+    echo "Don't use unbind/bind - it permanently renumbers remoteproc devices."
+    exit 1
+fi
+
+# Verify remoteproc0 actually is M4F:
+NAME=\$(cat /sys/class/remoteproc/remoteproc0/name 2>/dev/null)
+if [ "\$NAME" != "5000000.m4fss" ]; then
+    echo "Error: remoteproc0 is '\$NAME', expected '5000000.m4fss'"
+    echo "Reboot to restore deterministic numbering"
     exit 1
 fi
 
@@ -104,13 +124,31 @@ echo "[1/4] Stopping M4F..."
 echo stop > "\$STATE_FILE" 2>/dev/null || true
 sleep 0.5
 
+# If still not offline, try cleanup of holding processes:
+if [ "\$(cat \$STATE_FILE)" != "offline" ]; then
+    pkill -9 -f rpmsg_char_simple 2>/dev/null || true
+    pkill -9 -f '/dev/rpmsg' 2>/dev/null || true
+    fuser -k /dev/rpmsg0 /dev/rpmsg1 2>/dev/null || true
+    sleep 0.5
+    echo stop > "\$STATE_FILE" 2>/dev/null || true
+    sleep 0.5
+fi
+
 CURRENT_STATE=\$(cat "\$STATE_FILE")
 if [ "\$CURRENT_STATE" != "offline" ]; then
-    echo "  WARN: M4F state is '\$CURRENT_STATE', expected 'offline'"
-    echo "  Something is holding M4F. Try:"
-    echo "    pkill -9 rpmsg_char_simple"
-    echo "    fuser -k /dev/rpmsg0"
-    echo "  Then re-run m4f-reload"
+    echo ""
+    echo "ERROR: M4F won't stop (state: \$CURRENT_STATE)"
+    echo ""
+    echo "This usually means the current M4F firmware lacks graceful shutdown handler."
+    echo "See /root/bramka-setup/docs/M4F_SHUTDOWN.md for required implementation."
+    echo ""
+    echo "WORKAROUND for current session:"
+    echo "  1. Move firmware to disable auto-load on next boot:"
+    echo "     mv \$FW_DST /tmp/old_fw_\$(date +%s).out"
+    echo "  2. Reboot: sync && reboot"
+    echo "  3. After reboot, M4F will be 'offline' - then m4f-reload works"
+    echo ""
+    echo "PROPER FIX: add shutdown handler to firmware code (one-time)"
     exit 2
 fi
 
@@ -129,11 +167,10 @@ if [ "\$NEW_STATE" = "running" ]; then
     echo "=== Last 10 logs from new firmware ==="
     cat /sys/kernel/debug/remoteproc/remoteproc0/trace0 | tail -10
     echo ""
-    echo "Tip: run 'm4f-watch' in another terminal for live trace"
+    echo "Tip: 'm4f-watch' in another terminal for live trace"
 else
     echo ""
     echo "=== ERROR: M4F not running ==="
-    echo "Check kernel messages:"
     dmesg | tail -15
     exit 3
 fi

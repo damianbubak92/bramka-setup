@@ -1,35 +1,48 @@
-# Bramka Setup Scripts
+# Bramka Setup - AM62 IoT Gateway Development
 
-Idempotent setup automation for AM62 bramka deployments.
-Configures fresh Arago/TI Linux image with persistent network identity,
-M4F development tools, and firmware management infrastructure.
+Production-quality automation and reference code for AM62-based IoT bramka
+(gateway) development. Includes idempotent setup scripts, debug tools, and
+working firmware templates derived from real-world development experience.
 
 ## Quick start
 
+### Prerequisites
+
+- SK-AM62B-P1 dev board (or compatible AM62 SoM)
+- TI SDK Linux image flashed to SD card
+- Network access between bramka and your laptop
+- SSH key or password for `root@bramka`
+
 ### On a new bramka
 
-1. Flash fresh TI SDK Linux image to SD card (Etcher + .wic extracted manually).
-2. Boot bramka, find its IP (router admin panel or `ssh root@am62xx-evm.local`).
-3. Connect via SSH from laptop and verify access:
+1. Flash fresh TI SDK Linux image to SD card (unpack `.xz` manually before
+   flashing - Etcher has bugs with streaming decompression).
+2. Boot bramka, find its IP (router admin panel or `am62xx-evm.local` via mDNS).
+3. Test SSH:
    ```bash
-   ssh root@<bramka-ip>
+   ssh root@<bramka-ip>     # default password empty
    ```
-   (default password is empty - press Enter)
 
-### On a laptop (this repo)
+### From your laptop
 
-4. Edit `config.sh` for this specific bramka:
+4. Clone this repo:
+   ```bash
+   git clone <your-repo-url> bramka-setup
+   cd bramka-setup
+   ```
+
+5. Edit `config.sh` for this specific bramka:
    ```bash
    BRAMKA_MAC="22:F4:99:37:A5:12"    # unique per bramka!
    BRAMKA_HOSTNAME="bramka-01"
    ```
 
-5. SCP the whole folder to bramka:
+6. SCP to bramka:
    ```bash
-   scp -r bramka-setup root@<bramka-ip>:/root/
+   scp -r . root@<bramka-ip>:/root/bramka-setup
    ```
 
-6. SSH and run:
+7. Run setup on bramka:
    ```bash
    ssh root@<bramka-ip>
    cd /root/bramka-setup
@@ -37,25 +50,38 @@ M4F development tools, and firmware management infrastructure.
    ./setup.sh
    ```
 
-7. Reboot bramka:
-   ```bash
-   reboot
-   ```
+8. Reboot bramka. Configure DHCP reservation in router for the MAC.
 
-8. Configure DHCP reservation in router for the new MAC.
+9. SSH back via the reserved IP - everything works.
 
-9. Done - SSH back to verify:
-   ```bash
-   ssh root@<reserved-ip>
-   m4f-watch
-   ```
+## What's in this repo
 
-## What it does
+```
+bramka-setup/
+├── README.md              <-- you are here
+├── setup.sh               <-- main orchestrator
+├── config.sh              <-- per-bramka config (MAC, hostname)
+├── .gitignore
+├── modules/               <-- numbered setup modules
+│   ├── 01-network.sh      <-- persistent MAC + hostname
+│   ├── 02-tools.sh        <-- m4f-watch, m4f-reload installation
+│   ├── 03-m4f-firmware.sh <-- backup default M4F firmware
+│   └── 99-cleanup.sh      <-- verification + next steps
+├── docs/
+│   ├── M4F_SHUTDOWN.md    <-- CRITICAL: shutdown handler requirement
+│   └── TROUBLESHOOTING.md <-- common issues + diagnosis
+└── examples/
+    └── m4f-baseline/
+        ├── ipc_rpmsg_echo.c <-- working firmware template
+        └── README.md      <-- how to use template
+```
+
+## Setup modules
 
 | Module | Purpose |
 |--------|---------|
-| `01-network.sh` | Persistent MAC via systemd-networkd link unit. Solves AM62's no-EEPROM random-MAC-each-boot problem. |
-| `02-tools.sh` | Installs `m4f-watch` (live trace0 monitor) and `m4f-reload` (firmware hot-swap). |
+| `01-network.sh` | Persistent MAC via systemd-networkd `.link` unit. Solves AM62's no-EEPROM problem (kernel generates random MAC each boot otherwise). |
+| `02-tools.sh` | Installs `m4f-watch` (smart trace0 monitor) and `m4f-reload` (firmware hot-swap). |
 | `03-m4f-firmware.sh` | Backs up default TI M4F firmware. Optional dev-mode auto-stop. |
 | `99-cleanup.sh` | Verification and next-steps info. |
 
@@ -63,16 +89,17 @@ M4F development tools, and firmware management infrastructure.
 
 ### `m4f-watch [polling_seconds]`
 
-Live tail of M4F trace buffer. Default polling 0.5s.
-
-Why not `tail -f`? trace0 is a sysfs/debugfs file - no inotify support, plus
-it's a circular buffer. This script uses smart polling with deduplication.
+Live tail of M4F trace buffer with smart deduplication. Default polling 0.5s.
 
 ```bash
 m4f-watch          # default 500ms polling
 m4f-watch 1        # 1s polling (less CPU)
 m4f-watch 0.1      # 100ms polling (snappier)
 ```
+
+On start, shows only the newest entry as anchor. Then appends only new
+entries (deduplicated by integer microsecond timestamp). Handles circular
+buffer wrap correctly.
 
 ### `m4f-reload [path_to_firmware.out]`
 
@@ -84,12 +111,77 @@ scp ./Debug/my_fw.out root@bramka:/tmp/my_fw.out
 
 # On bramka:
 m4f-reload         # uses /tmp/my_fw.out
-m4f-reload /path/to/other.out
 ```
 
-## Configuration reference
+**Requires M4F firmware to have graceful shutdown handler** (see
+`docs/M4F_SHUTDOWN.md`). Without it, every deploy needs full reboot.
 
-Edit `config.sh` per bramka.
+## PowerShell helpers for Windows laptop
+
+Add to `$PROFILE` (run `notepad $PROFILE` in PowerShell):
+
+```powershell
+# === Bramka deploy helpers ===
+$BRAMKA_HOST = "root@192.168.2.170"
+$WORKSPACE = "C:\Users\<you>\workspace_ccstheia"
+$PROJECT_NAME = "ipc_rpmsg_echo_am62x-sk_m4fss0-0_nortos_ti-arm-clang"
+
+function Deploy-M4F {
+    param([switch]$NoLogs, [int]$LogSeconds = 5)
+
+    $fwPath = "$WORKSPACE\$PROJECT_NAME\Debug\$PROJECT_NAME.out"
+    if (-not (Test-Path $fwPath)) {
+        Write-Host "ERROR: firmware not found: $fwPath" -ForegroundColor Red
+        return
+    }
+
+    Write-Host "[1/3] Uploading..." -ForegroundColor Cyan
+    scp $fwPath "${BRAMKA_HOST}:/tmp/my_fw.out"
+    if ($LASTEXITCODE -ne 0) { return }
+
+    Write-Host "[2/3] Reloading..." -ForegroundColor Cyan
+    ssh $BRAMKA_HOST "m4f-reload"
+    if ($LASTEXITCODE -ne 0) { return }
+
+    if (-not $NoLogs) {
+        Write-Host "[3/3] Watching logs..." -ForegroundColor Cyan
+        ssh $BRAMKA_HOST "timeout $LogSeconds m4f-watch"
+    }
+}
+
+function Watch-M4F   { ssh $BRAMKA_HOST "m4f-watch" }
+function Test-Rpmsg  { param([int]$N=3); ssh $BRAMKA_HOST "timeout 10 rpmsg_char_simple -r 9 -n $N" }
+function Connect-Bramka { ssh $BRAMKA_HOST }
+function Get-M4FState { ssh $BRAMKA_HOST "echo 'state:'; cat /sys/class/remoteproc/remoteproc0/state; ls /dev/rpmsg*" }
+```
+
+Reload: `. $PROFILE`
+
+Then deploy with one command: `Deploy-M4F`
+
+## Working firmware template
+
+See `examples/m4f-baseline/ipc_rpmsg_echo.c` for a complete reference
+implementation including:
+
+- Async RPMsg callback pattern (no FreeRTOS dependency)
+- Autonomous 1 Hz tick demonstrating M4F independence
+- Command parsing (ping, status, generic echo)
+- **Graceful shutdown handler** in correct order (this is the part most
+  tutorials get wrong)
+
+Copy this file into your CCS Theia project, configure SysConfig per
+`examples/m4f-baseline/README.md`, build, deploy.
+
+## Documentation
+
+- **`docs/M4F_SHUTDOWN.md`** - Why graceful shutdown matters, how to
+  implement correctly, common pitfalls. **Read this before writing any
+  M4F code.**
+- **`docs/TROUBLESHOOTING.md`** - Real issues encountered with diagnosis
+  and fixes. Network, M4F, SD card, build issues.
+
+## Configuration reference (`config.sh`)
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -101,57 +193,73 @@ Edit `config.sh` per bramka.
 
 ## Locally administered MAC prefixes
 
-For BRAMKA_MAC, first byte must have bit 1 set:
+For `BRAMKA_MAC`, first byte must have bit 1 set:
 
-- `02:xx:xx:xx:xx:xx`
-- `06:xx:xx:xx:xx:xx`
-- `0a:xx:xx:xx:xx:xx`
-- `0e:xx:xx:xx:xx:xx`
-- `22:xx:xx:xx:xx:xx`
-- `26:xx:xx:xx:xx:xx`
-- `2a:xx:xx:xx:xx:xx`
+- `02:xx:...`, `06:xx:...`, `0a:xx:...`, `0e:xx:...`
+- `22:xx:...`, `26:xx:...`, `2a:xx:...`, `2e:xx:...`
 - ... etc.
 
-Don't use real OUI prefixes (e.g. starting with `00:`, `04:`, etc.) - those
-collide with real manufacturer addresses.
+Don't use real OUI prefixes (e.g. `00:1b:21:...` is Intel) - those collide
+with manufacturer addresses.
 
 ## Idempotency
 
-All modules are idempotent - safe to run multiple times. They:
-- Check if changes already applied before applying
-- Use `cp -f` semantics (overwrite if exists)
-- Don't duplicate entries in `/etc/hosts` etc.
-
-You can re-run `./setup.sh` after editing config (e.g. to change hostname).
+All modules safe to re-run. They check state before applying changes.
+You can re-run `./setup.sh` after editing `config.sh` to apply new settings.
 
 ## Architecture notes
 
 ### Why systemd-networkd `.link` units for MAC
 
-AM62 SK board has no EEPROM at I2C address 0x50/0x51, so kernel can't read
-the "factory" MAC. Without EEPROM, the kernel generates a random MAC on each
-boot (see boot log: `EEPROM not available at 0x50`).
+AM62 SK has no EEPROM at I2C 0x50/0x51, so kernel generates random MAC
+each boot (boot log: `EEPROM not available at 0x50`).
 
-The `.link` unit in `/etc/systemd/network/00-eth1-mac.link` is processed by
-udev/networkd very early in boot, before any IP configuration. It pins the
-MAC to a value we control, based on hardware path match (not interface name,
-which can be unstable).
+The `.link` unit in `/etc/systemd/network/00-eth1-mac.link` is processed
+by udev/networkd very early - before any IP configuration. It pins MAC to
+a value we control, matched by hardware path (stable) not interface name
+(can be unstable).
 
 ### Why backup default M4F firmware
 
-The Linux remoteproc loads `/lib/firmware/ti-ipc/am62xx/ipc_echo_test_mcu2_0_release_strip.xer5f`
-at boot. When we develop our own M4F firmware, we replace this file. The
-backup `.original` lets us always restore the default TI demo firmware.
+Linux remoteproc auto-loads `/lib/firmware/ti-ipc/am62xx/ipc_echo_test_mcu2_0_release_strip.xer5f`
+at boot. When developing, we replace this with our firmware. The `.original`
+backup lets us restore TI's demo when needed (e.g. for diagnostics).
 
-### Why m4f-watch over `tail -f`
+### Why `m4f-watch` over `tail -f`
 
-The kernel exposes M4F's debug log at `/sys/kernel/debug/remoteproc/remoteproc0/trace0`.
-This is a debugfs entry backed by a circular buffer in shared memory.
+`trace0` is a debugfs file backed by circular shared memory buffer:
+- No inotify support
+- Buffer wraps (96 entries ~ 4 KB)
+- `tail` optimizes for regular files (seek-from-end), returns garbage on debugfs
 
-- No inotify support (debugfs limitation)
-- Circular buffer wraps - file content can shrink or shift
-- `tail` optimizes for regular files (seek to end, read back) - returns garbage on debugfs
+`m4f-watch` extracts microsecond timestamps as integers, sorts numerically,
+shows only entries newer than last shown. Handles wrap correctly.
 
-m4f-watch uses smart polling: reads full buffer each cycle, sorts entries by
-their embedded microsecond timestamps (as integers, not floats - avoids
-precision issues), and outputs only entries newer than last shown.
+### Why M4F needs shutdown handler
+
+Linux uses mailbox handshake to stop M4F. Without ACK from M4F, Linux times
+out (-EBUSY) and refuses to stop. This means every firmware deploy without
+shutdown handler requires reboot. See `docs/M4F_SHUTDOWN.md` for the fix.
+
+### Key lesson learned: order of operations matters
+
+In the M4F shutdown sequence:
+- **Wrong**: `Drivers_close()` → `IpcNotify_sendMsg(ACK)` → `System_deinit()` → WFI
+- **Right**: `Drivers_close()` → `System_deinit()` → `IpcNotify_sendMsg(ACK)` → WFI
+
+`System_deinit()` must come BEFORE ACK send. Empirically verified - sending
+ACK earlier causes Linux to time out. Not well documented but visible in
+SDK example `ipc_rpmsg_echo_linux.c`.
+
+## Future modules
+
+Planned additions to setup workflow:
+
+- `04-ssh-keys.sh` - SSH key authentication (no password)
+- `05-go-runtime.sh` - Go installation for bramka services
+- `06-bramka-service.sh` - Production Go service as systemd unit
+- `07-docker-services.sh` - Mosquitto, InfluxDB via docker-compose
+- `08-firewall.sh` - Lock down unused ports
+- `09-watchdog.sh` - Auto-restart on failure
+
+Each new module adds capability without changing existing ones.
