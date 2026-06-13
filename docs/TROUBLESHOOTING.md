@@ -193,3 +193,109 @@ After first reboot, partition should fill the card. If not, manually:
 growpart /dev/mmcblk0 2
 resize2fs /dev/mmcblk0p2
 ```
+## RPMsg na AM62 - Niedeterministyczna numeracja virtio busów
+
+### Problem
+
+`/dev/rpmsg_ctrl0` i `/dev/rpmsg_ctrl1` mogą wskazywać na **różne**
+remote core'y (M4F lub R5F) między bootami. Hardcoded ścieżki **nie działają**.
+
+### Rozwiązanie
+
+Autodetect przez sysfs:
+
+```c
+for (int i = 0; ; i++) {
+    snprintf(path, "/sys/class/rpmsg/rpmsg_ctrl%d/device", i);
+    if (readlink(path, real_path) < 0) break;
+    if (strstr(real_path, "5000000.m4fss")) {
+        // To jest M4F ctrl
+    }
+}
+```
+
+Po stronie Go: `findM4FChrdev()` w `protocol-test/main.go`.
+
+### Identyfikatory hardware AM62
+
+- M4F: `5000000.m4fss`
+- R5F: `78000000.r5f`
+
+## /dev/rpmsg0 - loopback gdy wskazuje na R5F
+
+### Problem
+
+Pisanie do `/dev/rpmsg0` powodowało **loopback** w kernelu (RX = TX bajtowo).
+
+### Przyczyna
+
+`/dev/rpmsg0` w niektórych boot'ach to **R5F chrdev** (default firmware z TI demo
+robi local loopback). My chcemy M4F.
+
+### Rozwiązanie
+
+`findM4FChrdev()` szuka:
+1. `/sys/class/rpmsg/rpmsg[0-9]*` symlink wskazuje na `5000000.m4fss` (M4F)
+2. AND nazwa zawiera `rpmsg_chrdev` (nie `rpmsg-client-sample` ani inny custom endpoint)
+
+## Go service zombie process po SSH disconnect
+
+### Problem
+
+`ssh root@bramka "./protocol-test"` w PowerShell. Po Ctrl+C w PowerShell,
+proces wciąż żyje na bramce. Kolejny run → "resource busy" na `/dev/rpmsg0`.
+
+### Przyczyna
+
+Standardowe `ssh` nie alokuje pseudo-TTY → SIGINT nie propaguje do remote process.
+
+### Rozwiązanie
+
+`ssh -t root@bramka "./protocol-test"` — flag `-t` wymusza PTY allocation.
+Plus w `Deploy-Go` dodajemy `pkill -f $ServiceName` przed startem (cleanup
+po ewentualnych poprzednich zombie).
+
+## Volatile vs const uint8_t* w protocol_decode
+
+### Problem
+
+`gRxBuffer.data` to `volatile char[]`. `protocol_decode` przyjmuje `const uint8_t*`.
+Compiler warning: "discards qualifiers".
+
+### Rozwiązanie tymczasowe
+
+Explicit cast: `(const uint8_t *)gRxBuffer.data`.
+
+### Rozwiązanie docelowe (later)
+
+Lokalna kopia bufora w `handleLinuxMessage` - pozwala wcześniej zwolnić `pending`
+flag i uniknąć volatile concerns.
+
+## Binary protocol - lessons z implementacji
+
+### CRC compatibility wymaga DOKŁADNIE tej samej implementacji
+
+Init value 0xFFFF, poly 0x1021, no reflect, no xorout. Wszystkie cztery muszą się zgadzać.
+Test vector `crc16("123456789") == 0x29B1` - standard XMODEM.
+
+### Struct packing krytyczne
+
+`__attribute__((packed))` na `msg_header_t`. Bez tego compiler doda padding
+i wire format M4F ≠ Go.
+
+### Big-endian wire format
+
+Mimo że obie strony są little-endian (ARM Cortex-M4 i Cortex-A53),
+wire format **BE** dla portability. Helper functions `protocol_get_u16_be`
+i `protocol_put_u16_be` w header. **Nigdy nie polegaj na memcpy bezpośrednio
+ze struct'a do wire.**
+
+### Single source of truth z cgo
+
+Jeden `protocol.h` w `shared/`. Kopiowany do:
+- M4F project folder (CCS workspace)
+- Go service folder (przez Deploy-Go)
+
+Go używa cgo: `#include "protocol.h"` + `import "C"`.
+Stałe dostępne jako `C.MSG_HELLO`, etc.
+Inline functions z header **automatycznie** dostępne w Go bez extra linkowania.
