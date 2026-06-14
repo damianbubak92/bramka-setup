@@ -299,3 +299,62 @@ Jeden `protocol.h` w `shared/`. Kopiowany do:
 Go używa cgo: `#include "protocol.h"` + `import "C"`.
 Stałe dostępne jako `C.MSG_HELLO`, etc.
 Inline functions z header **automatycznie** dostępne w Go bez extra linkowania.
+
+## Reader spam gdy M4F crashes
+
+### Problem
+
+Gdy M4F zostanie zatrzymany (np. `echo stop > /sys/.../state`), `/dev/rpmsg0`
+przestaje istnieć ale Go reader nadal próbuje `Read()`. Wynik: spam errorów
+"broken pipe" / "not pollable" co 100ms.
+
+### Rozwiązanie
+
+W `transport.go` reader rozpoznaje **fatal errors** i kończy się zamiast retry:
+
+```go
+if strings.Contains(errStr, "broken pipe") || 
+   strings.Contains(errStr, "not pollable") ||
+   strings.Contains(errStr, "no such device") {
+    log.Printf("[Transport] FATAL: device disappeared - exiting reader")
+    return
+}
+```
+
+To rozróżnia "transient error" (retry OK) od "device gone" (must exit).
+
+## Symulacja retransmisji - dlaczego "echo stop" nie wystarczy
+
+### Problem  
+
+Test retry musimy zasymulować scenariusz "ACK się zgubił". Naturalne odruchowo: zatrzymać M4F.
+Ale `echo stop > /sys/.../state` **niszczy device file** - Linux dostaje EPIPE
+natychmiast, retry timer w ogóle się nie odpala.
+
+### Rozwiązanie - drop simulation w Go
+
+Dodanie `debugDropAcks` counter w Protocol layer. Reader normalnie odbiera ACK
+od M4F, ale dispatcher **ignoruje** pierwsze N ACK (decrementing counter).
+M4F nic nie wie, Linux protocol layer udaje "nie dostałem".
+
+To **lepsze testowanie**:
+- Testuje **całą ścieżkę** retry (timer, retransmit, idempotency po stronie M4F)
+- Nie wymaga grzebania w M4F żeby symulować awarie
+- Pełna kontrola nad ile ACK zignorować (1 → success after retry, 100 → giveup)
+
+## Pending ACKs - dlaczego statyczna tablica w M4F
+
+### Problem
+
+Tradycyjne Go: `map[uint16]*pendingAck` - dynamic, automatic.
+M4F (embedded, NoRTOS): brak malloc bezpieczny, każda alokacja to potencjalny leak.
+
+### Rozwiązanie
+
+`pending_ack_t gPendingAcks[MAX_PENDING_ACKS]` - statyczna tablica.
+Każdy slot ma `in_use` flag, linear search po seq (MAX_PENDING_ACKS=8, więc szybko).
+
+Tradeoff: max 8 jednoczesnych unacked messages. W praktyce wystarczy bo:
+- ACK_TIMEOUT_MS = 1000ms
+- Typowo 1-2 inflight, retry zwalnia szybko
+- Aplikacja może rate-limit'ować jeśli więcej potrzebuje

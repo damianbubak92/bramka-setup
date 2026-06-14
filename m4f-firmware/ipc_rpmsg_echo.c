@@ -38,6 +38,48 @@ static uint64_t gLastTickTime = 0;
  */
 static volatile uint16_t gLinuxEndpoint = 0;
 
+/* === PROTOCOL STATE === */
+
+/* Last sequence number we received from Linux - for idempotency check.
+ * 0 = nothing received yet. */
+static volatile uint16_t gTheirLastSeq = 0;
+
+/* Counter for our own outgoing seq numbers (for EVENT messages later) */
+static volatile uint16_t gMySeq = 0;
+
+/* === OUTGOING ACK TRACKING (for M4F-initiated messages: EVENT, DATA) ===
+ * Statyczna tablica oczekujących ACK od Linuxa.
+ * Bez malloc - typowe embedded.
+ */
+typedef struct {
+    uint8_t  in_use;            /* 0=wolny, 1=oczekuje na ACK */
+    uint16_t seq;               /* seq tej wiadomości */
+    uint8_t  msg_type;          /* MSG_EVENT lub MSG_DATA */
+    uint8_t  retry_count;       /* ile razy już retransmisja */
+    uint64_t sent_at_us;        /* timestamp ostatniej wysyłki */
+    uint16_t payload_len;       /* długość payload */
+    uint8_t  payload[128];      /* sam payload (max 128B per entry) */
+} pending_ack_t;
+
+static pending_ack_t gPendingAcks[MAX_PENDING_ACKS];
+
+static pending_ack_t* findFreePendingSlot(void)
+{
+    for (int i = 0; i < MAX_PENDING_ACKS; i++) {
+        if (!gPendingAcks[i].in_use) return &gPendingAcks[i];
+    }
+    return NULL;
+}
+
+static pending_ack_t* findPendingBySeq(uint16_t seq)
+{
+    for (int i = 0; i < MAX_PENDING_ACKS; i++) {
+        if (gPendingAcks[i].in_use && gPendingAcks[i].seq == seq) {
+            return &gPendingAcks[i];
+        }
+    }
+    return NULL;
+}
 
 /* === SHUTDOWN HANDLING === */
 /* Set when Linux requests graceful shutdown via remoteproc */
@@ -95,6 +137,116 @@ static void ipc_rp_mbox_callback(uint16_t remoteCoreId, uint16_t clientId,
     }
 }
 
+/* Send a protocol message to Linux.
+ * Returns SystemP_SUCCESS or error code from RPMessage_send. */
+static int32_t sendProtocolMsg(uint8_t msg_type, uint16_t seq,
+                                 const uint8_t *payload, uint16_t payload_len)
+{
+    if (gLinuxEndpoint == 0) {
+        DebugP_log("[M4F] Cannot send 0x%02X seq=%u: no Linux endpoint\r\n",
+                    (unsigned)msg_type, (unsigned)seq);
+        return SystemP_FAILURE;
+    }
+
+    uint8_t enc_buf[MSG_MAX_TOTAL];
+    size_t enc_len = protocol_encode(enc_buf, msg_type, seq, payload, payload_len);
+    if (enc_len == 0) {
+        DebugP_log("[M4F] Encode failed for 0x%02X (payload too large?)\r\n",
+                    (unsigned)msg_type);
+        return SystemP_FAILURE;
+    }
+
+    return RPMessage_send(enc_buf, enc_len,
+                           LINUX_CORE_ID, gLinuxEndpoint,
+                           RPMessage_getLocalEndPt(&gRecvMsgObject),
+                           100);
+}
+
+/* Send ACK for a specific seq number */
+static void sendAck(uint16_t seq)
+{
+    int32_t status = sendProtocolMsg(MSG_ACK, seq, NULL, 0);
+    if (status != SystemP_SUCCESS) {
+        DebugP_log("[M4F] sendAck seq=%u failed: %d\r\n", (unsigned)seq, status);
+    }
+}
+
+/* Send an EVENT (M4F-initiated message requiring ACK).
+ * Adds to pending tracker for retry.
+ * Returns 0 OK, -1 no slot, -2 encode/send fail. */
+static int sendEvent(const uint8_t *payload, uint16_t payload_len)
+{
+    if (gLinuxEndpoint == 0) {
+        return -1;  /* No Linux endpoint known yet */
+    }
+    if (payload_len > 128) {
+        DebugP_log("[M4F] EVENT payload too large (%u, max 128)\r\n",
+                    (unsigned)payload_len);
+        return -2;
+    }
+
+    pending_ack_t *pa = findFreePendingSlot();
+    if (pa == NULL) {
+        DebugP_log("[M4F] No free pending slot (table full, %d entries)\r\n",
+                    MAX_PENDING_ACKS);
+        return -1;
+    }
+
+    /* Generate sequence number (1..65535, skip 0) */
+    gMySeq++;
+    if (gMySeq == 0) gMySeq = 1;
+
+    /* Fill pending entry */
+    pa->in_use = 1;
+    pa->seq = gMySeq;
+    pa->msg_type = MSG_EVENT;
+    pa->retry_count = 0;
+    pa->sent_at_us = ClockP_getTimeUsec();
+    pa->payload_len = payload_len;
+    for (uint16_t i = 0; i < payload_len; i++) pa->payload[i] = payload[i];
+
+    /* Send */
+    int32_t status = sendProtocolMsg(MSG_EVENT, pa->seq, payload, payload_len);
+    if (status != SystemP_SUCCESS) {
+        DebugP_log("[M4F] EVENT send failed: %d\r\n", status);
+        pa->in_use = 0;
+        return -2;
+    }
+
+    DebugP_log("[M4F] TX EVENT seq=%u (%u bytes)\r\n",
+                (unsigned)pa->seq, (unsigned)payload_len);
+    return 0;
+}
+
+/* Periodically check pending entries, retry timed-out, giveup after MAX_RETRIES */
+static void processEventRetries(void)
+{
+    uint64_t now = ClockP_getTimeUsec();
+    uint64_t timeout_us = (uint64_t)ACK_TIMEOUT_MS * 1000ULL;
+
+    for (int i = 0; i < MAX_PENDING_ACKS; i++) {
+        pending_ack_t *pa = &gPendingAcks[i];
+        if (!pa->in_use) continue;
+
+        uint64_t elapsed = now - pa->sent_at_us;
+        if (elapsed < timeout_us) continue;
+
+        if (pa->retry_count >= MAX_RETRIES) {
+            DebugP_log("[M4F] GIVEUP EVENT seq=%u (%u retries exhausted)\r\n",
+                        (unsigned)pa->seq, (unsigned)pa->retry_count);
+            pa->in_use = 0;
+            continue;
+        }
+
+        pa->retry_count++;
+        pa->sent_at_us = now;
+        DebugP_log("[M4F] RETRY EVENT seq=%u count=%u\r\n",
+                    (unsigned)pa->seq, (unsigned)pa->retry_count);
+
+        sendProtocolMsg(pa->msg_type, pa->seq, pa->payload, pa->payload_len);
+    }
+}
+
 
 static void handleLinuxMessage(void)
 {
@@ -102,106 +254,145 @@ static void handleLinuxMessage(void)
     uint16_t msg_seq;
     const uint8_t *msg_payload;
     uint16_t msg_payload_len;
-    
-    /* Dekoduj wiadomość jako binary protocol */
-    int rc = protocol_decode((const uint8_t *)gRxBuffer.data, gRxBuffer.dataLen,
-                              &msg_type, &msg_seq,
-                              &msg_payload, &msg_payload_len);
-    
+
+    /* Decode binary protocol message */
+    int rc = protocol_decode(
+        (const uint8_t *)gRxBuffer.data,
+        gRxBuffer.dataLen,
+        &msg_type, &msg_seq,
+        &msg_payload, &msg_payload_len);
+
     if (rc != 0) {
         DebugP_log("[M4F] Protocol decode failed: rc=%d (raw %u bytes)\r\n",
                     rc, (unsigned)gRxBuffer.dataLen);
         gRxBuffer.pending = 0;
         return;
     }
-    
-    /* Wykryj zmianę endpoint Linuxa */
+
+    /* Track Linux endpoint - log changes */
     static uint16_t lastLoggedEndpoint = 0;
     if (gLinuxEndpoint != lastLoggedEndpoint) {
         DebugP_log("[M4F] Linux endpoint: %d (was %d)\r\n",
                     (int)gLinuxEndpoint, (int)lastLoggedEndpoint);
         lastLoggedEndpoint = gLinuxEndpoint;
     }
-    
+
     DebugP_log("[M4F] RX type=0x%02X seq=%u payload_len=%u\r\n",
                 (unsigned)msg_type, (unsigned)msg_seq, (unsigned)msg_payload_len);
-    
-    /* Obsługa per typ wiadomości */
-    if (msg_type == MSG_HELLO) {
-        /* Loguj payload jako string (dla debug) */
-        char payload_str[64];
-        size_t copy_len = (msg_payload_len < sizeof(payload_str)-1) 
-                          ? msg_payload_len : sizeof(payload_str)-1;
-        for (size_t i = 0; i < copy_len; i++) payload_str[i] = (char)msg_payload[i];
-        payload_str[copy_len] = '\0';
-        DebugP_log("[M4F] HELLO from Linux: '%s'\r\n", payload_str);
-        
-        /* Odpowiedz HELLO_ACK */
-        uint8_t reply_buf[MSG_MAX_TOTAL];
-        const char *reply_payload = "M4F v1 ready";
-        size_t reply_payload_len = 12;  /* len("M4F v1 ready") */
-        
-        size_t reply_total_len = protocol_encode(
-            reply_buf,
-            MSG_HELLO_ACK,
-            msg_seq,  /* odpowiadamy z tym samym seq */
-            (const uint8_t *)reply_payload,
-            reply_payload_len
-        );
-        
-        int32_t status = RPMessage_send(
-            reply_buf, reply_total_len,
-            gRxBuffer.remoteCoreId, gRxBuffer.remoteEndPt,
-            RPMessage_getLocalEndPt(&gRecvMsgObject),
-            100
-        );
-        
-        if (status == SystemP_SUCCESS) {
-            DebugP_log("[M4F] HELLO_ACK sent (%u bytes)\r\n", 
-                        (unsigned)reply_total_len);
-        } else {
-            DebugP_log("[M4F] HELLO_ACK send failed: %d\r\n", status);
+
+    /* Dispatch by message type */
+    switch (msg_type) {
+        case MSG_HELLO: {
+            /* Log payload as string */
+            char payload_str[64];
+            size_t copy_len = (msg_payload_len < sizeof(payload_str)-1) 
+                              ? msg_payload_len : sizeof(payload_str)-1;
+            for (size_t i = 0; i < copy_len; i++) payload_str[i] = (char)msg_payload[i];
+            payload_str[copy_len] = '\0';
+            DebugP_log("[M4F] HELLO from Linux: '%s'\r\n", payload_str);
+
+            /* Reset protocol state on new HELLO (handles Linux restart) */
+            gTheirLastSeq = 0;
+            gMySeq = 0;
+            DebugP_log("[M4F] Protocol state RESET (new session)\r\n");
+
+            /* Reply HELLO_ACK with the same seq */
+            const uint8_t reply_payload[] = "M4F v1 ready";
+            int32_t status = sendProtocolMsg(MSG_HELLO_ACK, msg_seq,
+                                               reply_payload, 12);
+            if (status == SystemP_SUCCESS) {
+                DebugP_log("[M4F] HELLO_ACK sent (seq=%u)\r\n", (unsigned)msg_seq);
+            } else {
+                DebugP_log("[M4F] HELLO_ACK send failed: %d\r\n", status);
+            }
+            break;
         }
+
+        case MSG_DATA: {
+            /* Idempotency check */
+            if (gTheirLastSeq != 0 && msg_seq <= gTheirLastSeq) {
+                DebugP_log("[M4F] DATA seq=%u DUPLICATE (lastSeq=%u) - re-ACK only\r\n",
+                            (unsigned)msg_seq, (unsigned)gTheirLastSeq);
+                sendAck(msg_seq);
+                break;
+            }
+
+            /* New message - update lastSeq, log payload */
+            gTheirLastSeq = msg_seq;
+
+            char payload_str[80];
+            size_t copy_len = (msg_payload_len < sizeof(payload_str)-1) 
+                              ? msg_payload_len : sizeof(payload_str)-1;
+            for (size_t i = 0; i < copy_len; i++) payload_str[i] = (char)msg_payload[i];
+            payload_str[copy_len] = '\0';
+            DebugP_log("[M4F] DATA seq=%u: '%s'\r\n",
+                        (unsigned)msg_seq, payload_str);
+
+            /* Send ACK */
+            sendAck(msg_seq);
+            DebugP_log("[M4F] ACK sent for seq=%u\r\n", (unsigned)msg_seq);
+
+            /* TODO: dispatch to application logic */
+            break;
+        }
+
+        case MSG_ACK: {
+            pending_ack_t *pa = findPendingBySeq(msg_seq);
+            if (pa != NULL) {
+                uint64_t rtt_us = ClockP_getTimeUsec() - pa->sent_at_us;
+                uint32_t rtt_ms = (uint32_t)(rtt_us / 1000);
+                DebugP_log("[M4F] ACK seq=%u (RTT %u ms, retries=%u)\r\n",
+                            (unsigned)msg_seq,
+                            (unsigned)rtt_ms,
+                            (unsigned)pa->retry_count);
+                pa->in_use = 0;
+            } else {
+                DebugP_log("[M4F] ACK for unknown seq=%u (already acked or never sent?)\r\n",
+                            (unsigned)msg_seq);
+            }
+            break;
+        }
+
+        case MSG_PING: {
+            DebugP_log("[M4F] PING seq=%u - replying PONG\r\n", (unsigned)msg_seq);
+            sendProtocolMsg(MSG_PONG, msg_seq, NULL, 0);
+            break;
+        }
+
+        default:
+            DebugP_log("[M4F] Unknown msg type 0x%02X seq=%u (ignored)\r\n",
+                        (unsigned)msg_type, (unsigned)msg_seq);
+            break;
     }
-    else {
-        DebugP_log("[M4F] Unknown message type 0x%02X (ignored)\r\n", 
-                    (unsigned)msg_type);
-    }
-    
+
     gRxBuffer.pending = 0;
 }
 
-/*
- * Periodyczna akcja - co 1 sekundę zwiększ licznik (i wyślij do Linuxa).
- * Wywoływane z main loop, sprawdza czy minęło 1000ms od ostatniego tick.
- */
 static void doPeriodicTick(void)
 {
     uint64_t now = ClockP_getTimeUsec();
-    
-    if ((now - gLastTickTime) >= 1000000ULL) {  /* 1 sekunda */
+
+    if ((now - gLastTickTime) >= 1000000ULL) {
         gTickCount++;
         gLastTickTime = now;
-        
-      //  DebugP_log("[M4F] Tick #%u\r\n", (unsigned int)gTickCount);
-        
-        /* Server-push: wysyłaj tylko gdy znamy endpoint Linuxa */
-     /*   if (gLinuxEndpoint != 0) {
-    char tickMsg[64];
-    int len = snprintf(tickMsg, sizeof(tickMsg),
-                        "tick %u from M4F", (unsigned int)gTickCount);
-    int32_t sendStatus = RPMessage_send(tickMsg, len + 1,
-                                          LINUX_CORE_ID, gLinuxEndpoint,
-                                          RPMessage_getLocalEndPt(&gRecvMsgObject),
-                                          100);
-    if (sendStatus != SystemP_SUCCESS) {
-        DebugP_log("[M4F] Linux disconnected (send err %d), waiting for reconnect\r\n",
-                    sendStatus);
-        gLinuxEndpoint = 0;
-    }
-}
-*/
-/* else: gLinuxEndpoint == 0 - cicho czekamy na hello od Linuxa */
+
+        /* Tick = local diagnostic only, NOT sent via RPMsg.
+         * Real M4F→Linux comms goes through protocol layer (EVENT msg).
+         */
+        DebugP_log("[M4F] Tick #%u\r\n", (unsigned int)gTickCount);
+
+        /* Wysyłaj testowy EVENT co 10 sekund (gdy Linux connected) */
+        if (gLinuxEndpoint != 0 && (gTickCount % 10) == 0) {
+            char event_payload[64];
+            int len = snprintf(event_payload, sizeof(event_payload),
+                                "Test EVENT @ tick %u", (unsigned int)gTickCount);
+            if (len > 0 && len < (int)sizeof(event_payload)) {
+                int rc = sendEvent((const uint8_t *)event_payload, (uint16_t)len);
+                if (rc != 0) {
+                    DebugP_log("[M4F] sendEvent rc=%d (no Linux yet or table full)\r\n", rc);
+                }
+            }
+        }
     }
 }
 
@@ -360,7 +551,7 @@ void ipc_rpmsg_echo_main(void *args)
         doPeriodicTick();
         
         /* 3. Tu możesz dodać: sample_sensors(), check_rules(), control_relays() */
-        
+        processEventRetries();
         /* 4. Drobny sleep żeby CPU nie kręcił w pustce */
         ClockP_usleep(1000);  /* 1ms */
     }

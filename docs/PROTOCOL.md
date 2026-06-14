@@ -117,3 +117,48 @@ Encode wiadomości w M4F i Go, porównaj bajty. **Muszą być identyczne**.
 
 ### End-to-end
 HELLO/HELLO_ACK exchange. Latency ~5-10ms na bramce (RPMsg roundtrip).
+
+## Test modes (rpmsg-service)
+
+Go service obsługuje kilka test modes uruchamianych przez flagę `-test`:
+./rpmsg-service -test hello       # Tylko HELLO/HELLO_ACK exchange
+./rpmsg-service -test data        # HELLO + pojedyncze DATA z ACK
+./rpmsg-service -test spam        # HELLO + 5 DATA w pętli (RTT test)
+./rpmsg-service -test retry-drop  # Symulacja zgubionych ACK (retry validation)
+./rpmsg-service -test replay      # Duplicate seq (idempotency validation)
+./rpmsg-service -test event       # Listener na EVENT od M4F
+
+## State machine (Linux side)
+
+DISCONNECTED  → SendHello() → HELLO_SENT
+HELLO_SENT    → RX HELLO_ACK → CONNECTED
+CONNECTED     → (heartbeat timeout) → DEAD       # TODO future
+DEAD          → SendHello() → HELLO_SENT (reconnect)
+
+M4F nie ma jawnego stanu connection - obecność `gLinuxEndpoint != 0` służy jako proxy.
+HELLO **resetuje** sequence counters i pending table (idempotent reconnect handling).
+
+## Retry algorithm
+
+Linux side (Go):
+1. `SendData(payload)` zwiększa mySeq, encoded + transport.Send
+2. Wpis dodany do `pending[seq]` z timestampem
+3. `retryLoop` co 100ms skanuje pending:
+   - Jeśli `elapsed > ACK_TIMEOUT_MS` AND `retry_count < MAX_RETRIES`:
+     - `retry_count++`, re-send via transport
+   - Jeśli `retry_count >= MAX_RETRIES`:
+     - GIVEUP, doneCh ← error
+4. ACK od peer:
+   - Lookup pending[seq], usuń, doneCh ← nil
+5. `SendData` zwraca z `<-doneCh`
+
+M4F side (mirror):
+- `gPendingAcks[MAX_PENDING_ACKS]` statyczna tablica
+- `sendEvent()` znajduje wolny slot, fill, send
+- `processEventRetries()` (callable z main loop) skanuje tablicę
+- Same flow as Go ale w C bez heap allocations
+
+## Debug features
+
+- `Protocol.SetDebugDropAcks(N)` - drop next N incoming ACKs (Go-side retry test)
+- `Protocol.SendDataWithSeq(payload, forcedSeq, ...)` - send DATA z konkretnym seq (idempotency test)
