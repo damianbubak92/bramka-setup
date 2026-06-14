@@ -59,7 +59,7 @@ ssh root@bramka-01
 m4f-watch                          # live M4F trace
 ```
 
-## Status (v4)
+## Status (v5)
 
 - ✅ Setup script (Linux configuration, network, tools, M4F firmware)
 - ✅ M4F graceful shutdown handler (hot-swap firmware bez reboot)
@@ -71,8 +71,9 @@ m4f-watch                          # live M4F trace
 - ✅ Idempotency check (duplicate detection w M4F)
 - ✅ EVENT (M4F→Linux autonomous events z ACK + retry)
 - ✅ Bidirectional reliable messaging w pełni działa (~5ms RTT)
-- ⏳ Smart heartbeat (PING/PONG na 5s idle) - next
-- ⏳ DEAD state recovery (auto re-HELLO) - next
-- ⏳ Watchdog architecture (systemd, M4F-self, HW watchdog) - later
-- ⏳ systemd unit dla Go service - later
+- ✅ **Warstwa A**: systemd watchdog dla Go service (crash + hang detection)
+- ⏸️ **Warstwa B**: M4F self-watchdog (RTI) - skipped, do later
+- ⏳ **Warstwa C**: M4F → Linux reset via DMSC
+- ✅ **Warstwa D**: Linux HW watchdog (`/dev/watchdog` via systemd, 30s kick / 60s timeout)
+- ⏳ Smart heartbeat - zrezygnowany (watchdogi pokrywają)
 - ⏳ Yocto build - later

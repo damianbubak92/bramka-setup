@@ -1,0 +1,27 @@
+[Unit]
+Description=RPMsg Bridge Service (Linux <-> M4F)
+After=network.target
+
+[Service]
+Type=notify
+ExecStart=/root/bramka-services/rpmsg-service/rpmsg-service -test event
+WorkingDirectory=/root/bramka-services/rpmsg-service
+
+# Restart configuration
+Restart=always
+RestartSec=2
+
+# Watchdog: systemd will SIGABRT if we don't kick within 10s
+WatchdogSec=10s
+
+# Resource limits
+TimeoutStartSec=30s
+TimeoutStopSec=15s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rpmsg-service
+
+[Install]
+WantedBy=multi-user.target

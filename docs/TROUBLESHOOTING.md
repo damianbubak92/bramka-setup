@@ -358,3 +358,89 @@ Tradeoff: max 8 jednoczesnych unacked messages. W praktyce wystarczy bo:
 - ACK_TIMEOUT_MS = 1000ms
 - Typowo 1-2 inflight, retry zwalnia szybko
 - Aplikacja może rate-limit'ować jeśli więcej potrzebuje
+
+## Bramka resetuje się losowo co minutę
+
+### Objawy
+
+Bramka działa, robisz operacje, nagle reset. Boot, ssh, normalne działanie,
+za chwilę znów reset. Cykl ~60s.
+
+### Przyczyna
+
+AM62 ma **aktywny watchdog hardware** (`/dev/watchdog0`) z **nowayout** flag.
+Jeśli nikt go nie klepie userspace, **resetuje SoC po 60 sekundach**.
+
+Domyślny Linux install nie aktywuje systemd kicker'a:
+$ grep -i watchdog /etc/systemd/system.conf
+#RuntimeWatchdogSec=off    ← OFF!
+### Diagnoza
+
+```bash
+# Watchdog aktywny:
+ls -la /dev/watchdog*
+wdctl /dev/watchdog
+# Identity: K3 RTI Watchdog, Timeout: 60s
+
+# Kto klepie:
+lsof /dev/watchdog0
+# Pusty = nikt = będzie reset
+
+# Countdown:
+wdctl /dev/watchdog | grep Timeleft
+sleep 5
+wdctl /dev/watchdog | grep Timeleft
+# Drugi pomiar niższy = NIKT NIE KLEPIE
+# Drugi pomiar równy/wyższy = OK, ktoś klepie
+```
+
+### Rozwiązanie
+
+Włącz systemd runtime watchdog:
+
+```bash
+sed -i 's/#RuntimeWatchdogSec=off/RuntimeWatchdogSec=30/' /etc/systemd/system.conf
+reboot
+```
+
+Po reboot:
+```bash
+lsof /dev/watchdog0
+# COMMAND PID USER ... NAME
+# systemd  1  root ... /dev/watchdog0
+```
+
+Teraz systemd klepie co 30s, watchdog timeout 60s = healthy margin.
+
+### Emergency kicker (gdy nie możesz zrobić reboot zaraz)
+
+Trzymaj bramkę żyjącą bez reboot:
+
+```bash
+nohup sh -c 'while true; do echo 1 > /dev/watchdog; sleep 20; done' \
+    > /tmp/wdkick.log 2>&1 &
+```
+
+To kicker w tle co 20s. Zatrzyma resety **do następnego reboot** (potem
+trzeba albo znów go uruchomić, albo skonfigurować systemd).
+
+## systemd_notify socket error
+
+### Problem
+
+Go service nie wysyła `WATCHDOG=1` lub loguje:
+[systemd] notify dial failed: dial unix /run/systemd/notify: connect: no such file or directory
+### Przyczyny + naprawa
+
+**A**: Uruchamiasz service **ręcznie** (nie przez systemd):
+- `NOTIFY_SOCKET` env var nie jest ustawione
+- Solution: to OK, sd_notify będzie cicho ignorować
+- Production: zawsze uruchamiaj przez `systemctl start rpmsg-service`
+
+**B**: Unit file ma `Type=simple` zamiast `Type=notify`:
+- systemd nie tworzy `NOTIFY_SOCKET`
+- Solution: zmień na `Type=notify` w unit file
+
+**C**: Container/chroot environment:
+- Socket może nie być propagowany
+- Solution: bind-mount socket lub disable watchdog

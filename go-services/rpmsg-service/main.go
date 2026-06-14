@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"strconv"
 )
 
 func main() {
@@ -32,6 +33,12 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+	// systemd notify: service ready
+	sdNotify("READY=1")
+
+	// systemd watchdog kicker - sends WATCHDOG=1 every N seconds
+	go watchdogKicker()
+
 	// Run test
 	go func() {
 		switch *testMode {
@@ -49,6 +56,8 @@ func main() {
 			runRetryDropTest(p)
 		case "event":
 			runEventTest(p)
+		case "hang":
+			runHangTest(p)
 		default:
 			log.Printf("Unknown test mode: %s", *testMode)
 		}
@@ -57,6 +66,9 @@ func main() {
 	// Wait for signal
 	sig := <-sigChan
 	log.Printf("Received signal: %v, shutting down...", sig)
+	
+	// Notify systemd we're stopping
+	sdNotify("STOPPING=1")
 }
 
 func runHelloTest(p *Protocol) {
@@ -239,4 +251,59 @@ func runEventTest(p *Protocol) {
         log.Printf("[Test] EVENT #%d type=0x%02X seq=%d payload=%q",
             evCount, ev.Type, ev.Seq, string(ev.Payload))
     }
+}
+
+// watchdogKicker sends WATCHDOG=1 to systemd periodically.
+// systemd will restart us if we miss too many.
+//
+// Frequency: read WATCHDOG_USEC env var (set by systemd), use half.
+// Without systemd, this is a no-op (sdNotify silently returns).
+func watchdogKicker() {
+	usecStr := os.Getenv("WATCHDOG_USEC")
+	if usecStr == "" {
+		// Not running under systemd watchdog
+		return
+	}
+
+	// Parse "WATCHDOG_USEC=10000000" (microseconds)
+	usec, err := strconv.ParseInt(usecStr, 10, 64)
+	if err != nil {
+		log.Printf("[systemd] bad WATCHDOG_USEC=%q: %v", usecStr, err)
+		return
+	}
+
+	// Kick at half the timeout (best practice)
+	interval := time.Duration(usec) * time.Microsecond / 2
+	log.Printf("[systemd] watchdog kicker: every %v (systemd timeout %v)",
+		interval, time.Duration(usec)*time.Microsecond)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		sdNotify("WATCHDOG=1")
+	}
+}
+
+func runHangTest(p *Protocol) {
+	time.Sleep(200 * time.Millisecond)
+
+	log.Println("[Test] Sending HELLO...")
+	if err := p.Hello(3 * time.Second); err != nil {
+		log.Printf("[Test] HELLO failed: %v", err)
+		return
+	}
+	log.Println("[Test] Connected.")
+	log.Println("[Test] === HANG TEST ===")
+	log.Println("[Test] Disabling watchdog kicks - systemd should kill us in 10s")
+
+	debugDisableWatchdog.Store(true)
+
+	// Loop showing we're "alive" but not kicking
+	for i := 1; i <= 30; i++ {
+		time.Sleep(1 * time.Second)
+		log.Printf("[Test] Still alive (no kick) %ds", i)
+	}
+
+	log.Println("[Test] If you see this, systemd did NOT kill us (bug!)")
 }
