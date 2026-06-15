@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=notify
-ExecStart=/root/bramka-services/rpmsg-service/rpmsg-service -test event
+ExecStart=/root/bramka-services/rpmsg-service/rpmsg-service -test crash-m4f
 WorkingDirectory=/root/bramka-services/rpmsg-service
 
 # Restart configuration

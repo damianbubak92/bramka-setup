@@ -24,6 +24,10 @@ const (
 	StateDead
 )
 
+// MSG_DEBUG_CRASH is DEBUG-ONLY message type to force M4F hard fault.
+// NEVER use in production code.
+//const MSG_DEBUG_CRASH = 0xF0
+
 func (s ProtocolState) String() string {
 	switch s {
 	case StateDisconnected:
@@ -71,9 +75,28 @@ type Protocol struct {
 	dataRxCh  chan ReceivedMessage // application data messages
 	eventRxCh chan ReceivedMessage // events from M4F
 
-	// Lifecycle
+// Lifecycle
 	stopCh chan struct{}
 	wg     sync.WaitGroup
+
+	// === HEARTBEAT (smart, idle-triggered) ===
+
+	// heartbeatIdle: how long peer must be silent before we send PING.
+	// Configurable via NewProtocol parameter.
+	heartbeatIdle time.Duration
+
+	// lastRxTime: unix nano timestamp of last received message of any type.
+	// Updated in handleIncoming for every successfully decoded message.
+	lastRxTime atomic.Int64
+
+	// pingInFlight: prevents duplicate heartbeat PINGs when retries pending.
+	// Set when PING added to pending table, cleared on ACK or giveup.
+	pingInFlight atomic.Bool
+
+	// peerDeadCh: closed when heartbeat PING gives up (peer unreachable).
+	// Main goroutine should select on PeerDeadCh() for recovery action.
+	peerDeadCh   chan struct{}
+	peerDeadOnce sync.Once
 }
 
 // ReceivedMessage is what gets passed to application layer.
@@ -83,22 +106,34 @@ type ReceivedMessage struct {
 	Payload []byte
 }
 
-func NewProtocol(t *Transport) *Protocol {
+func NewProtocol(t *Transport, heartbeatIdle time.Duration) *Protocol {
 	p := &Protocol{
-		transport: t,
-		state:     StateDisconnected,
-		pending:   make(map[uint16]*pendingAck),
-		dataRxCh:  make(chan ReceivedMessage, 16),
-		eventRxCh: make(chan ReceivedMessage, 16),
-		stopCh:    make(chan struct{}),
+		transport:     t,
+		state:         StateDisconnected,
+		pending:       make(map[uint16]*pendingAck),
+		dataRxCh:      make(chan ReceivedMessage, 16),
+		eventRxCh:     make(chan ReceivedMessage, 16),
+		stopCh:        make(chan struct{}),
+		heartbeatIdle: heartbeatIdle,
+		peerDeadCh:    make(chan struct{}),
 	}
 	p.mySeq.Store(0) // we'll increment to 1 on first use
+	p.lastRxTime.Store(time.Now().UnixNano())
 
-	// Start dispatcher and retry workers
-	p.wg.Add(2)
+	// Start dispatcher, retry, heartbeat workers
+	p.wg.Add(3)
 	go p.dispatchLoop()
 	go p.retryLoop()
+	go p.heartbeatLoop()
+
+	log.Printf("[Protocol] Initialized (heartbeat idle: %v)", heartbeatIdle)
 	return p
+}
+
+// PeerDeadCh returns channel closed when peer detected unreachable
+// (heartbeat PING gave up after retries). Main goroutine should select on this.
+func (p *Protocol) PeerDeadCh() <-chan struct{} {
+	return p.peerDeadCh
 }
 
 // State returns current connection state.
@@ -289,6 +324,9 @@ func (p *Protocol) handleIncoming(raw []byte) {
 		return
 	}
 
+	// Heartbeat: any valid received message proves M4F is alive
+	p.lastRxTime.Store(time.Now().UnixNano())
+
 	log.Printf("[Protocol] RX type=0x%02X seq=%d payload_len=%d",
 		msgType, seq, len(payload))
 
@@ -320,8 +358,14 @@ func (p *Protocol) handleIncoming(raw []byte) {
 
 		if exists {
 			rtt := time.Since(pa.sentAt)
-			log.Printf("[Protocol] ACK seq=%d (RTT %v, retries=%d)",
-				seq, rtt, pa.retryCount)
+			log.Printf("[Protocol] ACK seq=%d type=0x%02X (RTT %v, retries=%d)",
+				seq, pa.msgType, rtt, pa.retryCount)
+
+			// Clear PING-in-flight if this was the heartbeat PING
+			if pa.msgType == C.MSG_PING {
+				p.pingInFlight.Store(false)
+			}
+
 			select {
 			case pa.doneCh <- nil:
 			default:
@@ -374,11 +418,14 @@ func (p *Protocol) handleIncoming(raw []byte) {
 		}
 
 	case C.MSG_PING:
-		log.Printf("[Protocol] RX PING - replying PONG")
-		p.sendSimple(C.MSG_PONG, seq, nil)
+		// Smart heartbeat from M4F - reply with generic ACK
+		log.Printf("[Protocol] RX heartbeat PING seq=%d - replying ACK", seq)
+		p.sendAck(seq)
+		// lastRxTime already updated at top of handleIncoming
 
 	case C.MSG_PONG:
-		log.Printf("[Protocol] RX PONG (heartbeat ok)")
+		// Deprecated message type - silently ignore for backwards compat
+		log.Printf("[Protocol] RX PONG (deprecated, ignored)")
 
 	default:
 		log.Printf("[Protocol] Unknown msg type 0x%02X (ignored)", msgType)
@@ -463,6 +510,93 @@ func (p *Protocol) processRetries(now time.Time) {
 	}
 }
 
+// heartbeatLoop sends PING when idle threshold reached (and no PING pending).
+// Runs as separate goroutine. Driven by 1s ticker.
+func (p *Protocol) heartbeatLoop() {
+	defer p.wg.Done()
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	log.Printf("[Protocol] Heartbeat loop started (idle threshold: %v)", p.heartbeatIdle)
+
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-ticker.C:
+			if p.State() != StateConnected {
+				continue
+			}
+			if p.pingInFlight.Load() {
+				continue // already pinging, wait for ACK or giveup
+			}
+
+			idleNs := time.Now().UnixNano() - p.lastRxTime.Load()
+			if time.Duration(idleNs) < p.heartbeatIdle {
+				continue // recent traffic, no need to ping
+			}
+
+			p.sendHeartbeatPing()
+		}
+	}
+}
+
+// sendHeartbeatPing sends MSG_PING via pending ACK mechanism (with retries).
+// On giveup, signals peerDeadCh.
+func (p *Protocol) sendHeartbeatPing() {
+	seq := uint16(p.mySeq.Add(1))
+	encoded, err := encodeMessage(C.MSG_PING, seq, nil)
+	if err != nil {
+		log.Printf("[Protocol] heartbeat encode failed: %v", err)
+		return
+	}
+
+	doneCh := make(chan error, 1)
+	pa := &pendingAck{
+		seq:        seq,
+		msgType:    C.MSG_PING,
+		payload:    nil,
+		encoded:    encoded,
+		sentAt:     time.Now(),
+		retryCount: 0,
+		doneCh:     doneCh,
+	}
+
+	p.pendingMu.Lock()
+	p.pending[seq] = pa
+	p.pendingMu.Unlock()
+
+	p.pingInFlight.Store(true)
+
+	idleMs := (time.Now().UnixNano() - p.lastRxTime.Load()) / int64(time.Millisecond)
+	log.Printf("[Protocol] TX heartbeat PING seq=%d (idle %d ms)", seq, idleMs)
+
+	if err := p.transport.Send(encoded); err != nil {
+		log.Printf("[Protocol] heartbeat send failed: %v", err)
+		p.removePending(seq)
+		p.pingInFlight.Store(false)
+		return
+	}
+
+	// Async watcher: when doneCh resolves (ACK or giveup), act on result
+	go func() {
+		err := <-doneCh
+		p.pingInFlight.Store(false)
+		if err != nil {
+			log.Printf("[Protocol] *** HEARTBEAT FAILED: peer unreachable (%v) ***", err)
+			p.signalPeerDead()
+		}
+		// On success: ACK already logged in dispatcher, nothing to do
+	}()
+}
+
+// signalPeerDead transitions to DEAD and closes peerDeadCh (idempotent).
+func (p *Protocol) signalPeerDead() {
+	p.peerDeadOnce.Do(func() {
+		p.setState(StateDead)
+		close(p.peerDeadCh)
+	})
+}
+
 // encodeMessage wraps protocol_encode from C side.
 func encodeMessage(msgType uint8, seq uint16, payload []byte) ([]byte, error) {
 	bufSize := C.MSG_MAX_TOTAL
@@ -513,4 +647,48 @@ func decodeMessage(buf []byte) (uint8, uint16, []byte, error) {
 	}
 
 	return uint8(outType), uint16(outSeq), payload, nil
+}
+
+// SendDebugCrash sends a DEBUG_CRASH message to force M4F hard fault.
+// Used to test Linux remoteproc auto-recovery.
+// DEBUG ONLY - never use in production.
+func (p *Protocol) SendDebugCrash() error {
+    if p.State() != StateConnected {
+        return fmt.Errorf("not connected (state=%s)", p.State())
+    }
+    
+    seq := uint16(p.mySeq.Add(1))
+    encoded, err := encodeMessage(C.MSG_DEBUG_CRASH, seq, []byte("CRASH"))
+    if err != nil {
+        return fmt.Errorf("encode DEBUG_CRASH: %w", err)
+    }
+    
+    log.Printf("[Protocol] TX DEBUG_CRASH seq=%d (forcing M4F hard fault!)", seq)
+    if err := p.transport.Send(encoded); err != nil {
+        return fmt.Errorf("send DEBUG_CRASH: %w", err)
+    }
+    
+    return nil
+}
+
+// SendDebugHang sends a DEBUG_HANG message to force M4F into infinite loop.
+// Used to test heartbeat-based silent hang detection.
+// DEBUG ONLY - never use in production.
+func (p *Protocol) SendDebugHang() error {
+	if p.State() != StateConnected {
+		return fmt.Errorf("not connected (state=%s)", p.State())
+	}
+
+	seq := uint16(p.mySeq.Add(1))
+	encoded, err := encodeMessage(C.MSG_DEBUG_HANG, seq, []byte("HANG"))
+	if err != nil {
+		return fmt.Errorf("encode DEBUG_HANG: %w", err)
+	}
+
+	log.Printf("[Protocol] TX DEBUG_HANG seq=%d (forcing M4F infinite loop!)", seq)
+	if err := p.transport.Send(encoded); err != nil {
+		return fmt.Errorf("send DEBUG_HANG: %w", err)
+	}
+
+	return nil
 }

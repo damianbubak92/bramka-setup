@@ -18,6 +18,22 @@ if [ ! -f "$SCRIPT_DIR/config.sh" ]; then
 fi
 source "$SCRIPT_DIR/config.sh"
 
+# Ensure all module scripts are executable (git may have lost the bit):
+log_info "Setting executable bit on modules..."
+chmod +x "$SCRIPT_DIR"/modules/*.sh
+
+# Oraz lepiej zmień check w pętli z "[ -x ]" na "[ -f ]":
+for module in "$SCRIPT_DIR"/modules/*.sh; do
+    if [ -f "$module" ]; then     ← było [ -x "$module" ]
+        log_step "Running $(basename "$module")"
+        bash "$module" || {        ← wywołuj przez bash, executable bit nieważny
+            log_error "Module $(basename "$module") FAILED"
+            exit 1
+        }
+    fi
+done
+
+
 # Colors for output:
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

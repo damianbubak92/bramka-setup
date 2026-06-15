@@ -2,21 +2,25 @@ package main
 
 import (
 	"flag"
+	"fmt"      // dla forceM4FReload error wrap
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
-	"strconv"
 )
 
 func main() {
 	testMode := flag.String("test", "hello",
-		"Test mode: 'hello' (HELLO/HELLO_ACK), 'data' (DATA exchange), 'spam' (multiple DATAs)")
+		"Test mode: hello|data|spam|retry|replay|retry-drop|event|hang|crash-m4f|heartbeat|silent-hang|heartbeat-busy")
+	heartbeatMs := flag.Int("heartbeat-idle-ms", 5000,
+		"Idle time before sending heartbeat PING (ms)")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("=== rpmsg-service starting (test mode: %s) ===", *testMode)
+	log.Printf("=== rpmsg-service starting (test mode: %s, heartbeat idle: %dms) ===",
+		*testMode, *heartbeatMs)
 
 	// Setup transport
 	t, err := OpenTransport()
@@ -26,7 +30,7 @@ func main() {
 	defer t.Close()
 
 	// Setup protocol layer
-	p := NewProtocol(t)
+	p := NewProtocol(t, time.Duration(*heartbeatMs)*time.Millisecond)
 	defer p.Close()
 
 	// Signal handler
@@ -58,9 +62,31 @@ func main() {
 			runEventTest(p)
 		case "hang":
 			runHangTest(p)
+		case "crash-m4f":
+			runCrashM4FTest(p)
+		case "heartbeat":
+			runHeartbeatTest(p)
+		case "silent-hang":
+			runSilentHangTest(p)
+		case "heartbeat-busy":
+			runHeartbeatBusyTest(p)
 		default:
 			log.Printf("Unknown test mode: %s", *testMode)
 		}
+	}()
+
+	// Peer-dead watcher: triggered when heartbeat PING gives up
+	go func() {
+		<-p.PeerDeadCh()
+		log.Printf("[Main] *** PEER DEAD - heartbeat detected M4F unreachable ***")
+		log.Printf("[Main] Forcing M4F reload via remoteproc...")
+		if err := forceM4FReload(); err != nil {
+			log.Printf("[Main] M4F reload failed: %v (systemd will restart us anyway)", err)
+		} else {
+			log.Printf("[Main] M4F reload successful, exiting for fresh reconnect")
+		}
+		sdNotify("STOPPING=1")
+		os.Exit(1)
 	}()
 
 	// Wait for signal
@@ -306,4 +332,152 @@ func runHangTest(p *Protocol) {
 	}
 
 	log.Println("[Test] If you see this, systemd did NOT kill us (bug!)")
+}
+
+func runCrashM4FTest(p *Protocol) {
+    time.Sleep(200 * time.Millisecond)
+    
+    log.Println("[Test] Sending HELLO...")
+    if err := p.Hello(3 * time.Second); err != nil {
+        log.Fatalf("HELLO failed: %v", err)
+    }
+    log.Println("[Test] Connected.")
+    log.Println("[Test] === M4F CRASH RECOVERY TEST ===")
+    log.Println("[Test] Will force M4F hard fault in 2s")
+    log.Println("[Test] Then observe Linux remoteproc auto-recovery")
+    
+    time.Sleep(2 * time.Second)
+    
+    log.Println("[Test] Sending DEBUG_CRASH trigger...")
+    if err := p.SendDebugCrash(); err != nil {
+        log.Printf("[Test] Failed to send crash trigger: %v", err)
+        return
+    }
+    
+    log.Println("[Test] Crash trigger sent. Watching for next 30s...")
+    log.Println("[Test] Expected:")
+    log.Println("[Test]   1. Transport will get broken pipe (M4F died)")
+    log.Println("[Test]   2. Linux remoteproc will reload firmware automatically")
+    log.Println("[Test]   3. /dev/rpmsg0 will reappear")
+    log.Println("[Test]   4. But our process needs restart to reconnect")
+    
+    // Czekamy żeby zobaczyć co się dzieje
+    for i := 1; i <= 30; i++ {
+        time.Sleep(1 * time.Second)
+        log.Printf("[Test]   ... %ds elapsed", i)
+    }
+    
+    log.Println("[Test] Done observing")
+}
+
+// forceM4FReload stops and restarts M4F firmware via remoteproc sysfs.
+// Used as recovery when heartbeat detects M4F unreachable.
+// Returns nil on success, error otherwise.
+func forceM4FReload() error {
+	const statePath = "/sys/class/remoteproc/remoteproc0/state"
+
+	log.Printf("[Recovery] Stopping M4F...")
+	if err := os.WriteFile(statePath, []byte("stop"), 0644); err != nil {
+		return fmt.Errorf("write stop: %w", err)
+	}
+
+	// Brief pause for kernel to release resources
+	time.Sleep(500 * time.Millisecond)
+
+	log.Printf("[Recovery] Starting M4F...")
+	if err := os.WriteFile(statePath, []byte("start"), 0644); err != nil {
+		return fmt.Errorf("write start: %w", err)
+	}
+
+	return nil
+}
+
+// runHeartbeatTest: sanity check - sit idle, watch PINGs flow.
+func runHeartbeatTest(p *Protocol) {
+	time.Sleep(200 * time.Millisecond)
+
+	log.Println("[Test] Sending HELLO...")
+	if err := p.Hello(3 * time.Second); err != nil {
+		log.Printf("[Test] HELLO failed: %v", err)
+		return
+	}
+	log.Println("[Test] Connected.")
+	log.Println("[Test] === HEARTBEAT SANITY TEST ===")
+	log.Println("[Test] Idling 30s - expect ~5 heartbeat PINGs from Go side")
+	log.Println("[Test] (also EVENTs from M4F every 10s will reset idle timer)")
+	log.Println("[Test] Look for: 'TX heartbeat PING' + 'ACK seq=N type=0x03'")
+
+	for i := 30; i > 0; i-- {
+		log.Printf("[Test]   ... %ds remaining", i)
+		time.Sleep(1 * time.Second)
+	}
+
+	log.Println("[Test] Done - heartbeat test complete")
+}
+
+// runSilentHangTest: force M4F into infinite loop, verify heartbeat detects.
+func runSilentHangTest(p *Protocol) {
+	time.Sleep(200 * time.Millisecond)
+
+	log.Println("[Test] Sending HELLO...")
+	if err := p.Hello(3 * time.Second); err != nil {
+		log.Fatalf("HELLO: %v", err)
+	}
+	log.Println("[Test] Connected.")
+	log.Println("[Test] === SILENT HANG DETECTION TEST ===")
+	log.Println("[Test] Triggering M4F silent hang in 2s...")
+	time.Sleep(2 * time.Second)
+
+	hangSentAt := time.Now()
+	if err := p.SendDebugHang(); err != nil {
+		log.Printf("[Test] Failed to send hang trigger: %v", err)
+		return
+	}
+	log.Println("[Test] M4F now hung. Expected timeline:")
+	log.Println("[Test]   T+5s:  idle threshold reached, Go sends PING")
+	log.Println("[Test]   T+6s:  1st retry")
+	log.Println("[Test]   T+7s:  2nd retry")
+	log.Println("[Test]   T+8s:  3rd retry")
+	log.Println("[Test]   T+9s:  GIVEUP → PEER DEAD signal")
+	log.Println("[Test]   T+9s:  forceM4FReload + os.Exit(1)")
+	log.Println("[Test]   systemd restarts service")
+
+	// Wait for peer-dead OR timeout
+	select {
+	case <-p.PeerDeadCh():
+		elapsed := time.Since(hangSentAt)
+		log.Printf("[Test] PEER DEAD detected after %v from hang trigger", elapsed)
+		log.Println("[Test] Main goroutine will now call forceM4FReload + exit")
+		// Don't return - let main's peer-dead watcher do the recovery action
+		time.Sleep(5 * time.Second)
+	case <-time.After(15 * time.Second):
+		log.Println("[Test] ERROR: peer dead NOT detected within 15s - bug?")
+	}
+}
+
+// runHeartbeatBusyTest: send DATA every 2s, verify NO PINGs fire.
+func runHeartbeatBusyTest(p *Protocol) {
+	time.Sleep(200 * time.Millisecond)
+
+	if err := p.Hello(3 * time.Second); err != nil {
+		log.Printf("[Test] HELLO failed: %v", err)
+		return
+	}
+	log.Println("[Test] Connected.")
+	log.Println("[Test] === HEARTBEAT BUSY TEST ===")
+	log.Println("[Test] Sending DATA every 2s for 30s")
+	log.Println("[Test] Expected: ZERO 'TX heartbeat PING' lines in log")
+	log.Println("[Test] (because traffic resets idle timer every 2s)")
+
+	for i := 1; i <= 15; i++ {
+		payload := []byte(fmt.Sprintf("busy traffic #%d", i))
+		start := time.Now()
+		if err := p.SendData(payload, 1*time.Second); err != nil {
+			log.Printf("[Test] DATA #%d failed: %v", i, err)
+		} else {
+			log.Printf("[Test] DATA #%d delivered (RTT %v)", i, time.Since(start))
+		}
+		time.Sleep(2 * time.Second)
+	}
+	log.Println("[Test] Done - count PINGs above (should be 0)")
 }
