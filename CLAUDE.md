@@ -161,11 +161,11 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 ## Current Status (UPDATE PO KAŻDEJ SESJI)
 
 ### ✅ Done
-- Setup.sh działa po świeżym flash (network, tools, M4F backup, Go install)
-- Custom M4F firmware z heartbeat working (deploy manual via Deploy-M4F)
-- Go service zbudowany z heartbeat patches
+- Setup.sh działa po świeżym flash (network, tools, M4F backup, Go install, watchdog)
+- Custom M4F firmware działa (deploy manual via Deploy-M4F; M4F NIE inicjuje heartbeatu — opcja A)
+- Go service zbudowany i działa
 - Systemd unit safe (`-test hello`, `Restart=on-failure`, `StartLimitBurst=3`)
-- HELLO/HELLO_ACK handshake działa, heartbeat tickuje (RTT 4-6ms)
+- HELLO/HELLO_ACK handshake działa, heartbeat Linux→M4F tickuje (RTT 4-6ms)
 - Watchdog systemd kickowany co 5s
 - Repo z executable scripts + LF endings
 - DHCP reservation w routerze
@@ -176,32 +176,35 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **Warstwa D w setup (15.06.2026, commit dabee5b)**: `modules/05-watchdog.sh` (idempotentny, `RuntimeWatchdogSec=30`) + posprzątany `setup.sh`. Zweryfikowane: `lsof /dev/watchdog0` → systemd (PID 1) trzyma device, `wdctl` busy = OK.
 - **Cold-boot race fix (15.06.2026)**: `rpmsg-service` padał po reboocie (`OpenTransport: no rpmsg_chrdev`, race startowy → `StartLimitBurst`). Fix w `transport.go`: `waitForM4FChrdev` czeka na `/dev/rpmsg*` do 20s (margines pod `TimeoutStartSec=30s`). Zweryfikowane: serwis wstaje sam po reboocie.
 
-### ⏳ Pending — Priorytet 1 (NOWY — recovery fix po silent-hang)
-- ✅ **Go: recovery silent-hang `remoteproc stop` → clean `reboot`** — `forceM4FReload()` usunięty, `recoverByReboot()` robi `syscall.Sync()` + `systemctl reboot` (fallback: kernel reboot, last resort Warstwa D). Decyzja: zawsze clean reboot na PEER DEAD (nie zgadujemy „żywy vs martwy" — błędne zgadnięcie = wieszanie SoC). **Zweryfikowane na żywo 15.06.2026**: PEER DEAD 7.95s → clean reboot → auto-recovery ~70s. Commit cb61155.
-- ✅ **Warstwa D zweryfikowana** (`lsof /dev/watchdog0` → systemd trzyma device).
-- ✅ **Uspójnić README/docs** (15.06.2026) — README + `docs/WATCHDOG.md` poprawione (`Restart=on-failure`, heartbeat jednokierunkowy, M4F-death recovery = clean reboot, Go 1.23.x, Warstwa D via moduł 05). `system/configure-watchdog.sh` usunięty (redundantny z modułem 05).
+### 🔜 NASTĘPNA SESJA — zacznij tu
+Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabela Recovery Flows + sekcja DONE niżej). Realnie zostało:
+1. 🛒 **Industrial SD** (Samsung Pro Endurance / SanDisk Industrial XI) — przed produkcją i przed kolejnymi reset-testami (consumer GOODRAM przeżyła 4 twarde resety 15.06 ale to nie nośnik prod).
+2. **Transport reconnect re-detect** (P2) — zweryfikować/dopracować że `transport.go` re-detektuje `/dev/rpmsg*` przy reconnect, nie cache'uje (cold-boot wait już jest, chodzi o runtime reconnect).
+3. **M4F EVENT scaffolding cleanup** (P3) — nie wysyłać autonomicznych EVENT gdy brak aktywnej sesji Linux (noise GIVEUP/„ACK for unknown").
+4. Drobne: `panic_on_oops=1`, persistent restart counter, redeploy Go dla kosmetyki tekstu crash-testu.
+5. Long-term: Warstwa C (DMSC), OTA, bazy, health monitoring (niżej).
 
-### ⏳ Pending — Priorytet 2 (przed produkcją)
-- ✅ **HW watchdog (Warstwa D)** — skonfigurowany (`modules/05-watchdog.sh`, `RuntimeWatchdogSec=30`) i zweryfikowany kernel-panic testem 15.06.2026. (Opcjonalnie jeszcze: `panic_on_oops=1` żeby oops eskalował do panic → watchdog łapie.)
-- **Transport device discovery**: zweryfikować że `transport.go` re-detect `/dev/rpmsg*` przy reconnect (nie cache)
+### ✅ DONE — Recovery fix + crash testy (15.06.2026)
+- **Recovery silent-hang**: `forceM4FReload` (remoteproc stop, wieszał SoC) → `recoverByReboot()` (`syscall.Sync()` + `systemctl reboot`, fallback kernel reboot, last resort Warstwa D). Zasada: zawsze clean reboot na PEER DEAD. Commit cb61155.
+- **Warstwa D** (HW watchdog): `modules/05-watchdog.sh` (`RuntimeWatchdogSec=30`) — była zgubiona przy re-flashu, przywrócona. `lsof /dev/watchdog0` → systemd.
+- **README/docs uspójnione**, `system/configure-watchdog.sh` usunięty (redundantny z modułem 05).
+- **4 crash testy PASS** (interaktywnie, ad-hoc):
+  1. `heartbeat-busy` — zero PINGów przy busy traffic (regresja opcji A)
+  2. `silent-hang` — PEER DEAD 7.95s → clean reboot → auto-recovery ~70s
+  3. `crash-m4f` — hardfault → SOC reset → auto-recovery ~70s, bez korupcji FS
+  4. `kernel panic` (`echo c`, `panic=0`) — HW watchdog (Warstwa D) zresetował SoC → auto-recovery
+- Pattern crash testów (NIGDY pod systemd):
+  ```powershell
+  ssh root@bramka "systemctl stop rpmsg-service"
+  ssh -t root@bramka "/root/bramka-services/rpmsg-service/rpmsg-service -test <mode>"
+  # reset-testy (silent-hang/crash-m4f) rebootują bramkę; przedtem: ssh ... "sync"
+  ```
 
 ### ⏳ Pending — Priorytet 3 (nice-to-have)
-- Last-resort `systemctl reboot` w `forceM4FReload` jeśli sysfs stop/start padnie
 - Persistent restart counter (`/var/lib/bramka/restart_count` + timestamp) z alarmem >3/dzień
 - Dedicated `m4f-reload.service` (Type=oneshot) dla security hardening (Go może być non-root)
 - **M4F EVENT scaffolding cleanup**: `doPeriodicTick` wysyła testowy EVENT co 10s. Gdy Linux odłączony (stop/restart service), EVENT wyczerpuje retry → `GIVEUP type=0x20` + „ACK for unknown" noise (widziane w heartbeat-busy 15.06.2026, nie-błąd). Produkcyjnie: nie wysyłać autonomicznych EVENT bez aktywnej sesji.
-
-### ⏳ Pending — Crash testy (NASTĘPNY KROK — Priorytet 1 done)
-1. ✅ **heartbeat-busy** (15.06.2026) — PASS: 12× DATA co 2s, **zero PINGów** po obu stronach (Go i M4F). Busy traffic trzyma idle < 5s. M4F `RX PING → reply ACK` OK.
-2. ✅ **silent-hang** (15.06.2026) — po fixie recovery **PASS**: PEER DEAD w 7.95s → `recoverByReboot` (clean `systemctl reboot`) → bramka wróciła **sama** w ~70s, serwis auto-reconnect. (Przed fixem: `forceM4FReload`/remoteproc stop wieszał cały SoC, ręczny reset.)
-3. ✅ **crash-m4f** (15.06.2026) — **PASS**: `TX DEBUG_CRASH` → M4F hardfault → `SOC_generateSwWarmResetMcuDomain` → pełny reset SoC (`uptime: up 0 min`) → bramka wróciła sama ~70s, serwis auto-reconnect, bez korupcji FS. Test na consumer SD (zaakceptowane ryzyko). UWAGA: to twardy reset (bez sync Linuxa) — robić `sync` przed; industrial SD przed produkcją.
-
-Wszystkie **interaktywnie**, NIGDY autonomicznie pod systemd. Pattern:
-```powershell
-ssh root@bramka "systemctl stop rpmsg-service"
-ssh -t root@bramka "/root/bramka-services/rpmsg-service/rpmsg-service -test <mode>"
-ssh root@bramka "systemctl start rpmsg-service"
-```
+- `panic_on_oops=1` (oops → panic → watchdog łapie)
 
 ### ⏳ Pending — Long-term (poza obecnym sprintem)
 - **Warstwa C (DMSC reset)**: M4F triggeruje DMSC reset tylko A53 cluster (Linux), bez resetu siebie. Wymaga TI-SCI API research w MCU+ SDK 12.00 (`Sciclient_procBootRequestProcessor` + reset sequence dla TISCI_DEV_A53SS0_0..3). Fallback po 30s: pełny SoC reset.
