@@ -1,27 +1,56 @@
 [Unit]
 Description=RPMsg Bridge Service (Linux <-> M4F)
+Documentation=https://github.com/damianbubak92/bramka-setup
 After=network.target
+# Czekaj na M4F remoteproc zanim wystartujesz - jeśli M4F nie running,
+# OpenTransport nie znajdzie /dev/rpmsg* i service padnie od razu.
+# (opcjonalnie - można aktywować po dodaniu rpmsg-wait service):
+# Requires=remoteproc-m4f.service
+# After=remoteproc-m4f.service
 
 [Service]
 Type=notify
-ExecStart=/root/bramka-services/rpmsg-service/rpmsg-service -test crash-m4f
+ExecStart=/root/bramka-services/rpmsg-service/rpmsg-service -test hello
 WorkingDirectory=/root/bramka-services/rpmsg-service
 
-# Restart configuration
-Restart=always
+# === RESTART POLICY ===
+# on-failure (NIE always!) - restartuj tylko gdy crash/non-zero exit.
+# Manualne stop (systemctl stop) NIE triggeruje restart.
+Restart=on-failure
 RestartSec=2
 
-# Watchdog: systemd will SIGABRT if we don't kick within 10s
+# Safety net - jeśli serwis pada >3 razy w 60s, systemd przestaje restartować.
+# Chroni przed infinite restart loop (np. gdy M4F crashuje + crash-m4f w ExecStart).
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# === WATCHDOG ===
+# systemd zabije serwis SIGABRT jeśli nie wyśle WATCHDOG=1 w ciągu 10s.
+# Go service kickuje co 5s (WATCHDOG_USEC/2).
 WatchdogSec=10s
 
-# Resource limits
+# === TIMEOUTS ===
+# Type=notify czeka na READY=1 - dajemy 30s na inicjalizację (transport, hello).
 TimeoutStartSec=30s
 TimeoutStopSec=15s
 
-# Logging
+# === LOGGING ===
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=rpmsg-service
+
+# === RESOURCE LIMITS (opcjonalnie - włącz gdy będzie potrzeba) ===
+# MemoryMax=256M
+# CPUQuota=50%
+
+# === SECURITY HARDENING (opcjonalnie - aktywuj gdy testowanie zakończone) ===
+# Service pisze do /sys/class/remoteproc/ więc nie może być całkiem zsandboxowany,
+# ale można ograniczyć dostęp do innych zasobów:
+# ProtectSystem=strict
+# ReadWritePaths=/sys/class/remoteproc /tmp /var/log
+# ProtectHome=true
+# NoNewPrivileges=true
+# PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
