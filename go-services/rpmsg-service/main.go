@@ -97,11 +97,36 @@ func main() {
 	sdNotify("STOPPING=1")
 }
 
+// helloWithRetry sends HELLO and retries with exponential backoff (1,2,4,8,16s).
+// Catches the startup race where Go comes up before M4F is ready to reply
+// HELLO_ACK (e.g. after a SoC reset M4F boots faster than Linux, but the
+// rpmsg endpoint may still be settling). Returns nil once connected, or the
+// last error after all attempts are exhausted.
+func helloWithRetry(p *Protocol) error {
+	const maxAttempts = 5
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err = p.Hello(3 * time.Second); err == nil {
+			if attempt > 1 {
+				log.Printf("[Test] HELLO succeeded on attempt %d/%d", attempt, maxAttempts)
+			}
+			return nil
+		}
+		log.Printf("[Test] HELLO attempt %d/%d failed: %v", attempt, maxAttempts, err)
+		if attempt < maxAttempts {
+			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			log.Printf("[Test] Retrying HELLO in %v...", backoff)
+			time.Sleep(backoff)
+		}
+	}
+	return fmt.Errorf("HELLO failed after %d attempts: %w", maxAttempts, err)
+}
+
 func runHelloTest(p *Protocol) {
 	time.Sleep(200 * time.Millisecond) // give dispatcher time to start
 
-	log.Println("[Test] Sending HELLO...")
-	if err := p.Hello(3 * time.Second); err != nil {
+	log.Println("[Test] Sending HELLO (with retry)...")
+	if err := helloWithRetry(p); err != nil {
 		log.Printf("[Test] HELLO failed: %v", err)
 		return
 	}

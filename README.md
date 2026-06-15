@@ -32,9 +32,16 @@ bramka-setup/
 
 ### 1. Instalacja bramki (od zera)
 ```bash
-git clone <repo>
+# 1. Świeży flash karty SD (Etcher)
+# 2. SSH do bramki:
+git clone https://github.com/damianbubak92/bramka-setup
 cd bramka-setup
-./setup.sh
+sudo ./setup.sh    # network + tools + m4f firmware backup + GO INSTALL
+reboot
+# 3. Z laptopa:
+Deploy-M4F                                            # custom M4F firmware
+Deploy-Go -ServiceName rpmsg-service -Build           # build Go binary
+Install-GoService -ServiceName rpmsg-service          # systemd unit
 ```
 
 ### 2. Workflow developerski

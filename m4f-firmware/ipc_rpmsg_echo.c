@@ -9,12 +9,65 @@
 #include "ti_drivers_open_close.h"
 #include "ti_board_open_close.h"
 #include "protocol.h"
+#include <drivers/soc.h>
 
 /* Linux chrdev expects endpoint 14 */
 #define LINUX_CHRDEV_ENDPOINT       (14U)
 #define LINUX_CHRDEV_SERVICE        "rpmsg_chrdev"
 #define MAX_MSG_SIZE                (256u)
 #define LINUX_CORE_ID               CSL_CORE_ID_A53SS0_0
+
+/* ========================================================================== */
+/*  CUSTOM HARD FAULT HANDLER                                                 */
+/* ========================================================================== */
+/*
+ * Domyślny SDK HwiP_hardFault_handler tylko spin'uje w while(loop) - Linux
+ * nie ma jak wykryć że M4F died. Override przez modyfikację vector table.
+ *
+ * Strategia:
+ *   1. Disable interrupts
+ *   2. Wyślij IPC_NOTIFY_RP_MBOX_CRASH do Linux przez mailbox (SDK API)
+ *      - Linux remoteproc framework rozpozna ten message i triggerze recovery
+ *   3. Brief delay - daj mailbox czas na dostarczenie
+ *   4. SCB AIRCR SYSRESETREQ jako backup - resetuje M4F core (jeśli mailbox
+ *      nie zadziałał, Linux wykryje przez RPMsg silence)
+ */
+
+extern uint32_t gHwiP_vectorTable[];
+
+/* ARM Cortex-M4 System Control Block AIRCR register */
+#define SCB_AIRCR_ADDR        (0xE000ED0CUL)
+#define SCB_AIRCR_VECTKEY     (0x05FAUL << 16)
+#define SCB_AIRCR_SYSRESETREQ (1UL << 2)
+
+void myHardFault_Handler(void) __attribute__((interrupt));
+void myHardFault_Handler(void)
+{
+    /* M4F hard fault → triggerue full SoC reset przez TI SDK API.
+     * Per TI forum: AM62 nie supportuje per-core reset, więc i tak resetujemy cały SoC.
+     * To clean recovery - wszystko dostaje fresh boot. */
+    
+    /* Disable interrupts */
+    __asm volatile ("cpsid i");
+    
+    /* TI-blessed SoC reset (na AM62 propaguje do obu domen) */
+    SOC_generateSwWarmResetMcuDomain();
+    
+    /* Should never reach here */
+    while (1) { }
+}
+
+static void installCustomHardFaultHandler(void)
+{
+    /* Override SDK default HardFault_Handler which only spins in while loop.
+     * Our handler triggers full SoC reset via TI SDK API. */
+    gHwiP_vectorTable[3] = (uint32_t)&myHardFault_Handler;
+    
+    __asm volatile ("dsb" ::: "memory");
+    __asm volatile ("isb" ::: "memory");
+
+    DebugP_log("[M4F] Custom HardFault_Handler installed (SOC_generateSwWarmResetMcuDomain)\r\n");
+}
 
 /* RPMessage object - musi być global */
 static RPMessage_Object gRecvMsgObject;
@@ -63,6 +116,13 @@ typedef struct {
 
 static pending_ack_t gPendingAcks[MAX_PENDING_ACKS];
 
+/* === HEARTBEAT ===
+ * M4F does NOT initiate heartbeat. The asymmetry is intentional: only Linux
+ * pings M4F (Linux can reset M4F via remoteproc; M4F cannot reset Linux until
+ * Warstwa C / DMSC is implemented). M4F only replies ACK to incoming PING
+ * (see case MSG_PING). */
+
+
 static pending_ack_t* findFreePendingSlot(void)
 {
     for (int i = 0; i < MAX_PENDING_ACKS; i++) {
@@ -110,7 +170,7 @@ static void linuxMsgCallback(RPMessage_Object *obj, void *arg,
     gRxBuffer.dataLen = dataLen;
     gRxBuffer.remoteCoreId = remoteCoreId;
     gRxBuffer.remoteEndPt = remoteEndPt;
-    
+
     /* Atomic ustawienie flagi - signal dla main loop */
     gRxBuffer.pending = 1;
 
@@ -232,21 +292,23 @@ static void processEventRetries(void)
         if (elapsed < timeout_us) continue;
 
         if (pa->retry_count >= MAX_RETRIES) {
-            DebugP_log("[M4F] GIVEUP EVENT seq=%u (%u retries exhausted)\r\n",
-                        (unsigned)pa->seq, (unsigned)pa->retry_count);
+            DebugP_log("[M4F] GIVEUP seq=%u type=0x%02X (%u retries exhausted)\r\n",
+                        (unsigned)pa->seq,
+                        (unsigned)pa->msg_type,
+                        (unsigned)pa->retry_count);
+
             pa->in_use = 0;
             continue;
         }
 
         pa->retry_count++;
         pa->sent_at_us = now;
-        DebugP_log("[M4F] RETRY EVENT seq=%u count=%u\r\n",
-                    (unsigned)pa->seq, (unsigned)pa->retry_count);
+        DebugP_log("[M4F] RETRY seq=%u type=0x%02X count=%u\r\n",
+            (unsigned)pa->seq, (unsigned)pa->msg_type, (unsigned)pa->retry_count);
 
         sendProtocolMsg(pa->msg_type, pa->seq, pa->payload, pa->payload_len);
     }
 }
-
 
 static void handleLinuxMessage(void)
 {
@@ -294,6 +356,7 @@ static void handleLinuxMessage(void)
             /* Reset protocol state on new HELLO (handles Linux restart) */
             gTheirLastSeq = 0;
             gMySeq = 0;
+            /* Note: don't clear gPendingAcks here - retries will time out naturally */
             DebugP_log("[M4F] Protocol state RESET (new session)\r\n");
 
             /* Reply HELLO_ACK with the same seq */
@@ -341,10 +404,12 @@ static void handleLinuxMessage(void)
             if (pa != NULL) {
                 uint64_t rtt_us = ClockP_getTimeUsec() - pa->sent_at_us;
                 uint32_t rtt_ms = (uint32_t)(rtt_us / 1000);
-                DebugP_log("[M4F] ACK seq=%u (RTT %u ms, retries=%u)\r\n",
+                DebugP_log("[M4F] ACK seq=%u type=0x%02X (RTT %u ms, retries=%u)\r\n",
                             (unsigned)msg_seq,
+                            (unsigned)pa->msg_type,
                             (unsigned)rtt_ms,
                             (unsigned)pa->retry_count);
+
                 pa->in_use = 0;
             } else {
                 DebugP_log("[M4F] ACK for unknown seq=%u (already acked or never sent?)\r\n",
@@ -354,9 +419,45 @@ static void handleLinuxMessage(void)
         }
 
         case MSG_PING: {
-            DebugP_log("[M4F] PING seq=%u - replying PONG\r\n", (unsigned)msg_seq);
-            sendProtocolMsg(MSG_PONG, msg_seq, NULL, 0);
+            /* Heartbeat from Linux - reply with generic ACK.
+             * MSG_PONG is deprecated, all confirmations go through MSG_ACK now.
+             * M4F never initiates PING itself (one-way heartbeat: Linux->M4F). */
+            DebugP_log("[M4F] RX heartbeat PING seq=%u - replying ACK\r\n",
+                        (unsigned)msg_seq);
+            sendAck(msg_seq);
             break;
+        }
+
+        case MSG_DEBUG_CRASH: {
+            DebugP_log("[M4F] *** DEBUG: CRASH TRIGGER RECEIVED ***\r\n");
+            DebugP_log("[M4F] Forcing hard fault via undefined instruction in 100ms\r\n");
+            DebugP_log("[M4F] Expect: HardFault_Handler -> SOC reset -> bramka reboot\r\n");
+            
+            ClockP_usleep(100000);
+            
+            /* Undefined Thumb-2 instruction - guaranteed hard fault on Cortex-M */
+            __asm volatile (".word 0xDEADDEAD");
+            
+            /* Should never reach here */
+            while (1) { ; }
+            break;
+        }
+
+        case MSG_DEBUG_HANG: {
+                DebugP_log("[M4F] *** DEBUG: SILENT HANG TRIGGER RECEIVED ***\r\n");
+                DebugP_log("[M4F] Entering infinite loop - all M4F processing stops\r\n");
+                DebugP_log("[M4F] Linux heartbeat PINGs should giveup after ~5+3s\r\n");
+                DebugP_log("[M4F] Recovery: Linux must force m4f-reload\r\n");
+
+                /* Disable interrupts - even Linux remoteproc stop won't help.
+                * Only full SoC reset or external power cycle recovers. */
+                __asm volatile ("cpsid i");
+
+                /* Completely freeze - no ClockP_usleep, no anything */
+                while (1) {
+                    /* nop */
+                }
+                break;  /* never reached */
         }
 
         default:
@@ -500,6 +601,9 @@ void ipc_rpmsg_echo_main(void *args)
     int32_t status;
     RPMessage_CreateParams createParams;
     
+    /* Install custom HardFault_Handler for Linux recovery */
+    installCustomHardFaultHandler();
+
     DebugP_log("[M4F] Application starting...\r\n");
     
     /* Inicjalizacja bufora */
@@ -540,7 +644,7 @@ void ipc_rpmsg_echo_main(void *args)
 
     gLastTickTime = ClockP_getTimeUsec();
     
-    /* Main loop - cooperative scheduler */
+/* Main loop - cooperative scheduler */
     while (!gbShutdown) {
         /* 1. Sprawdź czy callback dał nam wiadomość */
         if (gRxBuffer.pending) {
@@ -552,6 +656,7 @@ void ipc_rpmsg_echo_main(void *args)
         
         /* 3. Tu możesz dodać: sample_sensors(), check_rules(), control_relays() */
         processEventRetries();
+
         /* 4. Drobny sleep żeby CPU nie kręcił w pustce */
         ClockP_usleep(1000);  /* 1ms */
     }

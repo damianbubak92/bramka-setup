@@ -169,30 +169,10 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - Watchdog systemd kickowany co 5s
 - Repo z executable scripts + LF endings
 - DHCP reservation w routerze
-
-### ⏳ Pending — Priorytet 1 (kolejna sesja)
-- **Wywal heartbeat z M4F** — opcja A z dyskusji 15.06.2026:
-  - Usunąć globale `gLastRxTimeUs`, `gPingInFlight`, `HEARTBEAT_IDLE_US`
-  - Usunąć funkcje `sendHeartbeatPing()`, `doHeartbeatCheck()`
-  - W `linuxMsgCallback` usunąć update `gLastRxTimeUs`
-  - W `case MSG_HELLO` usunąć reset heartbeat state
-  - W main loop usunąć wywołanie `doHeartbeatCheck()`
-  - W `case MSG_ACK` usunąć clearing `gPingInFlight`
-  - W `processEventRetries` usunąć specjalną logikę dla `MSG_PING` (HEARTBEAT FAILED + TODO Warstwa C)
-  - **Zostaje** w M4F: `case MSG_PING: sendAck(seq)` (reply only, bez własnej inicjacji)
-- **Dodaj retry HELLO w Go** — exponential backoff (1s, 2s, 4s, 8s, 16s)
-  ```go
-  for attempt := 1; attempt <= 5; attempt++ {
-      err := p.Hello(3 * time.Second)
-      if err == nil { break }
-      log.Printf("[Test] HELLO attempt %d/5 failed: %v", attempt, err)
-      if attempt < 5 {
-          backoff := time.Duration(1<<(attempt-1)) * time.Second
-          time.Sleep(backoff)
-      }
-  }
-  ```
-- Sanity test po zmianach (heartbeat dalej działa, HELLO retry catches startup race)
+- **Priorytet 1 (15.06.2026, zweryfikowane na bramce)**: M4F heartbeat-init usunięty (opcja A) — M4F nie inicjuje PINGów, tylko odpowiada `sendAck()` na PING od Go (jednokierunkowy heartbeat Linux→M4F). `m4f-watch` potwierdza: zero `TX heartbeat PING`, jest `RX heartbeat PING - replying ACK`.
+- **Priorytet 1 (15.06.2026, zweryfikowane)**: Go HELLO retry z exponential backoff (1/2/4/8s, 5 prób) w `helloWithRetry()` (`go-services/rpmsg-service/main.go`). Log startowy: `Sending HELLO (with retry)...`.
+- **Bugfix (15.06.2026)**: M4F `case MSG_PING` odpowiadał deprecated `MSG_PONG` → zmienione na `sendAck()`. Go czeka na `MSG_ACK`, więc PONG groził fałszywym `PEER DEAD` → restart loop.
+- `protocol.h` zsynchronizowane (`shared/` == `m4f-firmware/`).
 
 ### ⏳ Pending — Priorytet 2 (przed produkcją)
 - **HW watchdog**: sprawdzić i skonfigurować `/dev/watchdog` (`RuntimeWatchdogSec=30s` w systemd, `panic_on_oops=1`)
@@ -203,7 +183,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - Persistent restart counter (`/var/lib/bramka/restart_count` + timestamp) z alarmem >3/dzień
 - Dedicated `m4f-reload.service` (Type=oneshot) dla security hardening (Go może być non-root)
 
-### ⏳ Pending — Crash testy (DO ZROBIENIA PO PRIORYTET 1)
+### ⏳ Pending — Crash testy (NASTĘPNY KROK — Priorytet 1 done)
 1. **heartbeat-busy** — regresja, weryfikacja że busy traffic nie wywołuje PINGów
 2. **silent-hang** — core test, wykrycie + forceM4FReload + recovery
 3. **crash-m4f** — re-verify hardfault → SoC reset
@@ -288,6 +268,15 @@ cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-15 (wieczór) — Priorytet 1 done
+- **M4F**: usunięty heartbeat-init (opcja A) — `sendHeartbeatPing()`, `doHeartbeatCheck()`, globale `gLastRxTimeUs`/`gPingInFlight`/`HEARTBEAT_IDLE_US`, blok `MSG_PING` w `processEventRetries`. Zostaje reply `sendAck()` na PING od Go.
+- **M4F bugfix**: `case MSG_PING` reply `MSG_PONG` → `sendAck()` (deprecated PONG łamał heartbeat Go).
+- **Go**: dodany `helloWithRetry()` (exp backoff 1/2/4/8s) podpięty w `runHelloTest`.
+- Zweryfikowane na bramce (Deploy-M4F + Deploy-Go): M4F nie pinguje, Go ma retry, idle stabilny bez restartów, RTT 4-6ms.
+- **Lesson learned: projekt CCS Theia M4F to OSOBNA kopia źródeł, niezależna od repo.** Edycja repo `m4f-firmware/*.c` NIE trafia do `Deploy-M4F` bez ręcznego skopiowania do projektu CCS — build leci z CCS, nie z repo. Zawsze sync repo→CCS przed rebuildem.
+- **Lesson: czyść terminal przed zbieraniem logów** — stary boot log (relative time od remoteproc reload) zmylił diagnozę „repo ≠ device".
+- **TODO sprzątanie (nice-to-have)**: w Go `case MSG_PING` (reply ACK) i `case MSG_PONG` to teraz martwy kod (M4F już nie inicjuje PINGów). `sendHeartbeatPing()` w Go ZOSTAJE (kierunek Linux→M4F).
 
 ### 2026-06-15
 - Disaster recovery z padniętej karty SD (crash testy + Restart=always = bootloop, FAT corruption)

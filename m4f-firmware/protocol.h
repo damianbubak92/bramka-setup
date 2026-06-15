@@ -55,11 +55,13 @@
 #define MSG_HELLO         0x01u  /* Linux -> M4F: connection request */
 #define MSG_HELLO_ACK     0x02u  /* M4F -> Linux: connection accepted */
 #define MSG_PING          0x03u  /* Bidir: heartbeat probe */
-#define MSG_PONG          0x04u  /* Bidir: heartbeat reply */
+#define MSG_PONG          0x04u  /* DEPRECATED, do not send */
 #define MSG_DATA          0x10u  /* Bidir: application data (needs ACK) */
 #define MSG_ACK           0x11u  /* Bidir: ack for DATA/EVENT seq=N */
 #define MSG_EVENT         0x20u  /* M4F -> Linux: async event (needs ACK) */
 #define MSG_ERROR         0xFFu  /* Bidir: protocol error notification */
+#define MSG_DEBUG_CRASH   0xF0    // DEBUG: force M4F hard fault (NEVER in production)
+#define MSG_DEBUG_HANG    0xF1u   /* DEBUG: force M4F silent hang (NEVER in production) */
 
 /* ========================================================================= *
  * CONNECTION STATES
@@ -68,6 +70,8 @@
 #define CONN_NOT_CONNECTED   0u
 #define CONN_CONNECTED       1u
 #define CONN_DEAD            2u
+
+
 
 /* ========================================================================= *
  * WIRE FORMAT
