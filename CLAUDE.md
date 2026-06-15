@@ -116,7 +116,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 
 | Scenariusz | Detection | Recovery action | Czas total |
 |---|---|---|---|
-| **M4F silent hang** | Go heartbeat (5s idle + 4s retries = 9s) | clean `reboot` (`recoverByReboot`: sync + systemctl reboot). Stary `remoteproc stop` wieszał SoC — usunięty. Backup: Warstwa D | ~70s |
+| **M4F silent hang** | Go heartbeat (~8s) ✅ | clean `reboot` (`recoverByReboot`: sync + systemctl reboot) ✅ zweryfikowane 15.06.2026. Stary `remoteproc stop` wieszał SoC — usunięty. Backup: Warstwa D | ~70s |
 | **M4F hardfault** | M4F custom hardfault handler | `SOC_generateSwWarmResetMcuDomain` (cały SoC reset) | ~15-20s |
 | **Linux kernel panic** | systemd HW watchdog `/dev/watchdog` | Reset całego SoC (60s timeout) | ~60-75s |
 | **Go service hang** | systemd software watchdog `WatchdogSec=10s` | SIGABRT + Restart=on-failure | ~12-15s |
@@ -177,7 +177,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **Cold-boot race fix (15.06.2026)**: `rpmsg-service` padał po reboocie (`OpenTransport: no rpmsg_chrdev`, race startowy → `StartLimitBurst`). Fix w `transport.go`: `waitForM4FChrdev` czeka na `/dev/rpmsg*` do 20s (margines pod `TimeoutStartSec=30s`). Zweryfikowane: serwis wstaje sam po reboocie.
 
 ### ⏳ Pending — Priorytet 1 (NOWY — recovery fix po silent-hang)
-- ✅ **Go: recovery silent-hang `remoteproc stop` → clean `reboot`** (kod gotowy) — `forceM4FReload()` usunięty, `recoverByReboot()` robi `syscall.Sync()` + `systemctl reboot` (fallback: kernel reboot, last resort Warstwa D). Decyzja: zawsze clean reboot na PEER DEAD (nie zgadujemy „żywy vs martwy" — błędne zgadnięcie = wieszanie SoC). **Live re-test `silent-hang` dopiero po industrial SD** (powoduje reboot).
+- ✅ **Go: recovery silent-hang `remoteproc stop` → clean `reboot`** — `forceM4FReload()` usunięty, `recoverByReboot()` robi `syscall.Sync()` + `systemctl reboot` (fallback: kernel reboot, last resort Warstwa D). Decyzja: zawsze clean reboot na PEER DEAD (nie zgadujemy „żywy vs martwy" — błędne zgadnięcie = wieszanie SoC). **Zweryfikowane na żywo 15.06.2026**: PEER DEAD 7.95s → clean reboot → auto-recovery ~70s. Commit cb61155.
 - ✅ **Warstwa D zweryfikowana** (`lsof /dev/watchdog0` → systemd trzyma device).
 - ✅ **Uspójnić README/docs** (15.06.2026) — README + `docs/WATCHDOG.md` poprawione (`Restart=on-failure`, heartbeat jednokierunkowy, M4F-death recovery = clean reboot, Go 1.23.x, Warstwa D via moduł 05). `system/configure-watchdog.sh` usunięty (redundantny z modułem 05).
 
@@ -193,7 +193,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 
 ### ⏳ Pending — Crash testy (NASTĘPNY KROK — Priorytet 1 done)
 1. ✅ **heartbeat-busy** (15.06.2026) — PASS: 12× DATA co 2s, **zero PINGów** po obu stronach (Go i M4F). Busy traffic trzyma idle < 5s. M4F `RX PING → reply ACK` OK.
-2. ⚠️ **silent-hang** (15.06.2026) — detekcja OK (GIVEUP T+9s), **recovery PADŁ**: `forceM4FReload` (remoteproc stop) zawiesił cały SoC → ręczny reset. Warstwa D nieaktywna (nie była w setup). Potwierdza brak per-core reset M4F. **NIE powtarzać przed fixem recovery (P1 nowy).**
+2. ✅ **silent-hang** (15.06.2026) — po fixie recovery **PASS**: PEER DEAD w 7.95s → `recoverByReboot` (clean `systemctl reboot`) → bramka wróciła **sama** w ~70s, serwis auto-reconnect. (Przed fixem: `forceM4FReload`/remoteproc stop wieszał cały SoC, ręczny reset.)
 3. **crash-m4f** — re-verify hardfault → SoC reset (czysta ścieżka TI `SOC_generateSwWarmResetMcuDomain`; dopiero po industrial SD)
 
 Wszystkie **interaktywnie**, NIGDY autonomicznie pod systemd. Pattern:
@@ -276,6 +276,12 @@ cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-15 (noc, finał) — silent-hang recovery PASS
+- **Re-test `silent-hang` po fixie: PASS.** PEER DEAD w 7.95s → `recoverByReboot` → `systemctl reboot` (M4F log: „The system will reboot now!") → bramka wróciła SAMA w ~70s, `rpmsg-service active (running)`, heartbeat tyka. Dokładne przeciwieństwo poprzedniego wedge'a SoC.
+- Cała architektura recovery działa end-to-end: detekcja (Go heartbeat) + akcja (clean reboot) + auto-start po boocie (cold-boot fix) + backup (Warstwa D).
+- Test zrobiony na consumer SD (GOODRAM) — clean reboot przeżyła; industrial SD nadal TODO przed `crash-m4f` i produkcją.
+- **Priorytet 1 NOWY zamknięty** (recovery fix + Warstwa D + docs cleanup, commity cb61155 + ad80a8e).
 
 ### 2026-06-15 (noc, najpóźniej) — cold-boot fix + recovery fix
 - **Warstwa D zweryfikowana** po reboocie: `lsof /dev/watchdog0` → systemd (PID 1) trzyma, `wdctl` busy = OK. Ostatnia linia obrony wróciła.
