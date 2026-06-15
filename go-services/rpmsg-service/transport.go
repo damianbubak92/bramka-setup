@@ -15,6 +15,13 @@ const (
 	m4fHwId      = "5000000.m4fss"
 	chrdevSuffix = "rpmsg_chrdev"
 	rxBufSize    = 512
+
+	// Cold-boot race: at boot systemd may start us before M4F has announced
+	// its rpmsg_chrdev endpoint (and the kernel created /dev/rpmsgN). Wait for
+	// the device instead of exiting immediately. Bounded well under the unit's
+	// TimeoutStartSec=30s (READY=1 is sent right after OpenTransport).
+	deviceWaitTimeout  = 20 * time.Second
+	deviceWaitInterval = 500 * time.Millisecond
 )
 
 // Transport encapsulates RPMsg device access.
@@ -29,9 +36,9 @@ type Transport struct {
 
 // OpenTransport finds the M4F RPMsg chrdev and opens it for RDWR.
 func OpenTransport() (*Transport, error) {
-	devPath, err := findM4FChrdev()
+	devPath, err := waitForM4FChrdev(deviceWaitTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("findM4FChrdev: %w", err)
+		return nil, err
 	}
 
 	f, err := os.OpenFile(devPath, os.O_RDWR, 0)
@@ -135,6 +142,32 @@ func (t *Transport) readerLoop() {
 		default:
 			log.Printf("[Transport] WARN: rxChan full, dropping %d bytes", n)
 		}
+	}
+}
+
+// waitForM4FChrdev polls for the M4F rpmsg chrdev until it appears or timeout.
+// Handles the cold-boot race where the service starts before M4F has announced
+// its rpmsg_chrdev endpoint.
+func waitForM4FChrdev(timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	attempt := 0
+	for {
+		devPath, err := findM4FChrdev()
+		if err == nil {
+			if attempt > 0 {
+				log.Printf("[Transport] M4F rpmsg device ready after %v: %s",
+					time.Duration(attempt)*deviceWaitInterval, devPath)
+			}
+			return devPath, nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("findM4FChrdev: no device within %v: %w", timeout, err)
+		}
+		if attempt == 0 {
+			log.Printf("[Transport] M4F rpmsg device not ready, waiting up to %v...", timeout)
+		}
+		attempt++
+		time.Sleep(deviceWaitInterval)
 	}
 }
 

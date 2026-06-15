@@ -173,7 +173,8 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **Priorytet 1 (15.06.2026, zweryfikowane)**: Go HELLO retry z exponential backoff (1/2/4/8s, 5 prób) w `helloWithRetry()` (`go-services/rpmsg-service/main.go`). Log startowy: `Sending HELLO (with retry)...`.
 - **Bugfix (15.06.2026)**: M4F `case MSG_PING` odpowiadał deprecated `MSG_PONG` → zmienione na `sendAck()`. Go czeka na `MSG_ACK`, więc PONG groził fałszywym `PEER DEAD` → restart loop.
 - `protocol.h` zsynchronizowane (`shared/` == `m4f-firmware/`).
-- **Warstwa D w setup (15.06.2026, commit dabee5b)**: `modules/05-watchdog.sh` (idempotentny, `RuntimeWatchdogSec=30`) + posprzątany `setup.sh`. Deploy + reboot + weryfikacja na bramce: PENDING.
+- **Warstwa D w setup (15.06.2026, commit dabee5b)**: `modules/05-watchdog.sh` (idempotentny, `RuntimeWatchdogSec=30`) + posprzątany `setup.sh`. Zweryfikowane: `lsof /dev/watchdog0` → systemd (PID 1) trzyma device, `wdctl` busy = OK.
+- **Cold-boot race fix (15.06.2026)**: `rpmsg-service` padał po reboocie (`OpenTransport: no rpmsg_chrdev`, race startowy → `StartLimitBurst`). Fix w `transport.go`: `waitForM4FChrdev` czeka na `/dev/rpmsg*` do 20s (margines pod `TimeoutStartSec=30s`). Zweryfikowane: serwis wstaje sam po reboocie.
 
 ### ⏳ Pending — Priorytet 1 (NOWY — recovery fix po silent-hang)
 - **Go: recovery silent-hang `remoteproc stop` → clean `reboot`** — `forceM4FReload()` na zawieszonym M4F wiesza cały SoC (test 15.06.2026). Decyzja: primary = clean `reboot`/syscall (SD-friendly, robi sync), backup = Warstwa D (HW watchdog). NIE robić remoteproc stop na martwym M4F. Rozważyć: rozróżnić w Go „M4F żyje ale nie ACKuje" (może remoteproc) vs „M4F martwy" (reboot).
