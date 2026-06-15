@@ -7,7 +7,7 @@ Repozytorium konfiguracji i kodu dla bramki IoT na AM62 SoC (SK-AM62B-P1 dev kit
 - **SoC**: TI AM62 (Cortex-A53 quad + Cortex-M4F + Cortex-R5F)
 - **Linux**: Arago 2025.01 (kernel 6.18.13-ti, ARM64)
 - **Komunikacja**: Linux ↔ M4F przez RPMsg (binary protocol z CRC16)
-- **Język aplikacji Linux**: Go 1.26.4
+- **Język aplikacji Linux**: Go 1.23.x (instalowany przez `modules/04-go.sh`)
 - **Firmware M4F**: TI MCU+ SDK 12.00, NoRTOS
 
 ## Struktura repo
@@ -78,9 +78,10 @@ m4f-watch                          # live M4F trace
 - ✅ Idempotency check (duplicate detection w M4F)
 - ✅ EVENT (M4F→Linux autonomous events z ACK + retry)
 - ✅ Bidirectional reliable messaging w pełni działa (~5ms RTT)
-- ✅ **Warstwa A**: systemd watchdog dla Go service (crash + hang detection)
+- ✅ **Warstwa A**: systemd watchdog dla Go service (`Restart=on-failure` + `StartLimitBurst=3`)
 - ⏸️ **Warstwa B**: M4F self-watchdog (RTI) - skipped, do later
 - ⏳ **Warstwa C**: M4F → Linux reset via DMSC
-- ✅ **Warstwa D**: Linux HW watchdog (`/dev/watchdog` via systemd, 30s kick / 60s timeout)
-- ⏳ Smart heartbeat - zrezygnowany (watchdogi pokrywają)
+- ✅ **Warstwa D**: Linux HW watchdog (`/dev/watchdog` via systemd, `RuntimeWatchdogSec=30`) - konfigurowany przez `modules/05-watchdog.sh` (był zgubiony przy re-flashu, przywrócony 15.06.2026)
+- ✅ **Heartbeat jednokierunkowy Linux→M4F**: Go pinguje M4F co 5s idle; brak odpowiedzi (~9s) = M4F martwy → **clean reboot** (`recoverByReboot`). M4F-initiated heartbeat usunięty (opcja A). Brak per-core reset M4F na AM62 - jedyna recovery to pełny reset SoC.
+- ✅ **Cold-boot race fix**: serwis czeka na `/dev/rpmsg*` (`waitForM4FChrdev`) zamiast paść gdy M4F jeszcze się podnosi
 - ⏳ Yocto build - later

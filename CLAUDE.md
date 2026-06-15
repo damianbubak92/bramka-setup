@@ -179,7 +179,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 ### ⏳ Pending — Priorytet 1 (NOWY — recovery fix po silent-hang)
 - ✅ **Go: recovery silent-hang `remoteproc stop` → clean `reboot`** (kod gotowy) — `forceM4FReload()` usunięty, `recoverByReboot()` robi `syscall.Sync()` + `systemctl reboot` (fallback: kernel reboot, last resort Warstwa D). Decyzja: zawsze clean reboot na PEER DEAD (nie zgadujemy „żywy vs martwy" — błędne zgadnięcie = wieszanie SoC). **Live re-test `silent-hang` dopiero po industrial SD** (powoduje reboot).
 - ✅ **Warstwa D zweryfikowana** (`lsof /dev/watchdog0` → systemd trzyma device).
-- **Uspójnić README/docs** — README mówi „Warstwa D ✅", a była nieaktywna na obrazie; `system/configure-watchdog.sh` redundantny z modułem 05 (usunąć lub zostawić jako manual?).
+- ✅ **Uspójnić README/docs** (15.06.2026) — README + `docs/WATCHDOG.md` poprawione (`Restart=on-failure`, heartbeat jednokierunkowy, M4F-death recovery = clean reboot, Go 1.23.x, Warstwa D via moduł 05). `system/configure-watchdog.sh` usunięty (redundantny z modułem 05).
 
 ### ⏳ Pending — Priorytet 2 (przed produkcją)
 - **HW watchdog**: sprawdzić i skonfigurować `/dev/watchdog` (`RuntimeWatchdogSec=30s` w systemd, `panic_on_oops=1`)

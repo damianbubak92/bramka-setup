@@ -25,8 +25,9 @@ Go service używa systemd protocol `sd_notify` przez `$NOTIFY_SOCKET`.
 systemd unit:
 - `Type=notify` - czeka na `READY=1`
 - `WatchdogSec=10s` - kill po brak 2 kicks
-- `Restart=always` - auto-restart po crash/timeout
+- `Restart=on-failure` - auto-restart po crash/timeout (NIGDY `always` - patrz CLAUDE.md NEVER VIOLATE)
 - `RestartSec=2s` - opóźnienie między restartami
+- `StartLimitBurst=3` / `StartLimitIntervalSec=60` - safety net przed restart-loop
 
 ### Detection
 
@@ -64,6 +65,12 @@ RuntimeWatchdogSec=30
 Bez tego, `/dev/watchdog` jest aktywny po boot (kernel auto-start)
 ale **nikt nie klepie** → bramka resetuje się co 60s!
 
+**Konfigurowane automatycznie** przez `modules/05-watchdog.sh` w `setup.sh`
+(idempotentne). Aktywacja wymaga reboota - PID 1 otwiera `/dev/watchdog0`
+przy starcie. UWAGA (15.06.2026): wcześniej `system/configure-watchdog.sh`
+nie był wołany przez setup → świeży obraz miał Warstwę D WYŁĄCZONĄ. Naprawione
+modułem 05.
+
 ### Detection
 
 | Awaria | Detection method | Time to detect |
@@ -90,6 +97,27 @@ lsof /dev/watchdog0
 echo c > /proc/sysrq-trigger
 # Czekaj ~60s, bramka się zrestartuje automatycznie
 ```
+
+## Recovery śmierci M4F: clean reboot (nie remoteproc stop!)
+
+Osobny od warstw watchdog: gdy **M4F umrze/zawiesi się**, Go wykrywa to przez
+heartbeat (PING co 5s idle, brak ACK po retry = ~9s) i emituje PEER DEAD.
+
+**Akcja recovery = clean `reboot`** (`recoverByReboot` w `main.go`):
+`syscall.Sync()` + `systemctl reboot` (fallback: kernel reboot). NIE robimy
+`remoteproc stop/start`.
+
+### Dlaczego nie remoteproc reload?
+
+Test `silent-hang` (15.06.2026) udowodnił: na AM62 **nie ma per-core reset
+M4F**. Zapis `stop` do `/sys/class/remoteproc/remoteproc0/state` na zawieszonym
+M4F (interrupts disabled) **wiesza cały SoC** - bramka nieosiągalna, wymaga
+ręcznego power cycle. Jedyna poprawna reakcja na martwy M4F to **pełny reset
+SoC**. Clean reboot jest SD-friendly (robi sync); Warstwa D to backup gdyby
+reboot się zawiesił.
+
+(crash-m4f to inna ścieżka: M4F sam robi `SOC_generateSwWarmResetMcuDomain` w
+hardfault handlerze - czysty reset TI, bez udziału Linuxa.)
 
 ## Lessons learned
 
@@ -122,7 +150,16 @@ Każda warstwa wykrywa **inną klasę** awarii:
 - Go service hang (deadlock, infinite loop) - **A wykrywa**, D nie
   (bo Linux żyje, klepie watchdog, ale aplikacja zawiesiła się)
 - Linux kernel panic - **D wykrywa**, A nie (bo systemd też nie żyje)
-- M4F infinite loop - **B wykrywa** (kiedy zaimplementujemy), A częściowo
-  (Go widzi że M4F nie odpowiada, ale to nie powoduje crash Go)
+- M4F infinite loop / death - **Go heartbeat wykrywa** (~9s) → clean reboot
+  (`recoverByReboot`). Warstwa B (M4F RTI) to przyszła redundancja.
 
 Warstwy są ortogonalne - razem dają ~95% pokrycia.
+
+### Watchdog MUSI być w setup (nie ad-hoc)
+
+15.06.2026: Warstwa D była skonfigurowana ad-hoc w jednej sesji, ale nie w
+`setup.sh`. Po re-flashu karty SD + `setup.sh` watchdog **nie został włączony**
+→ silent-hang położył bramkę bez ostatniej linii obrony. Lekcja: każda warstwa
+niezawodności musi być w idempotentnym module setup (`modules/05-watchdog.sh`),
+inaczej znika przy disaster recovery. To samo dotyczy każdej konfiguracji
+robionej "ręcznie na żywo".
