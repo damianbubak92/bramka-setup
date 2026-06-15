@@ -2,9 +2,10 @@ package main
 
 import (
 	"flag"
-	"fmt"      // dla forceM4FReload error wrap
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"syscall"
@@ -75,18 +76,19 @@ func main() {
 		}
 	}()
 
-	// Peer-dead watcher: triggered when heartbeat PING gives up
+	// Peer-dead watcher: triggered when heartbeat PING gives up.
+	// Recovery is a CLEAN REBOOT, not remoteproc stop/start: on AM62 there is
+	// no per-core M4F reset, and writing "stop" to a hung M4F (silent-hang,
+	// interrupts disabled) wedges the whole SoC. A clean reboot syncs the SD
+	// and brings everything back; the HW watchdog (Warstwa D) is the backup if
+	// the reboot itself can't proceed.
 	go func() {
 		<-p.PeerDeadCh()
 		log.Printf("[Main] *** PEER DEAD - heartbeat detected M4F unreachable ***")
-		log.Printf("[Main] Forcing M4F reload via remoteproc...")
-		if err := forceM4FReload(); err != nil {
-			log.Printf("[Main] M4F reload failed: %v (systemd will restart us anyway)", err)
-		} else {
-			log.Printf("[Main] M4F reload successful, exiting for fresh reconnect")
-		}
+		log.Printf("[Main] Recovery: clean reboot (remoteproc stop is unsafe on a hung M4F)")
 		sdNotify("STOPPING=1")
-		os.Exit(1)
+		recoverByReboot()
+		select {} // reboot in progress - block until the system goes down
 	}()
 
 	// Wait for signal
@@ -395,26 +397,22 @@ func runCrashM4FTest(p *Protocol) {
     log.Println("[Test] Done observing")
 }
 
-// forceM4FReload stops and restarts M4F firmware via remoteproc sysfs.
-// Used as recovery when heartbeat detects M4F unreachable.
-// Returns nil on success, error otherwise.
-func forceM4FReload() error {
-	const statePath = "/sys/class/remoteproc/remoteproc0/state"
+// recoverByReboot performs a clean, SD-friendly full reboot. This is the only
+// safe recovery for a dead/hung M4F on AM62: there is no per-core M4F reset,
+// and remoteproc stop on a hung M4F wedges the whole SoC. Primary path is
+// `systemctl reboot` (runs the systemd shutdown sequence: unmount + sync);
+// if that can't be issued we sync and force a kernel reboot. Last resort if
+// even that stalls is the HW watchdog (Warstwa D).
+func recoverByReboot() {
+	syscall.Sync() // flush to SD before going down
 
-	log.Printf("[Recovery] Stopping M4F...")
-	if err := os.WriteFile(statePath, []byte("stop"), 0644); err != nil {
-		return fmt.Errorf("write stop: %w", err)
+	log.Printf("[Recovery] Issuing 'systemctl reboot'...")
+	if err := exec.Command("systemctl", "reboot").Run(); err != nil {
+		log.Printf("[Recovery] 'systemctl reboot' failed: %v - forcing kernel reboot", err)
+		if err := syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART); err != nil {
+			log.Printf("[Recovery] kernel reboot failed: %v - relying on HW watchdog (Warstwa D)", err)
+		}
 	}
-
-	// Brief pause for kernel to release resources
-	time.Sleep(500 * time.Millisecond)
-
-	log.Printf("[Recovery] Starting M4F...")
-	if err := os.WriteFile(statePath, []byte("start"), 0644); err != nil {
-		return fmt.Errorf("write start: %w", err)
-	}
-
-	return nil
 }
 
 // runHeartbeatTest: sanity check - sit idle, watch PINGs flow.
@@ -464,15 +462,15 @@ func runSilentHangTest(p *Protocol) {
 	log.Println("[Test]   T+7s:  2nd retry")
 	log.Println("[Test]   T+8s:  3rd retry")
 	log.Println("[Test]   T+9s:  GIVEUP → PEER DEAD signal")
-	log.Println("[Test]   T+9s:  forceM4FReload + os.Exit(1)")
-	log.Println("[Test]   systemd restarts service")
+	log.Println("[Test]   T+9s:  clean reboot (recoverByReboot) - WHOLE GATEWAY REBOOTS")
+	log.Println("[Test]   T+~70s: system back up, service reconnects")
 
 	// Wait for peer-dead OR timeout
 	select {
 	case <-p.PeerDeadCh():
 		elapsed := time.Since(hangSentAt)
 		log.Printf("[Test] PEER DEAD detected after %v from hang trigger", elapsed)
-		log.Println("[Test] Main goroutine will now call forceM4FReload + exit")
+		log.Println("[Test] Main goroutine will now clean-reboot the whole gateway")
 		// Don't return - let main's peer-dead watcher do the recovery action
 		time.Sleep(5 * time.Second)
 	case <-time.After(15 * time.Second):

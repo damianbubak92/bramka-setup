@@ -116,7 +116,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 
 | Scenariusz | Detection | Recovery action | Czas total |
 |---|---|---|---|
-| **M4F silent hang** | Go heartbeat (5s idle + 4s retries = 9s) | ⚠️ ZŁE: `remoteproc stop` na zawieszonym M4F WIESZA cały SoC (test 15.06.2026). FIX TODO: clean `reboot` (primary) + Warstwa D (backup) | reboot |
+| **M4F silent hang** | Go heartbeat (5s idle + 4s retries = 9s) | clean `reboot` (`recoverByReboot`: sync + systemctl reboot). Stary `remoteproc stop` wieszał SoC — usunięty. Backup: Warstwa D | ~70s |
 | **M4F hardfault** | M4F custom hardfault handler | `SOC_generateSwWarmResetMcuDomain` (cały SoC reset) | ~15-20s |
 | **Linux kernel panic** | systemd HW watchdog `/dev/watchdog` | Reset całego SoC (60s timeout) | ~60-75s |
 | **Go service hang** | systemd software watchdog `WatchdogSec=10s` | SIGABRT + Restart=on-failure | ~12-15s |
@@ -177,8 +177,8 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **Cold-boot race fix (15.06.2026)**: `rpmsg-service` padał po reboocie (`OpenTransport: no rpmsg_chrdev`, race startowy → `StartLimitBurst`). Fix w `transport.go`: `waitForM4FChrdev` czeka na `/dev/rpmsg*` do 20s (margines pod `TimeoutStartSec=30s`). Zweryfikowane: serwis wstaje sam po reboocie.
 
 ### ⏳ Pending — Priorytet 1 (NOWY — recovery fix po silent-hang)
-- **Go: recovery silent-hang `remoteproc stop` → clean `reboot`** — `forceM4FReload()` na zawieszonym M4F wiesza cały SoC (test 15.06.2026). Decyzja: primary = clean `reboot`/syscall (SD-friendly, robi sync), backup = Warstwa D (HW watchdog). NIE robić remoteproc stop na martwym M4F. Rozważyć: rozróżnić w Go „M4F żyje ale nie ACKuje" (może remoteproc) vs „M4F martwy" (reboot).
-- **Zweryfikować Warstwę D na bramce** po deploy modułu 05 (`lsof /dev/watchdog0` → systemd).
+- ✅ **Go: recovery silent-hang `remoteproc stop` → clean `reboot`** (kod gotowy) — `forceM4FReload()` usunięty, `recoverByReboot()` robi `syscall.Sync()` + `systemctl reboot` (fallback: kernel reboot, last resort Warstwa D). Decyzja: zawsze clean reboot na PEER DEAD (nie zgadujemy „żywy vs martwy" — błędne zgadnięcie = wieszanie SoC). **Live re-test `silent-hang` dopiero po industrial SD** (powoduje reboot).
+- ✅ **Warstwa D zweryfikowana** (`lsof /dev/watchdog0` → systemd trzyma device).
 - **Uspójnić README/docs** — README mówi „Warstwa D ✅", a była nieaktywna na obrazie; `system/configure-watchdog.sh` redundantny z modułem 05 (usunąć lub zostawić jako manual?).
 
 ### ⏳ Pending — Priorytet 2 (przed produkcją)
@@ -276,6 +276,11 @@ cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-15 (noc, najpóźniej) — cold-boot fix + recovery fix
+- **Warstwa D zweryfikowana** po reboocie: `lsof /dev/watchdog0` → systemd (PID 1) trzyma, `wdctl` busy = OK. Ostatnia linia obrony wróciła.
+- **Cold-boot race fix** (commit 18b7b6e): `rpmsg-service` padał po reboocie (`no rpmsg_chrdev` → StartLimitBurst). `transport.go` `waitForM4FChrdev` czeka na `/dev/rpmsg*` do 20s. Zweryfikowane: wstaje sam po reboocie.
+- **Recovery silent-hang fix** (kod): `forceM4FReload` (remoteproc stop, wieszał SoC) → `recoverByReboot()` (sync + `systemctl reboot`, backup Warstwa D). Live re-test `silent-hang` odłożony do industrial SD.
 
 ### 2026-06-15 (noc, późno) — silent-hang FAIL + watchdog fix
 - **Crash test `silent-hang`: detekcja OK, recovery PADŁ.** Go wykrył (GIVEUP T+9s), ale `forceM4FReload` (remoteproc stop na M4F z `cpsid i`) zawiesił cały SoC → ręczny power cycle. Warstwa D (HW watchdog) NIE zadziałała.
