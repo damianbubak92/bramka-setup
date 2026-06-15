@@ -381,12 +381,11 @@ func runCrashM4FTest(p *Protocol) {
         return
     }
     
-    log.Println("[Test] Crash trigger sent. Watching for next 30s...")
-    log.Println("[Test] Expected:")
-    log.Println("[Test]   1. Transport will get broken pipe (M4F died)")
-    log.Println("[Test]   2. Linux remoteproc will reload firmware automatically")
-    log.Println("[Test]   3. /dev/rpmsg0 will reappear")
-    log.Println("[Test]   4. But our process needs restart to reconnect")
+    log.Println("[Test] Crash trigger sent. Expected:")
+    log.Println("[Test]   M4F hardfault handler -> SOC_generateSwWarmResetMcuDomain")
+    log.Println("[Test]   -> FULL SoC reset (whole gateway reboots; no per-core reset on AM62)")
+    log.Println("[Test]   -> ssh drops now; bramka back in ~70s, systemd auto-starts service")
+    log.Println("[Test] Watching 30s (connection will drop before this finishes)...")
     
     // Czekamy żeby zobaczyć co się dzieje
     for i := 1; i <= 30; i++ {

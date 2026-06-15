@@ -117,7 +117,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 | Scenariusz | Detection | Recovery action | Czas total |
 |---|---|---|---|
 | **M4F silent hang** | Go heartbeat (~8s) ✅ | clean `reboot` (`recoverByReboot`: sync + systemctl reboot) ✅ zweryfikowane 15.06.2026. Stary `remoteproc stop` wieszał SoC — usunięty. Backup: Warstwa D | ~70s |
-| **M4F hardfault** | M4F custom hardfault handler | `SOC_generateSwWarmResetMcuDomain` (cały SoC reset) | ~15-20s |
+| **M4F hardfault** | M4F custom hardfault handler | `SOC_generateSwWarmResetMcuDomain` (cały SoC reset) ✅ zweryfikowane 15.06.2026 | ~70s (pełny boot) |
 | **Linux kernel panic** | systemd HW watchdog `/dev/watchdog` | Reset całego SoC (60s timeout) | ~60-75s |
 | **Go service hang** | systemd software watchdog `WatchdogSec=10s` | SIGABRT + Restart=on-failure | ~12-15s |
 
@@ -194,7 +194,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 ### ⏳ Pending — Crash testy (NASTĘPNY KROK — Priorytet 1 done)
 1. ✅ **heartbeat-busy** (15.06.2026) — PASS: 12× DATA co 2s, **zero PINGów** po obu stronach (Go i M4F). Busy traffic trzyma idle < 5s. M4F `RX PING → reply ACK` OK.
 2. ✅ **silent-hang** (15.06.2026) — po fixie recovery **PASS**: PEER DEAD w 7.95s → `recoverByReboot` (clean `systemctl reboot`) → bramka wróciła **sama** w ~70s, serwis auto-reconnect. (Przed fixem: `forceM4FReload`/remoteproc stop wieszał cały SoC, ręczny reset.)
-3. **crash-m4f** — re-verify hardfault → SoC reset (czysta ścieżka TI `SOC_generateSwWarmResetMcuDomain`; dopiero po industrial SD)
+3. ✅ **crash-m4f** (15.06.2026) — **PASS**: `TX DEBUG_CRASH` → M4F hardfault → `SOC_generateSwWarmResetMcuDomain` → pełny reset SoC (`uptime: up 0 min`) → bramka wróciła sama ~70s, serwis auto-reconnect, bez korupcji FS. Test na consumer SD (zaakceptowane ryzyko). UWAGA: to twardy reset (bez sync Linuxa) — robić `sync` przed; industrial SD przed produkcją.
 
 Wszystkie **interaktywnie**, NIGDY autonomicznie pod systemd. Pattern:
 ```powershell
@@ -276,6 +276,12 @@ cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-15 (noc, finał++) — crash-m4f PASS, komplet recovery
+- **`crash-m4f` PASS**: `TX DEBUG_CRASH` → M4F hardfault → `SOC_generateSwWarmResetMcuDomain` → pełny reset SoC (`uptime: up 0 min`) → bramka wróciła sama ~70s, serwis auto-reconnect, heartbeat OK, bez korupcji FS. Twardy reset (bez sync Linuxa) — zrobiony `sync` przed; consumer SD przeżyła (zaakceptowane ryzyko).
+- **Komplet scenariuszy reset-recovery zweryfikowany**: silent-hang (clean reboot) ✅ + crash-m4f (HW SoC reset) ✅. Obie ścieżki: auto-recovery bez ręcznej interwencji.
+- Poprawiony mylący tekst w `runCrashM4FTest` (drukował „remoteproc reload" — faktycznie pełny reset SoC).
+- Wszystkie 3 crash testy z planu zaliczone: heartbeat-busy ✅, silent-hang ✅, crash-m4f ✅.
 
 ### 2026-06-15 (noc, finał) — silent-hang recovery PASS
 - **Re-test `silent-hang` po fixie: PASS.** PEER DEAD w 7.95s → `recoverByReboot` → `systemctl reboot` (M4F log: „The system will reboot now!") → bramka wróciła SAMA w ~70s, `rpmsg-service active (running)`, heartbeat tyka. Dokładne przeciwieństwo poprzedniego wedge'a SoC.
