@@ -118,7 +118,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 |---|---|---|---|
 | **M4F silent hang** | Go heartbeat (~8s) ✅ | clean `reboot` (`recoverByReboot`: sync + systemctl reboot) ✅ zweryfikowane 15.06.2026. Stary `remoteproc stop` wieszał SoC — usunięty. Backup: Warstwa D | ~70s |
 | **M4F hardfault** | M4F custom hardfault handler | `SOC_generateSwWarmResetMcuDomain` (cały SoC reset) ✅ zweryfikowane 15.06.2026 | ~70s (pełny boot) |
-| **Linux kernel panic** | systemd HW watchdog `/dev/watchdog` | Reset całego SoC (60s timeout) | ~60-75s |
+| **Linux kernel panic** | systemd HW watchdog `/dev/watchdog0` (Warstwa D, `RuntimeWatchdogSec=30`) | HW reset całego SoC ✅ zweryfikowane 15.06.2026 (test z `panic=0` → tylko watchdog uratował) | ~70-90s |
 | **Go service hang** | systemd software watchdog `WatchdogSec=10s` | SIGABRT + Restart=on-failure | ~12-15s |
 
 ### Asymetria heartbeat — DLACZEGO tylko Linux pinguje
@@ -182,7 +182,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - ✅ **Uspójnić README/docs** (15.06.2026) — README + `docs/WATCHDOG.md` poprawione (`Restart=on-failure`, heartbeat jednokierunkowy, M4F-death recovery = clean reboot, Go 1.23.x, Warstwa D via moduł 05). `system/configure-watchdog.sh` usunięty (redundantny z modułem 05).
 
 ### ⏳ Pending — Priorytet 2 (przed produkcją)
-- **HW watchdog**: sprawdzić i skonfigurować `/dev/watchdog` (`RuntimeWatchdogSec=30s` w systemd, `panic_on_oops=1`)
+- ✅ **HW watchdog (Warstwa D)** — skonfigurowany (`modules/05-watchdog.sh`, `RuntimeWatchdogSec=30`) i zweryfikowany kernel-panic testem 15.06.2026. (Opcjonalnie jeszcze: `panic_on_oops=1` żeby oops eskalował do panic → watchdog łapie.)
 - **Transport device discovery**: zweryfikować że `transport.go` re-detect `/dev/rpmsg*` przy reconnect (nie cache)
 
 ### ⏳ Pending — Priorytet 3 (nice-to-have)
@@ -276,6 +276,11 @@ cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-15 (noc, finał+++) — kernel panic PASS, CAŁA macierz recovery zweryfikowana
+- **Kernel panic test PASS**: `echo c > /proc/sysrq-trigger` z `kernel.panic=0` (kernel zamarł, brak auto-reboot) → bramka wróciła sama (`uptime: up 0 min`) → **dowód że Warstwa D (HW watchdog) zresetowała SoC**. `Kernel panic - not syncing: sysrq triggered crash` w logu.
+- **Wszystkie 4 scenariusze recovery zweryfikowane na żywo**: M4F silent-hang (clean reboot) ✅, M4F hardfault (SOC reset) ✅, Go hang (systemd Warstwa A) ✅, Linux panic (HW watchdog Warstwa D) ✅. Każdy: auto-recovery bez ręcznej interwencji.
+- Recovery architecture domknięta. Pozostało: industrial SD przed produkcją, Warstwa C (DMSC, long-term), backlog P2/P3.
 
 ### 2026-06-15 (noc, finał++) — crash-m4f PASS, komplet recovery
 - **`crash-m4f` PASS**: `TX DEBUG_CRASH` → M4F hardfault → `SOC_generateSwWarmResetMcuDomain` → pełny reset SoC (`uptime: up 0 min`) → bramka wróciła sama ~70s, serwis auto-reconnect, heartbeat OK, bez korupcji FS. Twardy reset (bez sync Linuxa) — zrobiony `sync` przed; consumer SD przeżyła (zaakceptowane ryzyko).
