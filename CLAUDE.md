@@ -116,7 +116,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 
 | Scenariusz | Detection | Recovery action | Czas total |
 |---|---|---|---|
-| **M4F silent hang** | Go heartbeat (5s idle + 4s retries = 9s) | Go pisze `stop`/`start` do remoteproc | ~10-12s |
+| **M4F silent hang** | Go heartbeat (5s idle + 4s retries = 9s) | ⚠️ ZŁE: `remoteproc stop` na zawieszonym M4F WIESZA cały SoC (test 15.06.2026). FIX TODO: clean `reboot` (primary) + Warstwa D (backup) | reboot |
 | **M4F hardfault** | M4F custom hardfault handler | `SOC_generateSwWarmResetMcuDomain` (cały SoC reset) | ~15-20s |
 | **Linux kernel panic** | systemd HW watchdog `/dev/watchdog` | Reset całego SoC (60s timeout) | ~60-75s |
 | **Go service hang** | systemd software watchdog `WatchdogSec=10s` | SIGABRT + Restart=on-failure | ~12-15s |
@@ -173,6 +173,12 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **Priorytet 1 (15.06.2026, zweryfikowane)**: Go HELLO retry z exponential backoff (1/2/4/8s, 5 prób) w `helloWithRetry()` (`go-services/rpmsg-service/main.go`). Log startowy: `Sending HELLO (with retry)...`.
 - **Bugfix (15.06.2026)**: M4F `case MSG_PING` odpowiadał deprecated `MSG_PONG` → zmienione na `sendAck()`. Go czeka na `MSG_ACK`, więc PONG groził fałszywym `PEER DEAD` → restart loop.
 - `protocol.h` zsynchronizowane (`shared/` == `m4f-firmware/`).
+- **Warstwa D w setup (15.06.2026, commit dabee5b)**: `modules/05-watchdog.sh` (idempotentny, `RuntimeWatchdogSec=30`) + posprzątany `setup.sh`. Deploy + reboot + weryfikacja na bramce: PENDING.
+
+### ⏳ Pending — Priorytet 1 (NOWY — recovery fix po silent-hang)
+- **Go: recovery silent-hang `remoteproc stop` → clean `reboot`** — `forceM4FReload()` na zawieszonym M4F wiesza cały SoC (test 15.06.2026). Decyzja: primary = clean `reboot`/syscall (SD-friendly, robi sync), backup = Warstwa D (HW watchdog). NIE robić remoteproc stop na martwym M4F. Rozważyć: rozróżnić w Go „M4F żyje ale nie ACKuje" (może remoteproc) vs „M4F martwy" (reboot).
+- **Zweryfikować Warstwę D na bramce** po deploy modułu 05 (`lsof /dev/watchdog0` → systemd).
+- **Uspójnić README/docs** — README mówi „Warstwa D ✅", a była nieaktywna na obrazie; `system/configure-watchdog.sh` redundantny z modułem 05 (usunąć lub zostawić jako manual?).
 
 ### ⏳ Pending — Priorytet 2 (przed produkcją)
 - **HW watchdog**: sprawdzić i skonfigurować `/dev/watchdog` (`RuntimeWatchdogSec=30s` w systemd, `panic_on_oops=1`)
@@ -182,11 +188,12 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - Last-resort `systemctl reboot` w `forceM4FReload` jeśli sysfs stop/start padnie
 - Persistent restart counter (`/var/lib/bramka/restart_count` + timestamp) z alarmem >3/dzień
 - Dedicated `m4f-reload.service` (Type=oneshot) dla security hardening (Go może być non-root)
+- **M4F EVENT scaffolding cleanup**: `doPeriodicTick` wysyła testowy EVENT co 10s. Gdy Linux odłączony (stop/restart service), EVENT wyczerpuje retry → `GIVEUP type=0x20` + „ACK for unknown" noise (widziane w heartbeat-busy 15.06.2026, nie-błąd). Produkcyjnie: nie wysyłać autonomicznych EVENT bez aktywnej sesji.
 
 ### ⏳ Pending — Crash testy (NASTĘPNY KROK — Priorytet 1 done)
-1. **heartbeat-busy** — regresja, weryfikacja że busy traffic nie wywołuje PINGów
-2. **silent-hang** — core test, wykrycie + forceM4FReload + recovery
-3. **crash-m4f** — re-verify hardfault → SoC reset
+1. ✅ **heartbeat-busy** (15.06.2026) — PASS: 12× DATA co 2s, **zero PINGów** po obu stronach (Go i M4F). Busy traffic trzyma idle < 5s. M4F `RX PING → reply ACK` OK.
+2. ⚠️ **silent-hang** (15.06.2026) — detekcja OK (GIVEUP T+9s), **recovery PADŁ**: `forceM4FReload` (remoteproc stop) zawiesił cały SoC → ręczny reset. Warstwa D nieaktywna (nie była w setup). Potwierdza brak per-core reset M4F. **NIE powtarzać przed fixem recovery (P1 nowy).**
+3. **crash-m4f** — re-verify hardfault → SoC reset (czysta ścieżka TI `SOC_generateSwWarmResetMcuDomain`; dopiero po industrial SD)
 
 Wszystkie **interaktywnie**, NIGDY autonomicznie pod systemd. Pattern:
 ```powershell
@@ -268,6 +275,18 @@ cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-15 (noc, późno) — silent-hang FAIL + watchdog fix
+- **Crash test `silent-hang`: detekcja OK, recovery PADŁ.** Go wykrył (GIVEUP T+9s), ale `forceM4FReload` (remoteproc stop na M4F z `cpsid i`) zawiesił cały SoC → ręczny power cycle. Warstwa D (HW watchdog) NIE zadziałała.
+- **Root cause Warstwy D**: `system/configure-watchdog.sh` nigdy nie był wołany przez setup (brak modułu). Świeży obraz = zero HW watchdog. → dodany `modules/05-watchdog.sh` + posprzątany rozgrzebany `setup.sh` (commit dabee5b).
+- **Potwierdzone**: brak per-core reset M4F na AM62 — jedyna poprawna reakcja na martwy M4F to pełny reset SoC. Recovery silent-hang → clean reboot (P1 nowy).
+- Bonus: stary `setup.sh` w repo był zepsuty (zdublowana pętla + notatki edycyjne łamiące parser) → bramka działała na innej wersji (dryf repo↔device).
+
+### 2026-06-15 (noc) — Crash testy start
+- Priorytet 1 zacommitowany + push na main (`a0d5565`).
+- **Crash test `heartbeat-busy` PASS**: 12× DATA co 2s, zero `TX heartbeat PING` po obu stronach. Regresja Priorytetu 1 potwierdzona.
+- Zaobserwowany (nie-błąd) noise: M4F EVENT-co-10s daje GIVEUP gdy Linux odłączony → dopisane do Priorytet 3 cleanup.
+- Następny: `silent-hang` (uwaga: firmware `cpsid i`+`while(1)`, recovery przez m4f-reload niepewne — komentarz w fw mówi że może wymagać full reset; consumer SD ryzyko).
 
 ### 2026-06-15 (wieczór) — Priorytet 1 done
 - **M4F**: usunięty heartbeat-init (opcja A) — `sendHeartbeatPing()`, `doHeartbeatCheck()`, globale `gLastRxTimeUs`/`gPingInFlight`/`HEARTBEAT_IDLE_US`, blok `MSG_PING` w `processEventRetries`. Zostaje reply `sendAck()` na PING od Go.
