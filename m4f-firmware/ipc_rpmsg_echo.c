@@ -477,23 +477,34 @@ static void doPeriodicTick(void)
         gTickCount++;
         gLastTickTime = now;
 
-        /* Tick = local diagnostic only, NOT sent via RPMsg.
-         * Real M4F→Linux comms goes through protocol layer (EVENT msg).
+        /* Production: no autonomous tick log, no autonomous test EVENT.
+         *
+         * The per-second "Tick #N" log spammed the m4f-watch trace and hurt
+         * readability, so it's disabled. The 10s test EVENT was scaffolding:
+         * it fired whenever gLinuxEndpoint != 0 (which stays set forever after
+         * first contact), so after the Linux service stopped/restarted the
+         * EVENTs got no ACK -> retries -> GIVEUP / "ACK for unknown" noise.
+         *
+         * Real M4F->Linux EVENTs must be emitted by actual event sources
+         * (sensor reading, alert, GPIO edge) via sendEvent() when they occur,
+         * not on a free-running timer. sendEvent() itself is unchanged.
+         *
+         * To re-enable the demo EVENT for testing, uncomment below:
+         *
+         * DebugP_log("[M4F] Tick #%u\r\n", (unsigned int)gTickCount);
+         * if (gLinuxEndpoint != 0 && (gTickCount % 10) == 0) {
+         *     char event_payload[64];
+         *     int len = snprintf(event_payload, sizeof(event_payload),
+         *                         "Test EVENT @ tick %u", (unsigned int)gTickCount);
+         *     if (len > 0 && len < (int)sizeof(event_payload)) {
+         *         int rc = sendEvent((const uint8_t *)event_payload, (uint16_t)len);
+         *         if (rc != 0) {
+         *             DebugP_log("[M4F] sendEvent rc=%d\r\n", rc);
+         *         }
+         *     }
+         * }
          */
-        DebugP_log("[M4F] Tick #%u\r\n", (unsigned int)gTickCount);
-
-        /* Wysyłaj testowy EVENT co 10 sekund (gdy Linux connected) */
-        if (gLinuxEndpoint != 0 && (gTickCount % 10) == 0) {
-            char event_payload[64];
-            int len = snprintf(event_payload, sizeof(event_payload),
-                                "Test EVENT @ tick %u", (unsigned int)gTickCount);
-            if (len > 0 && len < (int)sizeof(event_payload)) {
-                int rc = sendEvent((const uint8_t *)event_payload, (uint16_t)len);
-                if (rc != 0) {
-                    DebugP_log("[M4F] sendEvent rc=%d (no Linux yet or table full)\r\n", rc);
-                }
-            }
-        }
+        (void)gTickCount; /* still counted; used only by the commented demo above */
     }
 }
 

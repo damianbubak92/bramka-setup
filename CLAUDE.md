@@ -180,7 +180,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabela Recovery Flows + sekcja DONE niżej). Realnie zostało:
 1. ~~Industrial SD~~ — **ODRZUCONE (16.06.2026)**: produkcja idzie na eMMC w Verdin (nie SD). Na dev user ma zapasowe karty consumer — uszkodzona = re-flash i jedziemy dalej. Industrial SD nie kupujemy (trudno dostać).
 2. ~~Transport reconnect re-detect~~ (P2) — **ZROBIONE + ZWERYFIKOWANE (16.06.2026)**. Brak in-process reconnect by design (device-gone → reboot → świeży proces → `waitForM4FChrdev` re-detektuje, `findM4FChrdev` number-agnostic). **+ hardening fast-fail**: device-gone sygnalizuje PEER DEAD natychmiast (kanał `Transport.DeviceGone()` → `deviceGoneWatcher` → `signalPeerDead`), nie czeka ~9s na heartbeat. Test PASS: `echo stop > .../remoteproc0/state` na zdrowym M4F → `broken pipe` → reboot w ~3ms (heartbeat nie drgnął).
-3. **M4F EVENT scaffolding cleanup** (P3) — nie wysyłać autonomicznych EVENT gdy brak aktywnej sesji Linux (noise GIVEUP/„ACK for unknown").
+3. ~~M4F EVENT scaffolding cleanup~~ (P3) — **ZROBIONE w repo (16.06.2026), czeka na rebuild CCS + Deploy-M4F**: w `doPeriodicTick` zakomentowany log `Tick #%u` (spamował m4f-watch) ORAZ testowy EVENT co 10s (scaffolding — leciał dopóki `gLinuxEndpoint != 0`, czyli wiecznie po 1. kontakcie → po stopie Linuxa GIVEUP/„ACK for unknown"). `sendEvent()` bez zmian (do realnych EVENT-ów z czujników). Szkielet demo zostawiony zakomentowany do re-enable. ⚠️ Trzeba skopiować plik do projektu CCS Theia i rebuild ([[ccs-project-separate-from-repo]]), potem Deploy-M4F.
 4. Drobne: `panic_on_oops=1`, persistent restart counter, redeploy Go dla kosmetyki tekstu crash-testu.
 5. Long-term: Warstwa C (DMSC), OTA, bazy, health monitoring (niżej).
 
@@ -203,7 +203,7 @@ Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabe
 ### ⏳ Pending — Priorytet 3 (nice-to-have)
 - Persistent restart counter (`/var/lib/bramka/restart_count` + timestamp) z alarmem >3/dzień
 - Dedicated `m4f-reload.service` (Type=oneshot) dla security hardening (Go może być non-root)
-- **M4F EVENT scaffolding cleanup**: `doPeriodicTick` wysyła testowy EVENT co 10s. Gdy Linux odłączony (stop/restart service), EVENT wyczerpuje retry → `GIVEUP type=0x20` + „ACK for unknown" noise (widziane w heartbeat-busy 15.06.2026, nie-błąd). Produkcyjnie: nie wysyłać autonomicznych EVENT bez aktywnej sesji.
+- ~~M4F EVENT scaffolding cleanup~~ — ZROBIONE w repo 16.06.2026 (patrz NASTĘPNA SESJA pkt 3), czeka na rebuild CCS + Deploy-M4F.
 - `panic_on_oops=1` (oops → panic → watchdog łapie)
 
 ### ⏳ Pending — Long-term (poza obecnym sprintem)
@@ -286,6 +286,7 @@ cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
 - **P2 hardening fast-fail ZROBIONE + PASS**: `transport.go` kanał `DeviceGone()` (`signalDeviceGone()` w `readerLoop`, idempotentny `sync.Once`) → `protocol.go` `deviceGoneWatcher()` (4. goroutine) → `signalPeerDead()`. Device-gone = natychmiastowy PEER DEAD, bez czekania ~9s na heartbeat. Akcja końcowa ta sama (clean reboot).
 - **Test PASS**: serwis `-test hello` (connected, nie pod systemd) → `echo stop > /sys/class/remoteproc/remoteproc0/state` na zdrowym M4F → `read /dev/rpmsg0: broken pipe` → `TRANSPORT device gone` → `Issuing systemctl reboot` w **~3ms** (heartbeat nie drgnął). Bramka wróciła sama, M4F auto-load z `/lib/firmware`.
 - **Lesson**: ani crash-m4f (SOC reset, Linux pada razem), ani silent-hang (`cpsid i`, remoteproc dalej „running") NIE wyzwalają ścieżki device-gone. Wyzwala ją dopiero rozbiórka rpmsg po stronie kernela (`echo stop`/`m4f-reload` na zdrowym M4F). `m4f-reload` wymaga pliku firmware (hot-swap) — do samego testu wystarczy `echo stop`.
+- **M4F EVENT scaffolding cleanup (P3) — zrobione w repo**: w `doPeriodicTick` (`m4f-firmware/ipc_rpmsg_echo.c`) zakomentowany log `Tick #%u` (1Hz spam w m4f-watch) i testowy EVENT co 10s (leciał dopóki `gLinuxEndpoint != 0` = wiecznie → po stopie Linuxa GIVEUP/„ACK for unknown"). `sendEvent()` bez zmian, szkielet demo zostawiony zakomentowany. ⚠️ Czeka na sync repo→CCS Theia + rebuild + Deploy-M4F (firmware buduje się z osobnej kopii w CCS, nie z repo).
 
 ### 2026-06-15 (noc, finał+++) — kernel panic PASS, CAŁA macierz recovery zweryfikowana
 - **Kernel panic test PASS**: `echo c > /proc/sysrq-trigger` z `kernel.panic=0` (kernel zamarł, brak auto-reboot) → bramka wróciła sama (`uptime: up 0 min`) → **dowód że Warstwa D (HW watchdog) zresetowała SoC**. `Kernel panic - not syncing: sysrq triggered crash` w logu.
