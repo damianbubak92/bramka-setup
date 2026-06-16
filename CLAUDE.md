@@ -176,14 +176,22 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - `protocol.h` zsynchronizowane (`shared/` == `m4f-firmware/`).
 - **Warstwa D w setup (15.06.2026, commit dabee5b)**: `modules/05-watchdog.sh` (idempotentny, `RuntimeWatchdogSec=30`) + posprzątany `setup.sh`. Zweryfikowane: `lsof /dev/watchdog0` → systemd (PID 1) trzyma device, `wdctl` busy = OK.
 - **Cold-boot race fix (15.06.2026)**: `rpmsg-service` padał po reboocie (`OpenTransport: no rpmsg_chrdev`, race startowy → `StartLimitBurst`). Fix w `transport.go`: `waitForM4FChrdev` czeka na `/dev/rpmsg*` do 20s (margines pod `TimeoutStartSec=30s`). Zweryfikowane: serwis wstaje sam po reboocie.
+- **P2 transport fast-fail (16.06.2026, zweryfikowane)**: device-gone (`Transport.DeviceGone()` → `deviceGoneWatcher` → `signalPeerDead`) → PEER DEAD natychmiast (~3ms zamiast ~9s heartbeat) → clean reboot. `findM4FChrdev` number-agnostic (skan po HW path).
+- **m4f-reload service-aware (16.06.2026, zweryfikowane)**: `m4f-reload` zatrzymuje `rpmsg-service` przed `echo stop` M4F i restartuje po (trap EXIT) — deploy firmware bez przypadkowego reboota bramki (skutek uboczny P2 fast-fail).
+- **EVENT/tick cleanup (16.06.2026, zweryfikowane)**: `doPeriodicTick` — zakomentowany log `Tick #` (spam) + testowy EVENT co 10s (scaffolding). `m4f-watch` czysty.
+- **panic_on_oops=1 (16.06.2026, zweryfikowane)**: `modules/06-kernel-panic.sh` — oops → pełny panic → łapie Warstwa D. Domknięta luka „oops bez panic".
+- **Boot accounting (16.06.2026, zweryfikowane)**: `modules/07-boot-accounting.sh` — licznik bootów + atrybucja przyczyny (breadcrumb Go / panic / clean-shutdown / hard-reset) + alarm reboot-storm (`/etc/bramka/boot-accounting.conf`, default >3/24h). Persistent journald (50M). Podgląd: `bramka-reboots`.
 
 ### 🔜 NASTĘPNA SESJA — zacznij tu
-Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabela Recovery Flows + sekcja DONE niżej). Realnie zostało:
-1. ~~Industrial SD~~ — **ODRZUCONE (16.06.2026)**: produkcja idzie na eMMC w Verdin (nie SD). Na dev user ma zapasowe karty consumer — uszkodzona = re-flash i jedziemy dalej. Industrial SD nie kupujemy (trudno dostać).
-2. ~~Transport reconnect re-detect~~ (P2) — **ZROBIONE + ZWERYFIKOWANE (16.06.2026)**. Brak in-process reconnect by design (device-gone → reboot → świeży proces → `waitForM4FChrdev` re-detektuje, `findM4FChrdev` number-agnostic). **+ hardening fast-fail**: device-gone sygnalizuje PEER DEAD natychmiast (kanał `Transport.DeviceGone()` → `deviceGoneWatcher` → `signalPeerDead`), nie czeka ~9s na heartbeat. Test PASS: `echo stop > .../remoteproc0/state` na zdrowym M4F → `broken pipe` → reboot w ~3ms (heartbeat nie drgnął).
-3. ~~M4F EVENT scaffolding cleanup~~ (P3) — **ZROBIONE + ZWERYFIKOWANE NA ŻYWO (16.06.2026)**: w `doPeriodicTick` zakomentowany log `Tick #%u` (spamował m4f-watch) ORAZ testowy EVENT co 10s (scaffolding — leciał dopóki `gLinuxEndpoint != 0`, czyli wiecznie po 1. kontakcie → po stopie Linuxa GIVEUP/„ACK for unknown"). `sendEvent()` bez zmian (do realnych EVENT-ów z czujników). `m4f-watch` po Deploy-M4F: czysty, zero `Tick`/EVENT/GIVEUP, tylko heartbeat PING+ACK co ~6s.
-4. Drobne: ~~`panic_on_oops=1`~~ (ZROBIONE + zweryfikowane na bramce 16.06, `modules/06-kernel-panic.sh`), ~~persistent restart counter~~ (ZROBIONE + zweryfikowane na bramce 16.06, `modules/07-boot-accounting.sh` + Go breadcrumb — krok 5 PASS: `CONTROLLED | go-peer-dead`), ~~redeploy Go (tekst crash-testu)~~ (zrobione — `runCrashM4FTest` poprawiony + Deploy-Go 16.06). Zostało: `m4f-reload.service` (Type=oneshot, Go non-root).
-5. Long-term: Warstwa C (DMSC), OTA, bazy, health monitoring (niżej).
+Recovery + observability **kompletne i zweryfikowane na żywo**. Sesja 16.06 domknęła cały sprint P2/P3 (szczegóły: Session Log 16.06). Stan: 4 warstwy recovery + fast-fail na device-gone i oops + bezpieczny deploy + księgowanie reboot-ów z atrybucją. Produkcyjny nośnik = eMMC (Verdin), industrial SD odrzucone.
+
+**Zostało — drobne (P3, nie pilne):**
+- `m4f-reload.service` (Type=oneshot) — hardening: przenieść uprawnienie do reload M4F z procesu Go do dedykowanego oneshota (+ sudoers/polkit), żeby Go service mógł działać non-root.
+
+**Do przedyskutowania po obiedzie (wybór kierunku, long-term — patrz sekcja niżej):**
+- Warstwa C (DMSC reset), OTA (RAUC A/B), bazy (SQLite/InfluxDB), health monitoring (eMMC wear — wpina się w `bramka-reboots`/alarm), carrier board.
+
+**Opcjonalne domknięcie testów boot-accounting** (mechanizm ten sam, nie-zweryfikowane na żywo): klasyfikacja kernel-panic i clean-shutdown (manual reboot), realne odpalenie alarmu >3/24h.
 
 ### ✅ DONE — Recovery fix + crash testy (15.06.2026)
 - **Recovery silent-hang**: `forceM4FReload` (remoteproc stop, wieszał SoC) → `recoverByReboot()` (`syscall.Sync()` + `systemctl reboot`, fallback kernel reboot, last resort Warstwa D). Zasada: zawsze clean reboot na PEER DEAD. Commit cb61155.
@@ -202,10 +210,9 @@ Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabe
   ```
 
 ### ⏳ Pending — Priorytet 3 (nice-to-have)
-- ~~Persistent restart counter~~ — ZROBIONE + zweryfikowane na bramce 16.06.2026 (`modules/07-boot-accounting.sh`): licznik bootów + atrybucja przyczyny + alarm reboot-storm. Breadcrumb `/var/lib/bramka/reboot_reason` (Go `recoverByReboot` zapisuje „go-peer-dead" przed sync), oneshot `bramka-boot-accounting.service` przy boocie czyta+atrybuuje+kasuje; brak breadcrumb → doklasyfikowanie z `journalctl -b -1` (panic / clean-shutdown / hard-reset). Persistent journald (50M cap) włączony. Alarm sparametryzowany w `/etc/bramka/boot-accounting.conf` (`ALARM_ENABLED/THRESHOLD/WINDOW_HOURS`, default >3/24h; setup nie nadpisuje istniejącego). Podgląd: `bramka-reboots`. **Zweryfikowane**: INFO (brak prev boot) ✓, krok 5 CONTROLLED `go-peer-dead` po `echo stop`→recovery→reboot ✓.
 - Dedicated `m4f-reload.service` (Type=oneshot) dla security hardening (Go może być non-root)
-- ~~M4F EVENT scaffolding cleanup~~ — ZROBIONE + zweryfikowane 16.06.2026 (patrz NASTĘPNA SESJA pkt 3).
-- ~~`panic_on_oops=1`~~ — ZROBIONE + zweryfikowane na bramce 16.06.2026 (`modules/06-kernel-panic.sh`): drop-in `/etc/sysctl.d/60-bramka-panic.conf`, apply od razu + persistent. Zamyka lukę „oops kaleczy system ale nie panikuje → systemd dalej klepie watchdog → nic nie łapie". `sysctl kernel.panic_on_oops` = 1 po `setup.sh`.
+
+> Reszta P3 (EVENT cleanup, panic_on_oops, persistent restart counter) — ZROBIONE + zweryfikowane 16.06.2026, szczegóły w Session Log.
 
 ### ⏳ Pending — Long-term (poza obecnym sprintem)
 - **Warstwa C (DMSC reset)**: M4F triggeruje DMSC reset tylko A53 cluster (Linux), bez resetu siebie. Wymaga TI-SCI API research w MCU+ SDK 12.00 (`Sciclient_procBootRequestProcessor` + reset sequence dla TISCI_DEV_A53SS0_0..3). Fallback po 30s: pełny SoC reset.
