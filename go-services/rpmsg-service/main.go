@@ -403,6 +403,11 @@ func runCrashM4FTest(p *Protocol) {
 // if that can't be issued we sync and force a kernel reboot. Last resort if
 // even that stalls is the HW watchdog (Warstwa D).
 func recoverByReboot() {
+	// Drop a breadcrumb so the boot-accounting service can attribute the upcoming
+	// reboot to us (vs an uninitiated hard reset). Written before Sync so it's
+	// flushed to disk along with everything else.
+	writeRebootReason("go-peer-dead (M4F unreachable via heartbeat/device-gone)")
+
 	syscall.Sync() // flush to SD before going down
 
 	log.Printf("[Recovery] Issuing 'systemctl reboot'...")
@@ -411,6 +416,21 @@ func recoverByReboot() {
 		if err := syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART); err != nil {
 			log.Printf("[Recovery] kernel reboot failed: %v - relying on HW watchdog (Warstwa D)", err)
 		}
+	}
+}
+
+// writeRebootReason drops a breadcrumb at /var/lib/bramka/reboot_reason so the
+// boot-accounting service (modules/07-boot-accounting.sh) can attribute the
+// next boot to this controlled reboot instead of an uninitiated hard reset.
+// Best-effort: failure to write just means the reboot shows up as UNEXPECTED.
+func writeRebootReason(reason string) {
+	const dir = "/var/lib/bramka"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[Recovery] reboot-reason: mkdir %s: %v", dir, err)
+		return
+	}
+	if err := os.WriteFile(dir+"/reboot_reason", []byte(reason+"\n"), 0o644); err != nil {
+		log.Printf("[Recovery] reboot-reason: write: %v", err)
 	}
 }
 

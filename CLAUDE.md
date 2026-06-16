@@ -182,7 +182,7 @@ Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabe
 1. ~~Industrial SD~~ — **ODRZUCONE (16.06.2026)**: produkcja idzie na eMMC w Verdin (nie SD). Na dev user ma zapasowe karty consumer — uszkodzona = re-flash i jedziemy dalej. Industrial SD nie kupujemy (trudno dostać).
 2. ~~Transport reconnect re-detect~~ (P2) — **ZROBIONE + ZWERYFIKOWANE (16.06.2026)**. Brak in-process reconnect by design (device-gone → reboot → świeży proces → `waitForM4FChrdev` re-detektuje, `findM4FChrdev` number-agnostic). **+ hardening fast-fail**: device-gone sygnalizuje PEER DEAD natychmiast (kanał `Transport.DeviceGone()` → `deviceGoneWatcher` → `signalPeerDead`), nie czeka ~9s na heartbeat. Test PASS: `echo stop > .../remoteproc0/state` na zdrowym M4F → `broken pipe` → reboot w ~3ms (heartbeat nie drgnął).
 3. ~~M4F EVENT scaffolding cleanup~~ (P3) — **ZROBIONE + ZWERYFIKOWANE NA ŻYWO (16.06.2026)**: w `doPeriodicTick` zakomentowany log `Tick #%u` (spamował m4f-watch) ORAZ testowy EVENT co 10s (scaffolding — leciał dopóki `gLinuxEndpoint != 0`, czyli wiecznie po 1. kontakcie → po stopie Linuxa GIVEUP/„ACK for unknown"). `sendEvent()` bez zmian (do realnych EVENT-ów z czujników). `m4f-watch` po Deploy-M4F: czysty, zero `Tick`/EVENT/GIVEUP, tylko heartbeat PING+ACK co ~6s.
-4. Drobne: ~~`panic_on_oops=1`~~ (ZROBIONE + zweryfikowane na bramce 16.06, `modules/06-kernel-panic.sh`), persistent restart counter, redeploy Go dla kosmetyki tekstu crash-testu.
+4. Drobne: ~~`panic_on_oops=1`~~ (ZROBIONE + zweryfikowane na bramce 16.06, `modules/06-kernel-panic.sh`), ~~persistent restart counter~~ (ZROBIONE 16.06, `modules/07-boot-accounting.sh` + Go breadcrumb, czeka na `setup.sh` + Deploy-Go), redeploy Go dla kosmetyki tekstu crash-testu.
 5. Long-term: Warstwa C (DMSC), OTA, bazy, health monitoring (niżej).
 
 ### ✅ DONE — Recovery fix + crash testy (15.06.2026)
@@ -202,7 +202,7 @@ Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabe
   ```
 
 ### ⏳ Pending — Priorytet 3 (nice-to-have)
-- Persistent restart counter (`/var/lib/bramka/restart_count` + timestamp) z alarmem >3/dzień
+- ~~Persistent restart counter~~ — ZROBIONE 16.06.2026 (`modules/07-boot-accounting.sh`): licznik bootów + atrybucja przyczyny + alarm reboot-storm. Breadcrumb `/var/lib/bramka/reboot_reason` (Go `recoverByReboot` zapisuje „go-peer-dead" przed sync), oneshot `bramka-boot-accounting.service` przy boocie czyta+atrybuuje+kasuje; brak breadcrumb → doklasyfikowanie z `journalctl -b -1` (panic / clean-shutdown / hard-reset). Persistent journald (50M cap) włączony. Alarm sparametryzowany w `/etc/bramka/boot-accounting.conf` (`ALARM_ENABLED/THRESHOLD/WINDOW_HOURS`, default >3/24h; setup nie nadpisuje istniejącego). Podgląd: `bramka-reboots`. Czeka na `setup.sh` + Deploy-Go (breadcrumb).
 - Dedicated `m4f-reload.service` (Type=oneshot) dla security hardening (Go może być non-root)
 - ~~M4F EVENT scaffolding cleanup~~ — ZROBIONE + zweryfikowane 16.06.2026 (patrz NASTĘPNA SESJA pkt 3).
 - ~~`panic_on_oops=1`~~ — ZROBIONE + zweryfikowane na bramce 16.06.2026 (`modules/06-kernel-panic.sh`): drop-in `/etc/sysctl.d/60-bramka-panic.conf`, apply od razu + persistent. Zamyka lukę „oops kaleczy system ale nie panikuje → systemd dalej klepie watchdog → nic nie łapie". `sysctl kernel.panic_on_oops` = 1 po `setup.sh`.
@@ -275,11 +275,25 @@ ls /dev/rpmsg*  # M4F zwykle na /dev/rpmsg2 ale numer może się zmienić
 # Network info:
 ip link show eth1
 cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
+
+# Reboot accounting (licznik + przyczyny + alarm):
+bramka-reboots                            # status: licznik, historia, alarm
+cat /var/lib/bramka/boot_history.log      # pełny ledger
+journalctl -t bramka-boot                 # wpisy/alarmy w journalu
+$EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ```
 
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-16 — persistent restart counter + atrybucja przyczyny reboota
+- **`modules/07-boot-accounting.sh`** (nowy, idempotentny): licznik bootów (`/var/lib/bramka/boot_count`), ledger (`boot_history.log`: `epoch | iso | boot#N | kind | cause`), alarm reboot-storm. Oneshot `bramka-boot-accounting.service` (per boot) + helper statusowy `bramka-reboots`.
+- **Atrybucja „kto zrebootował"**: breadcrumb `/var/lib/bramka/reboot_reason` — Go `recoverByReboot()` zapisuje „go-peer-dead" PRZED sync. Service przy boocie: breadcrumb → CONTROLLED+cause+kasuje; brak → doklasyfikowanie z logu poprzedniego bootu: „Kernel panic" → panic/Warstwa D, sygnatura clean-shutdown → ręczny reboot, nic → hard reset (M4F SOC/HW wdt/power loss).
+- **Persistent journald** (drop-in `/etc/systemd/journald.conf.d/bramka.conf`, `Storage=persistent`, `SystemMaxUse=50M`) — bez tego reboot kasuje dowody i nie ma jak czytać `-b -1`. Wymagane do detekcji panic + diagnostyki stormu.
+- **Sparametryzowane** w `/etc/bramka/boot-accounting.conf` (`ALARM_ENABLED/ALARM_THRESHOLD/ALARM_WINDOW_HOURS`, default >3/24h). Setup tworzy z defaultami TYLKO gdy brak pliku → re-run nie nadpisuje ustawień admina/health-monitora. `ALARM_ENABLED=0` wyłącza alarm (liczenie leci dalej).
+- `bash -n` modułu + render obu embedded skryptów OK, awk okno/próg przetestowane lokalnie. Czeka na `git pull && sudo ./setup.sh` (aktywuje się przy następnym boocie) + `Deploy-Go -Build` (breadcrumb).
+- **Caveat**: timestampy zależą od zegara (RTC-less + brak NTP offline może je przesunąć). Verdin ma RTC. Reset-cause register (rozróżnienie M4F-SOC-reset vs power-loss) = TODO long-term.
 
 ### 2026-06-16 — panic_on_oops=1 (domknięcie luki oops)
 - **`modules/06-kernel-panic.sh`** (nowy, idempotentny): drop-in `/etc/sysctl.d/60-bramka-panic.conf` z `kernel.panic_on_oops = 1` + `sysctl -w` (apply od razu, też persistent). Podłącza się sam (setup.sh odpala moduły alfabetycznie).

@@ -86,6 +86,7 @@ m4f-watch                          # live M4F trace
 - ⏳ **Warstwa C**: M4F → Linux reset via DMSC
 - ✅ **Warstwa D**: Linux HW watchdog (`/dev/watchdog` via systemd, `RuntimeWatchdogSec=30`) - konfigurowany przez `modules/05-watchdog.sh` (był zgubiony przy re-flashu, przywrócony 15.06.2026)
 - ✅ **panic_on_oops=1** (`modules/06-kernel-panic.sh`): oops → pełny panic → łapie Warstwa D. Domyka lukę "oops kaleczy kernel ale systemd dalej klepie watchdog → nic nie łapie"
+- ✅ **Boot accounting** (`modules/07-boot-accounting.sh`): licznik bootów + atrybucja przyczyny (breadcrumb Go / kernel panic / clean-shutdown / hard reset) + alarm reboot-storm (sparametryzowany `/etc/bramka/boot-accounting.conf`, default >3/24h). Persistent journald (50M). Podgląd: `bramka-reboots`
 - ✅ **Heartbeat jednokierunkowy Linux→M4F**: Go pinguje M4F co 5s idle; brak odpowiedzi (~9s) = M4F martwy → **clean reboot** (`recoverByReboot`). M4F-initiated heartbeat usunięty (opcja A). Brak per-core reset M4F na AM62 - jedyna recovery to pełny reset SoC.
 - ✅ **Cold-boot race fix**: serwis czeka na `/dev/rpmsg*` (`waitForM4FChrdev`) zamiast paść gdy M4F jeszcze się podnosi
 - ⏳ Yocto build - later
