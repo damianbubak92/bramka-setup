@@ -184,20 +184,26 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **Non-root hardening (16.06.2026, ZWERYFIKOWANE NA ŻYWO)**: `modules/08-hardening.sh` + przerobiony `rpmsg-service.service`. Serwis jako user `bramka` (nie root), zero capabilities. Device przez udev (grupa `bramka`), reboot przez wzorzec path-unit (`/run/bramka/reboot-request` → `bramka-reboot.path` → `bramka-reboot.service` robi czysty `systemctl reboot`; serwis nie ma roota ani CAP_SYS_BOOT). Binarka przeniesiona `/root/bramka-services` → `/opt/bramka` (Deploy-Go cel zmieniony). `StartLimit*` przeniesione do `[Unit]` (były ignorowane w `[Service]`). Go `recoverByReboot` pisze trigger (fallback systemctl/syscall dla root). **Weryfikacja**: `User=bramka` + proces uid `bramka` + `/dev/rpmsg0` grupa `bramka`; krok 7: `echo stop` → non-root serwis → trigger → path-unit → czysty reboot → `boot#1 CONTROLLED go-peer-dead`, serwis wraca jako `bramka`.
 
 ### 🔜 NASTĘPNA SESJA — zacznij tu
-Recovery + observability **kompletne i zweryfikowane na żywo**. Sesja 16.06 domknęła cały sprint P2/P3 (szczegóły: Session Log 16.06). Stan: 4 warstwy recovery + fast-fail na device-gone i oops + bezpieczny deploy + księgowanie reboot-ów z atrybucją. Produkcyjny nośnik = eMMC (Verdin), industrial SD odrzucone.
 
-**Architektura (DECYZJA 16.06.2026):** automation engine → na **M4F, na RTOS** (determinizm, zero round-tripa do Linuxa). M4F: NoRTOS→RTOS. Linux = UI/chmura/config. Skutek: Warstwa C (DMSC reset) wraca jako „prawdopodobnie tak, później" (M4F trzyma żywe sterowanie). Stary engine: CC3235, C/TI-RTOS, reguły JSON; user ma kody CC3235+CC1310 do analizy. Patrz pamięć [[near-term-roadmap]].
+**Stan**: infra bramki (recovery + observability + non-root hardening) **kompletna i zweryfikowana na żywo** — cały sprint P2/P3 zamknięty 16.06 (szczegóły: ✅ Done wyżej + Session Log). Teraz pivot na **produkt: port silnika automatyzacji gen1 → gen2 (AM62)**.
 
-**Najbliższe tematy (kolejność):** 1) port automation engine (M4F/RTOS), 2) remote access (telefon/przeglądarka: CRUD automatyzacji + sterowanie/monitoring), 3) CC1310↔M4F przez SPI, 4) bazy (SQLite config + time-series telemetria).
+**👉 NASTĘPNE ZADANIE: szkielet firmware M4F (RTOS) z portem enginu.**
+- Cel: nowy projekt CCS Theia na M4F z **FreeRTOS** (MCU+ SDK 12.00) — task „engine" = port `evaluateAutomationRules()` z gen1, event-driven (na napływ danych nodu + tick czasowy dla warunków TIME), zasilany regułami wgranymi z Linuxa przez RPMsg.
+- **Ja przygotowuję źródła** (engine.c/.h oparte na `shared/automation.h` + `shared/node_protocol.h`, integracja RPMsg, szkielet tasków RTOS); **user robi projekt CCS + build/deploy** ([[deploy-verification-owned-by-user]], [[ccs-project-separate-from-repo]]).
+- Zacznij od: przeczytaj `docs/ARCHITECTURE-GEN2.md` (pełna mapa) + gen1 `automationRules.c` (ścieżki w [[legacy-gateway-code]]). Port ewaluatora ~1:1 (D6 parytet), `getDeviceParameterValue()` czyta z lokalnego `NodesData`.
 
-**📐 Architektura gen2 ROZPISANA: `docs/ARCHITECTURE-GEN2.md`** (16.06.2026) — komplet decyzji + protokoły. Ustalone: M4F=SPI master / CC1310=slave (2 linie handshake `MASTER_READY`/`SLAVE_READY` jak gen1, role odwrócone), ramka SPI 128 B (nagłówek+CRC16+pending), MAX_RULES=100; RPMsg rozszerzony o `MSG_RULE_BEGIN/ITEM/COMMIT` (chunked, atomic swap), `MSG_NODE_CMD/TELEMETRY/STATE/RULE_FIRED`; JSON tylko na Linuxie, M4F dostaje reguły binarnie. Kody gen1 do portu: pamięć [[legacy-gateway-code]].
+**Co JUŻ gotowe pod ten port (16.06):**
+- `docs/ARCHITECTURE-GEN2.md` — decyzje + protokoły SPI (M4F master, 2 linie handshake, ramka 128B) i RPMsg (typy 0x30–0x42, chunked rule push + atomic swap).
+- `shared/protocol.h` (+ mirror `m4f-firmware/protocol.h`): typy `MSG_RULE_*`, `MSG_NODE_*` (0x30–0x42).
+- `shared/node_protocol.h`: `MessageStruct` (1:1 gen1 → interop CC1310), `NodesData`, stałe node/cmd.
+- `shared/automation.h`: `AutomationRule` + warunki + akcje + kody. MAX_RULES=100.
+- ⚠️ **Wire-ABI**: M4F=ARM32, A53=AArch64 → enumy jako `#define` (nie pola struct), jawny padding, stałe szerokości. Nagłówki NIE skompilowane lokalnie (brak toolchaina) — pierwszy build M4F/Go to zweryfikuje.
+- ⚠️ **Sync przy buildzie**: skopiuj `shared/*.h` do projektu CCS. `Deploy-Go` kopiuje tylko `protocol.h` — jak Go zacznie używać `node_protocol.h`/`automation.h`, dorzuć je do kopiowania w Deploy-Go.
 
-**✅ Krok 1+2 ZROBIONE (16.06.2026):** `shared/protocol.h` rozszerzony o nowe typy 0x30–0x42 (+ mirror w `m4f-firmware/protocol.h`). Struktury przeniesione do `shared/`: `shared/node_protocol.h` (`MessageStruct` 1:1 z gen1 dla interop CC1310, `int`→`int32_t`; `NodesData`; node/cmd jako `#define`), `shared/automation.h` (`AutomationRule`+warunki+akcje). **Wire-ABI hardened**: enumy jako `#define` (nie pola struct — TI clang `-fshort-enums` vs gcc int), jawny padding, stałe szerokości — bo M4F(ARM32)↔A53(AArch64). NIE skompilowane lokalnie (brak toolchaina). **Następny krok:** szkielet firmware M4F (nowy projekt CCS, RTOS task enginu = port `evaluateAutomationRules`).
+**Dalej w roadmapie (po enginie):** 2) remote access (telefon/web: CRUD reguł + sterowanie/monitoring; tu non-root hardening staje się krytyczny), 3) CC1310↔M4F przez SPI (przepisać CC1310 `spi_master_task`→slave + `DATA_READY`), 4) bazy (SQLite config + time-series telemetria). Patrz [[near-term-roadmap]].
 
-**P3 domknięty** (16.06): non-root hardening (`modules/08`) zrobiony — czeka na Deploy-Go (`/opt/bramka`) + Install-GoService + restart.
-
-**Odłożone long-term (patrz sekcja niżej):**
-- Warstwa C (DMSC reset) — warunkowo, decyzja przy projekcie enginu. OTA (RAUC A/B). Health monitoring (eMMC wear — wpina się w `bramka-reboots`/alarm). Carrier board.
+**Odłożone long-term:**
+- **Warstwa C (DMSC reset)** — teraz „prawdopodobnie tak, później" (M4F trzyma żywe sterowanie → crash Linuxa nie może go zabić na ~70s). Decyzja przy dojrzewaniu enginu. OTA (RAUC A/B). Health monitoring (eMMC wear → wpina się w `bramka-reboots`/alarm). Carrier board.
 
 **Opcjonalne domknięcie testów boot-accounting** (mechanizm ten sam, nie-zweryfikowane na żywo): klasyfikacja kernel-panic i clean-shutdown (manual reboot), realne odpalenie alarmu >3/24h.
 
