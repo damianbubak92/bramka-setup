@@ -53,6 +53,9 @@ Deploy-M4F                         # 5s logów
 Deploy-M4F -LogForever             # logi do Ctrl+C
 Deploy-M4F -NoLogs                 # bez logów
 ```
+> `m4f-reload` (woła go `Deploy-M4F`) sam zatrzymuje `rpmsg-service` przed
+> `echo stop` M4F i restartuje po starcie. Bez tego serwis wykryłby zniknięcie
+> `/dev/rpmsg` jako PEER DEAD i zrobił reboot bramki w trakcie podmiany firmware.
 
 **Go service** (z laptopa, PowerShell):
 ```powershell

@@ -120,6 +120,28 @@ if [ "\$NAME" != "5000000.m4fss" ]; then
     exit 1
 fi
 
+# Stop rpmsg-service before touching M4F. The service watches /dev/rpmsg and
+# treats a vanished device (the 'echo stop' below) as PEER DEAD -> immediate
+# clean reboot of the whole gateway (P2 fast-fail). With the service stopped the
+# device is also released cleanly, so the M4F stop doesn't need the kill fallback.
+# Pre-flight checks above run first, so a trivial error never bounces the service.
+SERVICE="rpmsg-service"
+SVC_WAS_ACTIVE=0
+if systemctl is-active --quiet "\$SERVICE"; then
+    SVC_WAS_ACTIVE=1
+    echo "[*] Stopping \$SERVICE (would reboot the gateway on device-gone)"
+    systemctl stop "\$SERVICE"
+fi
+
+# Always bring the service back if it was running, even on early error/exit.
+restore_service() {
+    if [ "\$SVC_WAS_ACTIVE" = "1" ] && ! systemctl is-active --quiet "\$SERVICE"; then
+        echo "[*] Restarting \$SERVICE"
+        systemctl start "\$SERVICE"
+    fi
+}
+trap restore_service EXIT
+
 echo "[1/4] Stopping M4F..."
 echo stop > "\$STATE_FILE" 2>/dev/null || true
 sleep 0.5

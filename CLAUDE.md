@@ -149,6 +149,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - M4F MUSI mieć custom hardfault handler — bez tego silent crash
 - Firmware path: `/lib/firmware/ti-ipc/am62xx/ipc_echo_test_mcu2_0_release_strip.xer5f`
 - `setup.sh module 03-m4f-firmware.sh` tylko BACKUPS default → trzeba osobno `Deploy-M4F`
+- **`m4f-reload` zatrzymuje `rpmsg-service` przed `echo stop` M4F i restartuje po starcie (przez `trap EXIT`)** — bo P2 fast-fail: serwis widzący zniknięcie `/dev/rpmsg` robi natychmiastowy reboot bramki, co rozwalało deploy w trakcie. Restart tylko jeśli serwis był aktywny. Dotyczy też `Deploy-M4F` (woła `m4f-reload`) — helper PowerShell bez zmian. Po `git pull` na bramce: `sudo ./setup.sh` regeneruje `m4f-reload`.
 
 ### Disaster recovery procedure
 1. Świeży flash karty SD (Etcher na Win 10, sprawdzony workflow)
@@ -279,6 +280,12 @@ cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-16 — m4f-reload service-aware (skutek uboczny P2)
+- **Problem**: po P2 fast-fail nie dało się robić `Deploy-M4F`/`m4f-reload` przy działającym serwisie — `echo stop` M4F = device-gone = natychmiastowy reboot bramki w trakcie podmiany firmware.
+- **Fix w `modules/02-tools.sh`** (generowany `m4f-reload`): przed `echo stop` M4F zatrzymuje `rpmsg-service` (gdy aktywny), po starcie M4F restartuje przez `trap restore_service EXIT` (też przy błędzie; restart tylko jeśli był aktywny). Pre-flight checki przed stopem serwisu → trywialny błąd nie rusza serwisu. Bonus: zwolniony device = `echo stop` M4F nie potrzebuje fallbacku `pkill/fuser`.
+- **Decyzja architektoniczna**: logika w `m4f-reload` (repo, wersjonowany), NIE w `Deploy-M4F` (PowerShell, poza repo) → każdy caller bezpieczny (też ręczny SSH), `Deploy-M4F` bez zmian.
+- Zweryfikowane: `bash -n` modułu + render wygenerowanego `m4f-reload` parsuje się czysto. ⚠️ Na bramce trzeba `git pull && sudo ./setup.sh` żeby zregenerować `/root/m4f-reload` (stary deployed nie ma jeszcze tej logiki).
 
 ### 2026-06-16 — P2 transport fast-fail (device-gone) PASS + decyzja SD
 - **Decyzja: NIE kupujemy industrial SD** — produkcja na eMMC (Verdin), dev na zapasowych kartach consumer (uszkodzona = re-flash). Zdjęte z backlogu. Zapisane do pamięci.
