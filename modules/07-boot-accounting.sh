@@ -42,12 +42,21 @@ mkdir -p "$STATE_DIR" "$CONF_DIR" "$BIN_DIR"
 #
 # GOTCHA (Arago/Yocto): /var/log to symlink do /var/volatile/log (tmpfs), więc
 # /var/log/journal NIE przetrwa reboota tam. Backing trzymamy na trwałym /var/lib
-# i bind-mountujemy na /var/log/journal. systemd-journal-flush.service ma wbudowane
-# RequiresMountsFor=/var/log/journal -> automatycznie czeka na nasz bind zanim
-# przełączy journald na persistent (nie trzeba walczyć z wczesnym startem journalda).
+# i bind-mountujemy na realną ścieżkę /var/volatile/log/journal.
+# WAŻNE: nazwa unitu .mount MUSI odpowiadać SKANONIKALIZOWANEJ ścieżce Where=.
+# /var/log to symlink, więc Where=/var/log/journal kanonikalizuje się do
+# /var/volatile/log/journal -> unit MUSI być var-volatile-log-journal.mount,
+# inaczej systemd go ignoruje przy boocie (montował się tylko ręcznie w setupie).
+# systemd-journal-flush.service ma RequiresMountsFor=/var/log/journal (kanonikalizuje
+# do tej samej ścieżki) -> auto-czeka na nasz bind przed przełączeniem na persistent.
 # ---------------------------------------------------------------------------
 PERSIST_JOURNAL_DIR="/var/lib/journal"
-JOURNAL_MOUNT_UNIT="/etc/systemd/system/var-log-journal.mount"
+JOURNAL_MOUNT_WHERE="/var/volatile/log/journal"
+JOURNAL_MOUNT_UNIT="/etc/systemd/system/var-volatile-log-journal.mount"
+
+# Cleanup wrong-named unit z wcześniejszej wersji (mismatch nazwy -> ignorowany).
+systemctl disable var-log-journal.mount >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/var-log-journal.mount
 
 mkdir -p /etc/systemd/journald.conf.d "$PERSIST_JOURNAL_DIR"
 cat > "$JOURNALD_DROPIN" << 'JEOF'
@@ -60,7 +69,7 @@ SystemMaxUse=50M
 JEOF
 echo "[*] Wrote $JOURNALD_DROPIN (persistent journal, cap 50M)"
 
-# Bind-mount unit: persistent /var/lib/journal -> /var/log/journal.
+# Bind-mount unit: persistent /var/lib/journal -> /var/volatile/log/journal.
 cat > "$JOURNAL_MOUNT_UNIT" << 'MEOF'
 [Unit]
 Description=Persistent systemd journal (bind over volatile /var/log)
@@ -70,29 +79,29 @@ ConditionPathIsDirectory=/var/lib/journal
 
 [Mount]
 What=/var/lib/journal
-Where=/var/log/journal
+Where=/var/volatile/log/journal
 Type=none
 Options=bind
 
 [Install]
 WantedBy=local-fs.target
 MEOF
-echo "[*] Wrote $JOURNAL_MOUNT_UNIT (bind /var/lib/journal -> /var/log/journal)"
+echo "[*] Wrote $JOURNAL_MOUNT_UNIT (bind -> $JOURNAL_MOUNT_WHERE)"
 
 systemctl daemon-reload
-systemctl enable var-log-journal.mount >/dev/null 2>&1 || true
+systemctl enable var-volatile-log-journal.mount >/dev/null 2>&1 || true
 
-# Activate now (this boot too, not only after reboot): create mountpoint in the
-# volatile /var/log, bind the persistent backing, then make journald use it.
-mkdir -p /var/log/journal 2>/dev/null || true
-if ! mountpoint -q /var/log/journal; then
-    mount --bind "$PERSIST_JOURNAL_DIR" /var/log/journal 2>/dev/null || true
+# Activate now (this boot too, not only after reboot): create mountpoint on the
+# real volatile path, bind the persistent backing, then make journald use it.
+mkdir -p "$JOURNAL_MOUNT_WHERE" 2>/dev/null || true
+if ! mountpoint -q "$JOURNAL_MOUNT_WHERE"; then
+    mount --bind "$PERSIST_JOURNAL_DIR" "$JOURNAL_MOUNT_WHERE" 2>/dev/null || true
 fi
-systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+systemd-tmpfiles --create --prefix "$JOURNAL_MOUNT_WHERE" >/dev/null 2>&1 || true
 systemctl restart systemd-journald 2>/dev/null || true
 journalctl --flush 2>/dev/null || true
-if mountpoint -q /var/log/journal; then
-    echo "[*] /var/log/journal bind-mounted (persistent) - active now"
+if mountpoint -q "$JOURNAL_MOUNT_WHERE"; then
+    echo "[*] $JOURNAL_MOUNT_WHERE bind-mounted (persistent) - active now"
 else
     echo "[*] WARN: bind not active yet (will mount on next boot via the unit)"
 fi
