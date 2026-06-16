@@ -220,4 +220,5 @@ systemctl enable bramka-boot-accounting.service >/dev/null 2>&1 || true
 
 echo "[*] Boot-accounting module complete"
 echo "    Aktywuje się przy NASTĘPNYM boocie (oneshot). Podgląd: bramka-reboots"
-echo "    Test bez reboota (doda 1 wpis): systemctl start bramka-boot-accounting && bramka-reboots"
+echo "    Test bez reboota (doda 1 wpis): systemctl restart bramka-boot-accounting && bramka-reboots
+    (oneshot+RemainAfterExit: 'start' po pierwszym boocie to no-op, użyj 'restart')"
