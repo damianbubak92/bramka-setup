@@ -182,7 +182,7 @@ Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabe
 1. ~~Industrial SD~~ — **ODRZUCONE (16.06.2026)**: produkcja idzie na eMMC w Verdin (nie SD). Na dev user ma zapasowe karty consumer — uszkodzona = re-flash i jedziemy dalej. Industrial SD nie kupujemy (trudno dostać).
 2. ~~Transport reconnect re-detect~~ (P2) — **ZROBIONE + ZWERYFIKOWANE (16.06.2026)**. Brak in-process reconnect by design (device-gone → reboot → świeży proces → `waitForM4FChrdev` re-detektuje, `findM4FChrdev` number-agnostic). **+ hardening fast-fail**: device-gone sygnalizuje PEER DEAD natychmiast (kanał `Transport.DeviceGone()` → `deviceGoneWatcher` → `signalPeerDead`), nie czeka ~9s na heartbeat. Test PASS: `echo stop > .../remoteproc0/state` na zdrowym M4F → `broken pipe` → reboot w ~3ms (heartbeat nie drgnął).
 3. ~~M4F EVENT scaffolding cleanup~~ (P3) — **ZROBIONE + ZWERYFIKOWANE NA ŻYWO (16.06.2026)**: w `doPeriodicTick` zakomentowany log `Tick #%u` (spamował m4f-watch) ORAZ testowy EVENT co 10s (scaffolding — leciał dopóki `gLinuxEndpoint != 0`, czyli wiecznie po 1. kontakcie → po stopie Linuxa GIVEUP/„ACK for unknown"). `sendEvent()` bez zmian (do realnych EVENT-ów z czujników). `m4f-watch` po Deploy-M4F: czysty, zero `Tick`/EVENT/GIVEUP, tylko heartbeat PING+ACK co ~6s.
-4. Drobne: ~~`panic_on_oops=1`~~ (ZROBIONE 16.06, `modules/06-kernel-panic.sh`, czeka na `setup.sh` na bramce), persistent restart counter, redeploy Go dla kosmetyki tekstu crash-testu.
+4. Drobne: ~~`panic_on_oops=1`~~ (ZROBIONE + zweryfikowane na bramce 16.06, `modules/06-kernel-panic.sh`), persistent restart counter, redeploy Go dla kosmetyki tekstu crash-testu.
 5. Long-term: Warstwa C (DMSC), OTA, bazy, health monitoring (niżej).
 
 ### ✅ DONE — Recovery fix + crash testy (15.06.2026)
@@ -205,7 +205,7 @@ Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabe
 - Persistent restart counter (`/var/lib/bramka/restart_count` + timestamp) z alarmem >3/dzień
 - Dedicated `m4f-reload.service` (Type=oneshot) dla security hardening (Go może być non-root)
 - ~~M4F EVENT scaffolding cleanup~~ — ZROBIONE + zweryfikowane 16.06.2026 (patrz NASTĘPNA SESJA pkt 3).
-- ~~`panic_on_oops=1`~~ — ZROBIONE 16.06.2026 (`modules/06-kernel-panic.sh`): drop-in `/etc/sysctl.d/60-bramka-panic.conf`, apply od razu + persistent. Zamyka lukę „oops kaleczy system ale nie panikuje → systemd dalej klepie watchdog → nic nie łapie". Czeka tylko na `git pull && sudo ./setup.sh` na bramce.
+- ~~`panic_on_oops=1`~~ — ZROBIONE + zweryfikowane na bramce 16.06.2026 (`modules/06-kernel-panic.sh`): drop-in `/etc/sysctl.d/60-bramka-panic.conf`, apply od razu + persistent. Zamyka lukę „oops kaleczy system ale nie panikuje → systemd dalej klepie watchdog → nic nie łapie". `sysctl kernel.panic_on_oops` = 1 po `setup.sh`.
 
 ### ⏳ Pending — Long-term (poza obecnym sprintem)
 - **Warstwa C (DMSC reset)**: M4F triggeruje DMSC reset tylko A53 cluster (Linux), bez resetu siebie. Wymaga TI-SCI API research w MCU+ SDK 12.00 (`Sciclient_procBootRequestProcessor` + reset sequence dla TISCI_DEV_A53SS0_0..3). Fallback po 30s: pełny SoC reset.
@@ -285,7 +285,7 @@ cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
 - **`modules/06-kernel-panic.sh`** (nowy, idempotentny): drop-in `/etc/sysctl.d/60-bramka-panic.conf` z `kernel.panic_on_oops = 1` + `sysctl -w` (apply od razu, też persistent). Podłącza się sam (setup.sh odpala moduły alfabetycznie).
 - **Dlaczego**: domyślnie oops (NULL deref/BUG) ubija wątek i jedzie dalej w niespójnym stanie — systemd żyje, dalej klepie /dev/watchdog0 → Warstwa D nie zadziała, Warstwa A łapie tylko Go. Luka: pokaleczony kernel bez panic = bramka „żywa" ale martwa. `panic_on_oops=1` → oops staje się panic → łapie Warstwa D (zweryfikowane testem `echo c`). Fail-fast spójny z designem.
 - **NIE ruszono `kernel.panic`** (delay reboota po panic) — recovery zweryfikowane na panic=0 → HW watchdog. Opcja na przyszłość: `kernel.panic = 10` w tym samym drop-inie (szybszy reboot, HW watchdog backup).
-- `bash -n` OK, exec-bit ustawiony. Czeka na `git pull && sudo ./setup.sh` na bramce (potem `sysctl kernel.panic_on_oops` = 1).
+- **Zweryfikowane na bramce**: `setup.sh` przeleciał czysto (wszystkie 6 modułów idempotentne), `sysctl kernel.panic_on_oops` = 1, drop-in `/etc/sysctl.d/60-bramka-panic.conf` obecny (persistent).
 
 ### 2026-06-16 — m4f-reload service-aware (skutek uboczny P2)
 - **Problem**: po P2 fast-fail nie dało się robić `Deploy-M4F`/`m4f-reload` przy działającym serwisie — `echo stop` M4F = device-gone = natychmiastowy reboot bramki w trakcie podmiany firmware.
