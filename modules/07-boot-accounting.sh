@@ -115,9 +115,9 @@ if [ -f "$REASON_FILE" ]; then
     rm -f "$REASON_FILE"
     kind="CONTROLLED"
 else
-    nboots=$(journalctl --list-boots --no-pager 2>/dev/null | wc -l)
-    if [ "${nboots:-0}" -le 1 ]; then
-        kind="INFO"; cause="first boot / no previous-boot log"
+    if ! journalctl -b -1 -n 1 --no-pager >/dev/null 2>&1; then
+        # No previous boot in the (persistent) journal yet - can't classify.
+        kind="INFO"; cause="no previous-boot log (persistent journal just enabled / first boot)"
     elif journalctl -k -b -1 --no-pager 2>/dev/null | grep -qi "kernel panic"; then
         kind="UNEXPECTED"; cause="kernel panic -> HW watchdog (Warstwa D)"
     elif journalctl -b -1 --no-pager 2>/dev/null | grep -qiE "systemd-shutdown|Rebooting\.|Powering off\.|Reached target.*[Ss]hutdown"; then
