@@ -402,14 +402,30 @@ func runCrashM4FTest(p *Protocol) {
 // `systemctl reboot` (runs the systemd shutdown sequence: unmount + sync);
 // if that can't be issued we sync and force a kernel reboot. Last resort if
 // even that stalls is the HW watchdog (Warstwa D).
+// rebootRequestPath is the trigger watched by bramka-reboot.path. Touching it
+// (as the unprivileged service user) makes systemd run a clean reboot - the
+// service itself holds no reboot privilege. See modules/08-hardening.sh.
+const rebootRequestPath = "/run/bramka/reboot-request"
+
 func recoverByReboot() {
 	// Drop a breadcrumb so the boot-accounting service can attribute the upcoming
 	// reboot to us (vs an uninitiated hard reset). Written before Sync so it's
 	// flushed to disk along with everything else.
 	writeRebootReason("go-peer-dead (M4F unreachable via heartbeat/device-gone)")
 
-	syscall.Sync() // flush to SD before going down
+	syscall.Sync() // flush state (incl. breadcrumb) before going down
 
+	// Preferred path (works as the non-root service user): request a clean reboot
+	// via the bramka-reboot.path watcher. We only write a file we own; PID 1 does
+	// the privileged reboot.
+	if err := os.WriteFile(rebootRequestPath, []byte("go-peer-dead\n"), 0o644); err == nil {
+		log.Printf("[Recovery] reboot requested via %s (bramka-reboot.path)", rebootRequestPath)
+		return
+	} else {
+		log.Printf("[Recovery] could not write %s: %v - falling back to direct reboot", rebootRequestPath, err)
+	}
+
+	// Fallback for dev/manual runs as root (path unit absent / outside systemd).
 	log.Printf("[Recovery] Issuing 'systemctl reboot'...")
 	if err := exec.Command("systemctl", "reboot").Run(); err != nil {
 		log.Printf("[Recovery] 'systemctl reboot' failed: %v - forcing kernel reboot", err)

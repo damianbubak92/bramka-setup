@@ -133,7 +133,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 
 ### Systemd units
 - **NEVER** `Restart=always` — zawsze `Restart=on-failure`
-- **ALWAYS** `StartLimitBurst=3` + `StartLimitIntervalSec=60` (safety net przed reboot loops)
+- **ALWAYS** `StartLimitBurst=3` + `StartLimitIntervalSec=60` (safety net przed reboot loops) — **w sekcji `[Unit]`, nie `[Service]`** (nowoczesny systemd ignoruje je w `[Service]`; do 16.06.2026 były w złym miejscu i nie działały)
 - **NEVER** crash tests w `ExecStart` (`-test crash-m4f`, `-test silent-hang`, `-test hang`)
 - Production default: `-test hello` lub prawdziwy service mode
 - Crash tests są **interactive only**: `ssh -t ... ad-hoc -test X`
@@ -181,15 +181,19 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **EVENT/tick cleanup (16.06.2026, zweryfikowane)**: `doPeriodicTick` — zakomentowany log `Tick #` (spam) + testowy EVENT co 10s (scaffolding). `m4f-watch` czysty.
 - **panic_on_oops=1 (16.06.2026, zweryfikowane)**: `modules/06-kernel-panic.sh` — oops → pełny panic → łapie Warstwa D. Domknięta luka „oops bez panic".
 - **Boot accounting (16.06.2026, zweryfikowane)**: `modules/07-boot-accounting.sh` — licznik bootów + atrybucja przyczyny (breadcrumb Go / panic / clean-shutdown / hard-reset) + alarm reboot-storm (`/etc/bramka/boot-accounting.conf`, default >3/24h). Persistent journald (50M). Podgląd: `bramka-reboots`.
+- **Non-root hardening (16.06.2026, KOD GOTOWY — czeka na deploy)**: `modules/08-hardening.sh` + przerobiony `rpmsg-service.service`. Serwis jako user `bramka` (nie root), zero capabilities. Device przez udev (grupa `bramka`), reboot przez wzorzec path-unit (`/run/bramka/reboot-request` → `bramka-reboot.path` → `bramka-reboot.service` robi czysty `systemctl reboot`; serwis nie ma roota ani CAP_SYS_BOOT). Binarka przeniesiona `/root/bramka-services` → `/opt/bramka`. `StartLimit*` przeniesione do `[Unit]` (były ignorowane w `[Service]`). Go `recoverByReboot` pisze trigger (fallback systemctl/syscall dla root). Czeka na: Deploy-Go (cel `/opt/bramka`) + Install-GoService + restart.
 
 ### 🔜 NASTĘPNA SESJA — zacznij tu
 Recovery + observability **kompletne i zweryfikowane na żywo**. Sesja 16.06 domknęła cały sprint P2/P3 (szczegóły: Session Log 16.06). Stan: 4 warstwy recovery + fast-fail na device-gone i oops + bezpieczny deploy + księgowanie reboot-ów z atrybucją. Produkcyjny nośnik = eMMC (Verdin), industrial SD odrzucone.
 
-**Zostało — drobne (P3, nie pilne):**
-- `m4f-reload.service` (Type=oneshot) — hardening: przenieść uprawnienie do reload M4F z procesu Go do dedykowanego oneshota (+ sudoers/polkit), żeby Go service mógł działać non-root.
+**Architektura (DECYZJA 16.06.2026):** automation engine → na **M4F, na RTOS** (determinizm, zero round-tripa do Linuxa). M4F: NoRTOS→RTOS. Linux = UI/chmura/config. Skutek: Warstwa C (DMSC reset) wraca jako „prawdopodobnie tak, później" (M4F trzyma żywe sterowanie). Stary engine: CC3235, C/TI-RTOS, reguły JSON; user ma kody CC3235+CC1310 do analizy. Patrz pamięć [[near-term-roadmap]].
 
-**Do przedyskutowania po obiedzie (wybór kierunku, long-term — patrz sekcja niżej):**
-- Warstwa C (DMSC reset), OTA (RAUC A/B), bazy (SQLite/InfluxDB), health monitoring (eMMC wear — wpina się w `bramka-reboots`/alarm), carrier board.
+**Najbliższe tematy (kolejność):** 1) port automation engine (M4F/RTOS), 2) remote access (telefon/przeglądarka: CRUD automatyzacji + sterowanie/monitoring), 3) CC1310↔M4F przez SPI (eventy nodów jadą istniejącą ścieżką RPMsg EVENT), 4) bazy (SQLite config + time-series telemetria). Keystone: model danych + jak reguły JSON trafiają z Linuxa do M4F i jak M4F raportuje stany w górę.
+
+**P3 domknięty** (16.06): non-root hardening (`modules/08`) zrobiony — czeka na Deploy-Go (`/opt/bramka`) + Install-GoService + restart.
+
+**Odłożone long-term (patrz sekcja niżej):**
+- Warstwa C (DMSC reset) — warunkowo, decyzja przy projekcie enginu. OTA (RAUC A/B). Health monitoring (eMMC wear — wpina się w `bramka-reboots`/alarm). Carrier board.
 
 **Opcjonalne domknięcie testów boot-accounting** (mechanizm ten sam, nie-zweryfikowane na żywo): klasyfikacja kernel-panic i clean-shutdown (manual reboot), realne odpalenie alarmu >3/24h.
 
@@ -205,14 +209,12 @@ Recovery + observability **kompletne i zweryfikowane na żywo**. Sesja 16.06 dom
 - Pattern crash testów (NIGDY pod systemd):
   ```powershell
   ssh root@bramka "systemctl stop rpmsg-service"
-  ssh -t root@bramka "/root/bramka-services/rpmsg-service/rpmsg-service -test <mode>"
+  ssh -t root@bramka "/opt/bramka/rpmsg-service/rpmsg-service -test <mode>"
   # reset-testy (silent-hang/crash-m4f) rebootują bramkę; przedtem: ssh ... "sync"
   ```
 
 ### ⏳ Pending — Priorytet 3 (nice-to-have)
-- Dedicated `m4f-reload.service` (Type=oneshot) dla security hardening (Go może być non-root)
-
-> Reszta P3 (EVENT cleanup, panic_on_oops, persistent restart counter) — ZROBIONE + zweryfikowane 16.06.2026, szczegóły w Session Log.
+> Cały P3 ZROBIONY 16.06.2026 (EVENT cleanup, panic_on_oops, persistent restart counter, non-root hardening). Szczegóły w Session Log. Non-root: zamiast „m4f-reload.service" wyszedł wzorzec path-unit dla reboota (`modules/08-hardening.sh`) — czeka na Deploy-Go (ścieżka `/opt/bramka`) + Install-GoService + restart.
 
 ### ⏳ Pending — Long-term (poza obecnym sprintem)
 - **Warstwa C (DMSC reset)**: M4F triggeruje DMSC reset tylko A53 cluster (Linux), bez resetu siebie. Wymaga TI-SCI API research w MCU+ SDK 12.00 (`Sciclient_procBootRequestProcessor` + reset sequence dla TISCI_DEV_A53SS0_0..3). Fallback po 30s: pełny SoC reset.
@@ -293,6 +295,13 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-16 — non-root hardening (rpmsg-service least-privilege) + decyzja: engine na M4F/RTOS
+- **Decyzja architektoniczna**: automation engine pójdzie na **M4F na RTOS** (nie A53/Linux) — determinizm, brak opóźnień round-tripa. M4F: NoRTOS→RTOS. Linux = UI/chmura/config. Warstwa C (DMSC) wraca jako prawdopodobna later (M4F trzyma żywe sterowanie). Roadmapa: engine → remote access → CC1310/SPI → bazy. Zapisane w pamięci [[near-term-roadmap]].
+- **Non-root hardening (`modules/08-hardening.sh`)**: rpmsg-service jako user `bramka`, zero capów. (1) /dev/rpmsg* przez udev (grupa bramka, 0660); (2) reboot bez roota/polkit/setuid przez wzorzec **path-unit** — serwis pisze `/run/bramka/reboot-request`, `bramka-reboot.path` odpala `bramka-reboot.service` (root) robiący czysty `systemctl reboot`; (3) stan w `/var/lib/bramka`+`/run/bramka` (own bramka). Binarka `/root/bramka-services`→`/opt/bramka` (user bramka nie wejdzie do 0700 /root → wymaga zmiany celu w Deploy-Go).
+- **Bugfix przy okazji**: `StartLimitBurst/IntervalSec` były w `[Service]` → nowoczesny systemd je IGNORUJE. Przeniesione do `[Unit]` (safety-net reboot-loop faktycznie zaczyna działać).
+- Unit hardening: `NoNewPrivileges`, `CapabilityBoundingSet=` (puste), `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=/var/lib/bramka /run/bramka`. NIE `PrivateDevices` (musi widzieć /dev/rpmsg), NIE `MemoryDenyWriteExecute` (Go/cgo).
+- `bash -n` modułu OK, importy Go OK. **Czeka na deploy**: git pull && sudo ./setup.sh + Deploy-Go (cel /opt/bramka) + Install-GoService + restart. Weryfikacja: `ps -o user= -p $(systemctl show -p MainPID --value rpmsg-service)` = `bramka`; test reboota przez `echo stop` (path-unit → clean reboot, boot-accounting: CONTROLLED go-peer-dead).
 
 ### 2026-06-16 — persistent restart counter + atrybucja przyczyny reboota
 - **`modules/07-boot-accounting.sh`** (nowy, idempotentny): licznik bootów (`/var/lib/bramka/boot_count`), ledger (`boot_history.log`: `epoch | iso | boot#N | kind | cause`), alarm reboot-storm. Oneshot `bramka-boot-accounting.service` (per boot) + helper statusowy `bramka-reboots`.
