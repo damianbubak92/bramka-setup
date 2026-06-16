@@ -120,11 +120,12 @@ func NewProtocol(t *Transport, heartbeatIdle time.Duration) *Protocol {
 	p.mySeq.Store(0) // we'll increment to 1 on first use
 	p.lastRxTime.Store(time.Now().UnixNano())
 
-	// Start dispatcher, retry, heartbeat workers
-	p.wg.Add(3)
+	// Start dispatcher, retry, heartbeat, device-gone workers
+	p.wg.Add(4)
 	go p.dispatchLoop()
 	go p.retryLoop()
 	go p.heartbeatLoop()
+	go p.deviceGoneWatcher()
 
 	log.Printf("[Protocol] Initialized (heartbeat idle: %v)", heartbeatIdle)
 	return p
@@ -587,6 +588,21 @@ func (p *Protocol) sendHeartbeatPing() {
 		}
 		// On success: ACK already logged in dispatcher, nothing to do
 	}()
+}
+
+// deviceGoneWatcher bridges a transport-level device disappearance to the
+// peer-dead path. On AM62 a vanished rpmsg endpoint means the M4F is gone and
+// only a full reset recovers it, so we signal peer dead immediately instead of
+// waiting for the heartbeat to time out (~9s). Same end action (clean reboot).
+func (p *Protocol) deviceGoneWatcher() {
+	defer p.wg.Done()
+	select {
+	case <-p.stopCh:
+		return
+	case <-p.transport.DeviceGone():
+		log.Printf("[Protocol] *** TRANSPORT device gone - peer unreachable, signaling peer dead ***")
+		p.signalPeerDead()
+	}
 }
 
 // signalPeerDead transitions to DEAD and closes peerDeadCh (idempotent).

@@ -178,8 +178,8 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 
 ### 🔜 NASTĘPNA SESJA — zacznij tu
 Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabela Recovery Flows + sekcja DONE niżej). Realnie zostało:
-1. 🛒 **Industrial SD** (Samsung Pro Endurance / SanDisk Industrial XI) — przed produkcją i przed kolejnymi reset-testami (consumer GOODRAM przeżyła 4 twarde resety 15.06 ale to nie nośnik prod).
-2. **Transport reconnect re-detect** (P2) — zweryfikować/dopracować że `transport.go` re-detektuje `/dev/rpmsg*` przy reconnect, nie cache'uje (cold-boot wait już jest, chodzi o runtime reconnect).
+1. ~~Industrial SD~~ — **ODRZUCONE (16.06.2026)**: produkcja idzie na eMMC w Verdin (nie SD). Na dev user ma zapasowe karty consumer — uszkodzona = re-flash i jedziemy dalej. Industrial SD nie kupujemy (trudno dostać).
+2. ~~Transport reconnect re-detect~~ (P2) — **ZROBIONE + ZWERYFIKOWANE (16.06.2026)**. Brak in-process reconnect by design (device-gone → reboot → świeży proces → `waitForM4FChrdev` re-detektuje, `findM4FChrdev` number-agnostic). **+ hardening fast-fail**: device-gone sygnalizuje PEER DEAD natychmiast (kanał `Transport.DeviceGone()` → `deviceGoneWatcher` → `signalPeerDead`), nie czeka ~9s na heartbeat. Test PASS: `echo stop > .../remoteproc0/state` na zdrowym M4F → `broken pipe` → reboot w ~3ms (heartbeat nie drgnął).
 3. **M4F EVENT scaffolding cleanup** (P3) — nie wysyłać autonomicznych EVENT gdy brak aktywnej sesji Linux (noise GIVEUP/„ACK for unknown").
 4. Drobne: `panic_on_oops=1`, persistent restart counter, redeploy Go dla kosmetyki tekstu crash-testu.
 5. Long-term: Warstwa C (DMSC), OTA, bazy, health monitoring (niżej).
@@ -244,7 +244,7 @@ Recovery architecture **kompletna i zweryfikowana** (4/4 scenariusze, patrz tabe
 - **M4F MAC**: `22:F4:99:37:A5:12` (locally administered, bit 2 in first byte)
 - **Hostname**: `bramka-01`
 - **IP**: `192.168.2.170` (DHCP reservation w routerze)
-- **Karta SD**: GOODRAM 64GB Class 10 UHS-I — consumer-grade, **rozsypała się po crash testach**, do wymiany na industrial
+- **Karta SD**: GOODRAM 64GB Class 10 UHS-I — consumer-grade. Decyzja (16.06.2026): NIE kupujemy industrial SD — produkcja na eMMC (Verdin), dev na zapasowych kartach consumer (uszkodzona = re-flash).
 
 ## Useful Commands Cheatsheet
 
@@ -279,6 +279,13 @@ cat /sys/class/net/eth1/addr_assign_type  # 3 = SET (good), 1 = RANDOM (bad)
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-16 — P2 transport fast-fail (device-gone) PASS + decyzja SD
+- **Decyzja: NIE kupujemy industrial SD** — produkcja na eMMC (Verdin), dev na zapasowych kartach consumer (uszkodzona = re-flash). Zdjęte z backlogu. Zapisane do pamięci.
+- **P2 zweryfikowane**: brak in-process reconnect by design (device-gone → reboot → świeży proces re-detektuje; `findM4FChrdev` number-agnostic po ścieżce HW `5000000.m4fss`).
+- **P2 hardening fast-fail ZROBIONE + PASS**: `transport.go` kanał `DeviceGone()` (`signalDeviceGone()` w `readerLoop`, idempotentny `sync.Once`) → `protocol.go` `deviceGoneWatcher()` (4. goroutine) → `signalPeerDead()`. Device-gone = natychmiastowy PEER DEAD, bez czekania ~9s na heartbeat. Akcja końcowa ta sama (clean reboot).
+- **Test PASS**: serwis `-test hello` (connected, nie pod systemd) → `echo stop > /sys/class/remoteproc/remoteproc0/state` na zdrowym M4F → `read /dev/rpmsg0: broken pipe` → `TRANSPORT device gone` → `Issuing systemctl reboot` w **~3ms** (heartbeat nie drgnął). Bramka wróciła sama, M4F auto-load z `/lib/firmware`.
+- **Lesson**: ani crash-m4f (SOC reset, Linux pada razem), ani silent-hang (`cpsid i`, remoteproc dalej „running") NIE wyzwalają ścieżki device-gone. Wyzwala ją dopiero rozbiórka rpmsg po stronie kernela (`echo stop`/`m4f-reload` na zdrowym M4F). `m4f-reload` wymaga pliku firmware (hot-swap) — do samego testu wystarczy `echo stop`.
 
 ### 2026-06-15 (noc, finał+++) — kernel panic PASS, CAŁA macierz recovery zweryfikowana
 - **Kernel panic test PASS**: `echo c > /proc/sysrq-trigger` z `kernel.panic=0` (kernel zamarł, brak auto-reboot) → bramka wróciła sama (`uptime: up 0 min`) → **dowód że Warstwa D (HW watchdog) zresetowała SoC**. `Kernel panic - not syncing: sysrq triggered crash` w logu.

@@ -84,7 +84,7 @@ func main() {
 	// the reboot itself can't proceed.
 	go func() {
 		<-p.PeerDeadCh()
-		log.Printf("[Main] *** PEER DEAD - heartbeat detected M4F unreachable ***")
+		log.Printf("[Main] *** PEER DEAD - M4F unreachable (heartbeat giveup or device gone) ***")
 		log.Printf("[Main] Recovery: clean reboot (remoteproc stop is unsafe on a hung M4F)")
 		sdNotify("STOPPING=1")
 		recoverByReboot()

@@ -32,6 +32,14 @@ type Transport struct {
 	rxChan  chan []byte
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
+
+	// deviceGoneCh is closed (once) when the rpmsg device disappears at runtime
+	// (M4F crashed/stopped/unloaded). On AM62 there is no per-core M4F reset, so
+	// a vanished endpoint always means the peer is dead and a full reset is the
+	// only recovery. Created in OpenTransport (before readerLoop), so the writer
+	// (reader goroutine) and reader (Protocol) are race-free.
+	deviceGoneCh   chan struct{}
+	deviceGoneOnce sync.Once
 }
 
 // OpenTransport finds the M4F RPMsg chrdev and opens it for RDWR.
@@ -47,10 +55,11 @@ func OpenTransport() (*Transport, error) {
 	}
 
 	t := &Transport{
-		devPath: devPath,
-		file:    f,
-		rxChan:  make(chan []byte, 32),
-		stopCh:  make(chan struct{}),
+		devPath:      devPath,
+		file:         f,
+		rxChan:       make(chan []byte, 32),
+		stopCh:       make(chan struct{}),
+		deviceGoneCh: make(chan struct{}),
 	}
 
 	// Start reader goroutine
@@ -76,6 +85,18 @@ func (t *Transport) Send(data []byte) error {
 // Rx returns channel of received raw byte arrays.
 func (t *Transport) Rx() <-chan []byte {
 	return t.rxChan
+}
+
+// DeviceGone returns a channel closed when the rpmsg device disappears at
+// runtime. On AM62 this means the M4F is gone and only a full reset recovers it;
+// callers should treat it as immediate peer-dead (no need to wait out heartbeat).
+func (t *Transport) DeviceGone() <-chan struct{} {
+	return t.deviceGoneCh
+}
+
+// signalDeviceGone closes deviceGoneCh exactly once. Safe to call concurrently.
+func (t *Transport) signalDeviceGone() {
+	t.deviceGoneOnce.Do(func() { close(t.deviceGoneCh) })
 }
 
 // Close stops reader and closes device.
@@ -117,10 +138,11 @@ func (t *Transport) readerLoop() {
 			
 			// Device went away (M4F crashed / stopped / unloaded)
 			// EPIPE = broken pipe, ENODEV = "not pollable" on disappeared rpmsg device
-			if strings.Contains(errStr, "broken pipe") || 
+			if strings.Contains(errStr, "broken pipe") ||
 			   strings.Contains(errStr, "not pollable") ||
 			   strings.Contains(errStr, "no such device") {
-				log.Printf("[Transport] FATAL: device disappeared (%v) - exiting reader", err)
+				log.Printf("[Transport] FATAL: device disappeared (%v) - signaling peer dead", err)
+				t.signalDeviceGone()
 				return
 			}
 			
