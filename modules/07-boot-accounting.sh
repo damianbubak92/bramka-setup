@@ -37,73 +37,66 @@ echo "[*] Configuring boot accounting (reboot counter + cause + alarm)"
 mkdir -p "$STATE_DIR" "$CONF_DIR" "$BIN_DIR"
 
 # ---------------------------------------------------------------------------
-# Persistent journald - logi muszą przeżyć reboot, inaczej tracimy dowody
-# (kernel panic z poprzedniego bootu) i nie da się diagnozować reboot-stormu.
+# Persistent journald (BEST-EFFORT, for diagnostics only - classification does
+# NOT depend on it; that's done via the clean_shutdown marker, see script below).
 #
 # GOTCHA (Arago/Yocto): /var/log to symlink do /var/volatile/log (tmpfs), więc
 # /var/log/journal NIE przetrwa reboota tam. Backing trzymamy na trwałym /var/lib
-# i bind-mountujemy na realną ścieżkę /var/volatile/log/journal.
-# WAŻNE: nazwa unitu .mount MUSI odpowiadać SKANONIKALIZOWANEJ ścieżce Where=.
-# /var/log to symlink, więc Where=/var/log/journal kanonikalizuje się do
-# /var/volatile/log/journal -> unit MUSI być var-volatile-log-journal.mount,
-# inaczej systemd go ignoruje przy boocie (montował się tylko ręcznie w setupie).
-# systemd-journal-flush.service ma RequiresMountsFor=/var/log/journal (kanonikalizuje
-# do tej samej ścieżki) -> auto-czeka na nasz bind przed przełączeniem na persistent.
+# i bind-mountujemy na /var/volatile/log/journal. Robimy to OneShot serwisem
+# (nie .mount - nazwa .mount musi pasować do skanonikalizowanej ścieżki, a przez
+# symlink /var/log to ordering/naming hell). Ordered Before=systemd-journal-flush
+# żeby journald przełączył się na persistent dopiero gdy bind już jest.
 # ---------------------------------------------------------------------------
 PERSIST_JOURNAL_DIR="/var/lib/journal"
-JOURNAL_MOUNT_WHERE="/var/volatile/log/journal"
-JOURNAL_MOUNT_UNIT="/etc/systemd/system/var-volatile-log-journal.mount"
+JOURNAL_WHERE="/var/volatile/log/journal"
+JOURNAL_BIND_UNIT="/etc/systemd/system/bramka-journal-bind.service"
 
-# Cleanup wrong-named unit z wcześniejszej wersji (mismatch nazwy -> ignorowany).
-systemctl disable var-log-journal.mount >/dev/null 2>&1 || true
-rm -f /etc/systemd/system/var-log-journal.mount
+# Cleanup wrong-named .mount units z wcześniejszych prób.
+for old in var-log-journal.mount var-volatile-log-journal.mount; do
+    systemctl disable "$old" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/$old"
+done
 
 mkdir -p /etc/systemd/journald.conf.d "$PERSIST_JOURNAL_DIR"
 cat > "$JOURNALD_DROPIN" << 'JEOF'
 # Managed by bramka-setup modules/07-boot-accounting.sh
-# Logs survive reboot so boot accounting can read the previous boot's log
-# (kernel panic detection) and so reboot storms can be diagnosed post-mortem.
+# Best-effort persistent journal for post-mortem diagnostics across reboots.
 [Journal]
 Storage=persistent
 SystemMaxUse=50M
 JEOF
 echo "[*] Wrote $JOURNALD_DROPIN (persistent journal, cap 50M)"
 
-# Bind-mount unit: persistent /var/lib/journal -> /var/volatile/log/journal.
-cat > "$JOURNAL_MOUNT_UNIT" << 'MEOF'
+cat > "$JOURNAL_BIND_UNIT" << 'BEOF'
 [Unit]
-Description=Persistent systemd journal (bind over volatile /var/log)
+Description=Bind persistent journal over volatile /var/log (best-effort)
+DefaultDependencies=no
 After=systemd-tmpfiles-setup.service
-RequiresMountsFor=/var/lib
+Before=systemd-journal-flush.service sysinit.target
 ConditionPathIsDirectory=/var/lib/journal
 
-[Mount]
-What=/var/lib/journal
-Where=/var/volatile/log/journal
-Type=none
-Options=bind
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'mkdir -p /var/volatile/log/journal && { mountpoint -q /var/volatile/log/journal || mount --bind /var/lib/journal /var/volatile/log/journal; }'
 
 [Install]
-WantedBy=local-fs.target
-MEOF
-echo "[*] Wrote $JOURNAL_MOUNT_UNIT (bind -> $JOURNAL_MOUNT_WHERE)"
+WantedBy=sysinit.target
+BEOF
+echo "[*] Wrote $JOURNAL_BIND_UNIT (oneshot bind, best-effort)"
 
 systemctl daemon-reload
-systemctl enable var-volatile-log-journal.mount >/dev/null 2>&1 || true
+systemctl enable bramka-journal-bind.service >/dev/null 2>&1 || true
 
-# Activate now (this boot too, not only after reboot): create mountpoint on the
-# real volatile path, bind the persistent backing, then make journald use it.
-mkdir -p "$JOURNAL_MOUNT_WHERE" 2>/dev/null || true
-if ! mountpoint -q "$JOURNAL_MOUNT_WHERE"; then
-    mount --bind "$PERSIST_JOURNAL_DIR" "$JOURNAL_MOUNT_WHERE" 2>/dev/null || true
-fi
-systemd-tmpfiles --create --prefix "$JOURNAL_MOUNT_WHERE" >/dev/null 2>&1 || true
+# Activate now too (not only after reboot).
+mkdir -p "$JOURNAL_WHERE" 2>/dev/null || true
+mountpoint -q "$JOURNAL_WHERE" || mount --bind "$PERSIST_JOURNAL_DIR" "$JOURNAL_WHERE" 2>/dev/null || true
 systemctl restart systemd-journald 2>/dev/null || true
 journalctl --flush 2>/dev/null || true
-if mountpoint -q "$JOURNAL_MOUNT_WHERE"; then
-    echo "[*] $JOURNAL_MOUNT_WHERE bind-mounted (persistent) - active now"
+if mountpoint -q "$JOURNAL_WHERE"; then
+    echo "[*] $JOURNAL_WHERE bind-mounted (persistent journal active now)"
 else
-    echo "[*] WARN: bind not active yet (will mount on next boot via the unit)"
+    echo "[*] NOTE: persistent journal bind not active (diagnostics only; classification unaffected)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -137,6 +130,7 @@ STATE_DIR="/var/lib/bramka"
 COUNT_FILE="$STATE_DIR/boot_count"
 HISTORY="$STATE_DIR/boot_history.log"
 REASON_FILE="$STATE_DIR/reboot_reason"
+CLEAN_FILE="$STATE_DIR/clean_shutdown"
 ALARM_FILE="$STATE_DIR/reboot_alarm"
 CONF="/etc/bramka/boot-accounting.conf"
 HISTORY_MAX_LINES=200
@@ -160,23 +154,30 @@ count=$((count + 1))
 echo "$count" > "$COUNT_FILE"
 
 # --- attribute cause ---
+# Classification does NOT depend on the journal (persistent journal is finicky on
+# this volatile-/var/log image). It uses two persistent breadcrumbs in /var/lib:
+#   - reboot_reason  : written by our software right before an initiated reboot
+#                      (Go recoverByReboot). Most specific.
+#   - clean_shutdown : written by this unit's ExecStop, so it exists iff the last
+#                      shutdown ran systemd's stop sequence (clean reboot/poweroff).
+# No breadcrumb + no clean marker => the box went down WITHOUT a clean shutdown =
+# hard reset (kernel panic -> HW watchdog, M4F SOC reset, or power loss). If the
+# persistent journal happens to be available we refine "hard reset" to "kernel
+# panic" as a bonus, but never depend on it.
 if [ -f "$REASON_FILE" ]; then
     cause=$(head -1 "$REASON_FILE" 2>/dev/null)
     [ -z "$cause" ] && cause="controlled (no reason text)"
-    rm -f "$REASON_FILE"
     kind="CONTROLLED"
+elif [ -f "$CLEAN_FILE" ]; then
+    kind="CONTROLLED"; cause="clean shutdown (manual/orchestrated reboot, no breadcrumb)"
 else
-    if ! journalctl -b -1 -n 1 --no-pager >/dev/null 2>&1; then
-        # No previous boot in the (persistent) journal yet - can't classify.
-        kind="INFO"; cause="no previous-boot log (persistent journal just enabled / first boot)"
-    elif journalctl -k -b -1 --no-pager 2>/dev/null | grep -qi "kernel panic"; then
-        kind="UNEXPECTED"; cause="kernel panic -> HW watchdog (Warstwa D)"
-    elif journalctl -b -1 --no-pager 2>/dev/null | grep -qiE "systemd-shutdown|Rebooting\.|Powering off\.|Reached target.*[Ss]hutdown"; then
-        kind="CONTROLLED"; cause="clean shutdown without breadcrumb (manual reboot?)"
-    else
-        kind="UNEXPECTED"; cause="hard reset (M4F SOC reset / HW watchdog / power loss)"
+    kind="UNEXPECTED"; cause="hard reset (M4F SOC reset / HW watchdog / power loss)"
+    if journalctl -k -b -1 --no-pager 2>/dev/null | grep -qi "kernel panic"; then
+        cause="kernel panic -> HW watchdog (Warstwa D)"
     fi
 fi
+# Consume both breadcrumbs (whatever was there) so they don't leak into next boot.
+rm -f "$REASON_FILE" "$CLEAN_FILE"
 
 # --- append history: epoch | iso | boot# | kind | cause ---
 printf '%s | %s | boot#%s | %s | %s\n' "$now_epoch" "$now_iso" "$count" "$kind" "$cause" >> "$HISTORY"
@@ -260,6 +261,10 @@ Wants=local-fs.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/bramka-boot-accounting
+# Clean-shutdown marker: runs only when the unit is stopped, i.e. during a
+# systemd shutdown/reboot sequence. Its presence at the next boot proves the
+# previous shutdown was clean (vs a hard reset that never ran ExecStop).
+ExecStop=/bin/sh -c 'touch /var/lib/bramka/clean_shutdown'
 
 [Install]
 WantedBy=multi-user.target
