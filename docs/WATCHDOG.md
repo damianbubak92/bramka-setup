@@ -98,6 +98,22 @@ echo c > /proc/sysrq-trigger
 # Czekaj ~60s, bramka się zrestartuje automatycznie
 ```
 
+### panic_on_oops=1 — domknięcie luki "oops bez panic"
+
+Warstwa D łapie tylko sytuacje, w których systemd PRZESTAJE klepać watchdog
+(pełny panic, total freeze). Ale kernel **oops** (NULL deref, BUG()) domyślnie
+(`panic_on_oops=0`) NIE jest pełnym panic - kernel ubija winny wątek i jedzie
+dalej, często w niespójnym stanie. systemd żyje → dalej klepie /dev/watchdog0
+→ **Warstwa D nie zadziała**, a bramka jest "żywa" ale faktycznie pokaleczona.
+
+`modules/06-kernel-panic.sh` ustawia `kernel.panic_on_oops=1` (drop-in
+`/etc/sysctl.d/60-bramka-panic.conf`), więc każdy oops → pełny panic → łapie
+Warstwa D. Fail-fast: lepiej szybko paść i wstać niż cicho gnić.
+
+NIE ruszamy `kernel.panic` (delay auto-reboota po panic) - recovery jest
+zweryfikowane na ścieżce panic→HW watchdog (panic=0). Opcja na przyszłość:
+`kernel.panic = 10` w tym samym drop-inie (szybszy reboot, HW watchdog backup).
+
 ## Recovery śmierci M4F: clean reboot (nie remoteproc stop!)
 
 Osobny od warstw watchdog: gdy **M4F umrze/zawiesi się**, Go wykrywa to przez
