@@ -188,7 +188,9 @@ Recovery + observability **kompletne i zweryfikowane na żywo**. Sesja 16.06 dom
 
 **Architektura (DECYZJA 16.06.2026):** automation engine → na **M4F, na RTOS** (determinizm, zero round-tripa do Linuxa). M4F: NoRTOS→RTOS. Linux = UI/chmura/config. Skutek: Warstwa C (DMSC reset) wraca jako „prawdopodobnie tak, później" (M4F trzyma żywe sterowanie). Stary engine: CC3235, C/TI-RTOS, reguły JSON; user ma kody CC3235+CC1310 do analizy. Patrz pamięć [[near-term-roadmap]].
 
-**Najbliższe tematy (kolejność):** 1) port automation engine (M4F/RTOS), 2) remote access (telefon/przeglądarka: CRUD automatyzacji + sterowanie/monitoring), 3) CC1310↔M4F przez SPI (eventy nodów jadą istniejącą ścieżką RPMsg EVENT), 4) bazy (SQLite config + time-series telemetria). Keystone: model danych + jak reguły JSON trafiają z Linuxa do M4F i jak M4F raportuje stany w górę.
+**Najbliższe tematy (kolejność):** 1) port automation engine (M4F/RTOS), 2) remote access (telefon/przeglądarka: CRUD automatyzacji + sterowanie/monitoring), 3) CC1310↔M4F przez SPI, 4) bazy (SQLite config + time-series telemetria).
+
+**📐 Architektura gen2 ROZPISANA: `docs/ARCHITECTURE-GEN2.md`** (16.06.2026) — komplet decyzji + protokoły. Ustalone: M4F=SPI master / CC1310=slave (2 linie handshake `MASTER_READY`/`SLAVE_READY` jak gen1, role odwrócone), ramka SPI 128 B (nagłówek+CRC16+pending), MAX_RULES=100; RPMsg rozszerzony o `MSG_RULE_BEGIN/ITEM/COMMIT` (chunked, atomic swap), `MSG_NODE_CMD/TELEMETRY/STATE/RULE_FIRED`; JSON tylko na Linuxie, M4F dostaje reguły binarnie. **Następny krok implementacyjny:** zastosować nowe typy w `shared/protocol.h` + przenieść struktury (`MessageStruct`, `AutomationRule`, `NodesData`) do `shared/`, potem szkielet firmware M4F (RTOS task enginu). Kody gen1 do portu: pamięć [[legacy-gateway-code]].
 
 **P3 domknięty** (16.06): non-root hardening (`modules/08`) zrobiony — czeka na Deploy-Go (`/opt/bramka`) + Install-GoService + restart.
 
@@ -295,6 +297,12 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-16 — analiza starej bramki + architektura gen2 rozpisana
+- **Przeanalizowany kod gen1** (CC3235+CC1310, ścieżki w pamięci [[legacy-gateway-code]]): engine (czysty C, ≤3 warunki AND, akcje relay/msg, polling 60s), JSON reguł (ręczny parser), MessageStruct (node↔gw), SPI handshake 2-liniowy (przeczytane `spi_master_task.c` + `spiTask.c`), RF EasyLink, FRAM dual-slot, telemetria HTTP do chmury.
+- **Decyzje gen2** (z userem): engine na M4F/RTOS; **M4F=SPI master, CC1310=slave** (po analizie — determinizm enginu, backpressure, multi-drop; user słusznie obronił 2 linie handshake bo sterownik SPI wymaga uzbrojenia slave przed taktowaniem mastera — zalecenie TI z gen1); JSON tylko na Linuxie; FRAME_SIZE=128B; MAX_RULES=100.
+- **Spisane `docs/ARCHITECTURE-GEN2.md`**: protokół SPI (handshake A/B, ramka 128B+CRC16+pending), RPMsg (nowe MSG 0x30–0x42, chunked rule push + atomic swap), 4 przepływy E2E, mapowanie portu gen1→gen2, otwarte tematy.
+- **Lesson**: gen1 działa 2 lata bezawaryjnie (watchdog się nudzi) — bazujemy na sprawdzonych wzorach, nie wymyślamy od zera. Ulepszenia (CRC na SPI, pending-drenaż, event-driven engine, atomic rule swap) warstwowo na bazie gen1.
 
 ### 2026-06-16 — boot-accounting: klasyfikacja na markerze (nie journalu) + persistent journal naprawiony
 - **Finding**: `journalctl -b -1` po reboocie → „no persistent journal was found". Root cause: `/var/log` to symlink do `/var/volatile/log` = **tmpfs** (Arago/Yocto) → `Storage=persistent` nie miało gdzie pisać → journald volatile. Konsekwencja: klasyfikacja resetów BEZ breadcrumb (opierała się na `-b -1`) zawsze spadała do „no previous-boot log" — twarde resety nierozróżniane.
