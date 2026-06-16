@@ -63,6 +63,22 @@
 #define MSG_DEBUG_CRASH   0xF0    // DEBUG: force M4F hard fault (NEVER in production)
 #define MSG_DEBUG_HANG    0xF1u   /* DEBUG: force M4F silent hang (NEVER in production) */
 
+/* --- GEN2: automation rules + node data/commands (see docs/ARCHITECTURE-GEN2.md) ---
+ * All reuse the same wire framing + ACK/retry. Payload structs live in
+ * shared/automation.h (AutomationRule) and shared/node_protocol.h (MessageStruct,
+ * NodesData). Linux owns JSON/SQLite; M4F gets binary rules. */
+
+/* Linux -> M4F (config / control) */
+#define MSG_RULE_BEGIN     0x30u  /* payload: u16 ruleCount (BE) - start ruleset upload */
+#define MSG_RULE_ITEM      0x31u  /* payload: u16 index (BE) + AutomationRule (1 rule/frame) */
+#define MSG_RULE_COMMIT    0x32u  /* payload: u16 expectedCount (BE) + u32 crc32 (BE) - atomic swap */
+#define MSG_NODE_CMD       0x33u  /* payload: MessageStruct - command from phone, relayed to node */
+
+/* M4F -> Linux (telemetry / state) */
+#define MSG_NODE_TELEMETRY 0x40u  /* payload: MessageStruct - raw node reading -> cloud/DB */
+#define MSG_NODE_STATE     0x41u  /* payload: NodesData snapshot - current states -> phone */
+#define MSG_RULE_FIRED     0x42u  /* payload: u16 ruleIndex (BE) + RuleAction - automation audit */
+
 /* ========================================================================= *
  * CONNECTION STATES
  * ========================================================================= */
