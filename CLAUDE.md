@@ -180,7 +180,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **m4f-reload service-aware (16.06.2026, zweryfikowane)**: `m4f-reload` zatrzymuje `rpmsg-service` przed `echo stop` M4F i restartuje po (trap EXIT) — deploy firmware bez przypadkowego reboota bramki (skutek uboczny P2 fast-fail).
 - **EVENT/tick cleanup (16.06.2026, zweryfikowane)**: `doPeriodicTick` — zakomentowany log `Tick #` (spam) + testowy EVENT co 10s (scaffolding). `m4f-watch` czysty.
 - **panic_on_oops=1 (16.06.2026, zweryfikowane)**: `modules/06-kernel-panic.sh` — oops → pełny panic → łapie Warstwa D. Domknięta luka „oops bez panic".
-- **Boot accounting (16.06.2026, zweryfikowane)**: `modules/07-boot-accounting.sh` — licznik bootów + atrybucja przyczyny (breadcrumb Go / panic / clean-shutdown / hard-reset) + alarm reboot-storm (`/etc/bramka/boot-accounting.conf`, default >3/24h). Persistent journald (50M). Podgląd: `bramka-reboots`.
+- **Boot accounting (16.06.2026)**: `modules/07-boot-accounting.sh` — licznik bootów + atrybucja przyczyny (breadcrumb Go / panic / clean-shutdown / hard-reset) + alarm reboot-storm (`/etc/bramka/boot-accounting.conf`, default >3/24h). Podgląd: `bramka-reboots`. Breadcrumb/CONTROLLED zweryfikowane. Persistent journald wymagał fixa (volatile /var/log → bind-mount `/var/lib/journal`, patrz Session Log) — klasyfikacja non-breadcrumb działa dopiero po nim (czeka na reboot do weryfikacji).
 - **Non-root hardening (16.06.2026, ZWERYFIKOWANE NA ŻYWO)**: `modules/08-hardening.sh` + przerobiony `rpmsg-service.service`. Serwis jako user `bramka` (nie root), zero capabilities. Device przez udev (grupa `bramka`), reboot przez wzorzec path-unit (`/run/bramka/reboot-request` → `bramka-reboot.path` → `bramka-reboot.service` robi czysty `systemctl reboot`; serwis nie ma roota ani CAP_SYS_BOOT). Binarka przeniesiona `/root/bramka-services` → `/opt/bramka` (Deploy-Go cel zmieniony). `StartLimit*` przeniesione do `[Unit]` (były ignorowane w `[Service]`). Go `recoverByReboot` pisze trigger (fallback systemctl/syscall dla root). **Weryfikacja**: `User=bramka` + proces uid `bramka` + `/dev/rpmsg0` grupa `bramka`; krok 7: `echo stop` → non-root serwis → trigger → path-unit → czysty reboot → `boot#1 CONTROLLED go-peer-dead`, serwis wraca jako `bramka`.
 
 ### 🔜 NASTĘPNA SESJA — zacznij tu
@@ -295,6 +295,11 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-16 — fix: persistent journald nie przeżywał reboota (volatile /var/log)
+- **Finding**: `journalctl -b -1` po reboocie → „no persistent journal was found". Root cause: `/var/log` to symlink do `/var/volatile/log` = **tmpfs** (Arago/Yocto). `Storage=persistent` było ustawione, ale `/var/log/journal` lądowało w tmpfs i znikało co boot → journald leciał volatile (`/run`). Wcześniejsze „persistent wstał" było mylące (sprawdzone tylko w obrębie jednego bootu).
+- **Konsekwencja**: breadcrumb (Go reboot → CONTROLLED) działał, ale klasyfikacja resetów BEZ breadcrumb (panic/hard-reset/clean-shutdown) opiera się na `journalctl -b -1` → zawsze spadała do „INFO no previous-boot log". Czyli twarde resety nie były rozróżniane.
+- **Fix (`modules/07`)**: backing `/var/lib/journal` (trwałe /var/lib) + bind-mount na `/var/log/journal` przez unit `var-log-journal.mount`. `systemd-journal-flush.service` ma `RequiresMountsFor=/var/log/journal` → auto-czeka na bind przed przełączeniem na persistent (nie trzeba ścigać startu journalda). Aktywacja od razu (mount+restart journald) + przy boocie przez unit. Czeka na `git pull && sudo ./setup.sh` + reboot → weryfikacja `journalctl -b -1`.
 
 ### 2026-06-16 — non-root hardening (rpmsg-service least-privilege) + decyzja: engine na M4F/RTOS
 - **Decyzja architektoniczna**: automation engine pójdzie na **M4F na RTOS** (nie A53/Linux) — determinizm, brak opóźnień round-tripa. M4F: NoRTOS→RTOS. Linux = UI/chmura/config. Warstwa C (DMSC) wraca jako prawdopodobna later (M4F trzyma żywe sterowanie). Roadmapa: engine → remote access → CC1310/SPI → bazy. Zapisane w pamięci [[near-term-roadmap]].

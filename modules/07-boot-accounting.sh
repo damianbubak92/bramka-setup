@@ -39,8 +39,17 @@ mkdir -p "$STATE_DIR" "$CONF_DIR" "$BIN_DIR"
 # ---------------------------------------------------------------------------
 # Persistent journald - logi muszą przeżyć reboot, inaczej tracimy dowody
 # (kernel panic z poprzedniego bootu) i nie da się diagnozować reboot-stormu.
+#
+# GOTCHA (Arago/Yocto): /var/log to symlink do /var/volatile/log (tmpfs), więc
+# /var/log/journal NIE przetrwa reboota tam. Backing trzymamy na trwałym /var/lib
+# i bind-mountujemy na /var/log/journal. systemd-journal-flush.service ma wbudowane
+# RequiresMountsFor=/var/log/journal -> automatycznie czeka na nasz bind zanim
+# przełączy journald na persistent (nie trzeba walczyć z wczesnym startem journalda).
 # ---------------------------------------------------------------------------
-mkdir -p /etc/systemd/journald.conf.d /var/log/journal
+PERSIST_JOURNAL_DIR="/var/lib/journal"
+JOURNAL_MOUNT_UNIT="/etc/systemd/system/var-log-journal.mount"
+
+mkdir -p /etc/systemd/journald.conf.d "$PERSIST_JOURNAL_DIR"
 cat > "$JOURNALD_DROPIN" << 'JEOF'
 # Managed by bramka-setup modules/07-boot-accounting.sh
 # Logs survive reboot so boot accounting can read the previous boot's log
@@ -50,10 +59,43 @@ Storage=persistent
 SystemMaxUse=50M
 JEOF
 echo "[*] Wrote $JOURNALD_DROPIN (persistent journal, cap 50M)"
-# Fix /var/log/journal ownership/perms, then apply now.
+
+# Bind-mount unit: persistent /var/lib/journal -> /var/log/journal.
+cat > "$JOURNAL_MOUNT_UNIT" << 'MEOF'
+[Unit]
+Description=Persistent systemd journal (bind over volatile /var/log)
+After=systemd-tmpfiles-setup.service
+RequiresMountsFor=/var/lib
+ConditionPathIsDirectory=/var/lib/journal
+
+[Mount]
+What=/var/lib/journal
+Where=/var/log/journal
+Type=none
+Options=bind
+
+[Install]
+WantedBy=local-fs.target
+MEOF
+echo "[*] Wrote $JOURNAL_MOUNT_UNIT (bind /var/lib/journal -> /var/log/journal)"
+
+systemctl daemon-reload
+systemctl enable var-log-journal.mount >/dev/null 2>&1 || true
+
+# Activate now (this boot too, not only after reboot): create mountpoint in the
+# volatile /var/log, bind the persistent backing, then make journald use it.
+mkdir -p /var/log/journal 2>/dev/null || true
+if ! mountpoint -q /var/log/journal; then
+    mount --bind "$PERSIST_JOURNAL_DIR" /var/log/journal 2>/dev/null || true
+fi
 systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
 systemctl restart systemd-journald 2>/dev/null || true
 journalctl --flush 2>/dev/null || true
+if mountpoint -q /var/log/journal; then
+    echo "[*] /var/log/journal bind-mounted (persistent) - active now"
+else
+    echo "[*] WARN: bind not active yet (will mount on next boot via the unit)"
+fi
 
 # ---------------------------------------------------------------------------
 # Runtime config - defaults only if absent (don't clobber admin/health edits).
