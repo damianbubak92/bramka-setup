@@ -14,7 +14,7 @@ import (
 
 func main() {
 	testMode := flag.String("test", "hello",
-		"Test mode: hello|data|spam|retry|replay|retry-drop|event|hang|crash-m4f|heartbeat|silent-hang|heartbeat-busy")
+		"Test mode: hello|data|spam|retry|replay|retry-drop|event|hang|crash-m4f|heartbeat|silent-hang|heartbeat-busy|push-rules")
 	heartbeatMs := flag.Int("heartbeat-idle-ms", 5000,
 		"Idle time before sending heartbeat PING (ms)")
 	flag.Parse()
@@ -71,6 +71,8 @@ func main() {
 			runSilentHangTest(p)
 		case "heartbeat-busy":
 			runHeartbeatBusyTest(p)
+		case "push-rules":
+			runPushRulesTest(p)
 		default:
 			log.Printf("Unknown test mode: %s", *testMode)
 		}
@@ -511,6 +513,31 @@ func runSilentHangTest(p *Protocol) {
 	case <-time.After(15 * time.Second):
 		log.Println("[Test] ERROR: peer dead NOT detected within 15s - bug?")
 	}
+}
+
+// runPushRulesTest: push the gen1 example ruleset to the M4F engine and verify
+// the RULE_BEGIN/ITEM/COMMIT handshake + atomic swap (ACK on each, COMMIT swaps).
+func runPushRulesTest(p *Protocol) {
+	time.Sleep(200 * time.Millisecond)
+
+	log.Println("[Test] Sending HELLO (with retry)...")
+	if err := helloWithRetry(p); err != nil {
+		log.Printf("[Test] HELLO failed: %v", err)
+		return
+	}
+	log.Println("[Test] Connected.")
+	log.Println("[Test] === RULE PUSH TEST ===")
+
+	rules := exampleRules()
+	log.Printf("[Test] Pushing %d example rules (RULE_BEGIN -> ITEM* -> COMMIT)...", len(rules))
+	if err := p.PushRules(rules); err != nil {
+		log.Printf("[Test] rule push FAILED: %v", err)
+		return
+	}
+	log.Println("[Test] Rule push OK - M4F committed the ruleset (atomic swap).")
+	log.Println("[Test] m4f-watch: each RULE_* ACKed; COMMIT -> 'Engine ... rules' swap.")
+	log.Println("[Test] NOTE: TIME rules won't fire until engine_set_time() exists")
+	log.Println("[Test]       (time-sync TODO; see docs/ENGINE-INTEGRATION.md).")
 }
 
 // runHeartbeatBusyTest: send DATA every 2s, verify NO PINGs fire.

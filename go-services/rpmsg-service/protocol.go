@@ -282,6 +282,51 @@ func (p *Protocol) SendDataWithSeq(payload []byte, forcedSeq uint16,
     }
 }
 
+// sendReliableTyped sends an arbitrary message type with ACK+retry (same
+// pending mechanism as SendData). Returns nil on ACK, error on giveup or on an
+// explicit MSG_ERROR reply from the peer (correlated by seq). Used for the
+// rule-push protocol (RULE_BEGIN/ITEM/COMMIT).
+func (p *Protocol) sendReliableTyped(msgType uint8, payload []byte) error {
+	if p.State() != StateConnected {
+		return fmt.Errorf("not connected (state=%s)", p.State())
+	}
+
+	seq := uint16(p.mySeq.Add(1))
+	encoded, err := encodeMessage(msgType, seq, payload)
+	if err != nil {
+		return fmt.Errorf("encode 0x%02X: %w", msgType, err)
+	}
+
+	doneCh := make(chan error, 1)
+	pa := &pendingAck{
+		seq:        seq,
+		msgType:    msgType,
+		payload:    payload,
+		encoded:    encoded,
+		sentAt:     time.Now(),
+		retryCount: 0,
+		doneCh:     doneCh,
+	}
+
+	p.pendingMu.Lock()
+	p.pending[seq] = pa
+	p.pendingMu.Unlock()
+
+	log.Printf("[Protocol] TX 0x%02X seq=%d (%d bytes payload)", msgType, seq, len(payload))
+	if err := p.transport.Send(encoded); err != nil {
+		p.removePending(seq)
+		return fmt.Errorf("send 0x%02X: %w", msgType, err)
+	}
+
+	select {
+	case err := <-doneCh:
+		return err
+	case <-time.After(time.Duration(C.MAX_RETRIES+2) * time.Duration(C.ACK_TIMEOUT_MS) * time.Millisecond):
+		p.removePending(seq)
+		return fmt.Errorf("0x%02X seq=%d giveup (overall timeout)", msgType, seq)
+	}
+}
+
 func (p *Protocol) removePending(seq uint16) {
 	p.pendingMu.Lock()
 	delete(p.pending, seq)
@@ -400,8 +445,10 @@ func (p *Protocol) handleIncoming(raw []byte) {
 			log.Printf("[Protocol] WARN: dataRx full, dropping seq=%d", seq)
 		}
 
-	case C.MSG_EVENT:
-		// Same as DATA but routed to event channel
+	case C.MSG_EVENT, C.MSG_NODE_TELEMETRY, C.MSG_NODE_STATE, C.MSG_RULE_FIRED:
+		// M4F-initiated reliable messages: EVENT + gen2 reporters. Same
+		// idempotency + ACK as DATA, routed to the event channel (Type
+		// preserved so the consumer can demux NODE_TELEMETRY/STATE/RULE_FIRED).
 		p.theirSeqMu.Lock()
 		isDup := (p.theirLastSeq != 0) && (seq <= p.theirLastSeq)
 		if !isDup {
@@ -427,6 +474,28 @@ func (p *Protocol) handleIncoming(raw []byte) {
 	case C.MSG_PONG:
 		// Deprecated message type - silently ignore for backwards compat
 		log.Printf("[Protocol] RX PONG (deprecated, ignored)")
+
+	case C.MSG_ERROR:
+		// Peer rejected a reliable message we sent, echoing its seq. Resolve
+		// the pending entry as an error immediately (no waiting for retries).
+		p.pendingMu.Lock()
+		pa, exists := p.pending[seq]
+		if exists {
+			delete(p.pending, seq)
+		}
+		p.pendingMu.Unlock()
+		if exists {
+			log.Printf("[Protocol] RX ERROR seq=%d (peer rejected type=0x%02X)", seq, pa.msgType)
+			if pa.msgType == C.MSG_PING {
+				p.pingInFlight.Store(false)
+			}
+			select {
+			case pa.doneCh <- fmt.Errorf("peer rejected seq=%d (MSG_ERROR)", seq):
+			default:
+			}
+		} else {
+			log.Printf("[Protocol] RX ERROR seq=%d (no pending match, ignored)", seq)
+		}
 
 	default:
 		log.Printf("[Protocol] Unknown msg type 0x%02X (ignored)", msgType)

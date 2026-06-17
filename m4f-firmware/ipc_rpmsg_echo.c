@@ -9,7 +9,23 @@
 #include "ti_drivers_open_close.h"
 #include "ti_board_open_close.h"
 #include "protocol.h"
+#include "engine.h"
+#include "engine_rpmsg.h"
 #include <drivers/soc.h>
+#include <drivers/uart.h>
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+
+/* The debug-log UART is configured in CALLBACK read mode by SysConfig
+ * (example.syscfg: debug_log.uartLog.readCallbackFxn = "uart_echo_read_callback"),
+ * so ti_drivers_open_close.c references this symbol. We don't use UART input -
+ * provide a no-op so the link resolves. */
+void uart_echo_read_callback(UART_Handle handle, UART_Transaction *trans)
+{
+    (void)handle;
+    (void)trans;
+}
 
 /* Linux chrdev expects endpoint 14 */
 #define LINUX_CHRDEV_ENDPOINT       (14U)
@@ -231,17 +247,30 @@ static void sendAck(uint16_t seq)
     }
 }
 
-/* Send an EVENT (M4F-initiated message requiring ACK).
- * Adds to pending tracker for retry.
- * Returns 0 OK, -1 no slot, -2 encode/send fail. */
-static int sendEvent(const uint8_t *payload, uint16_t payload_len)
+/* Send a bare reply (no payload) echoing a seq - MSG_ACK or MSG_ERROR.
+ * Fire-and-forget (no retry); used by the engine glue to confirm/reject
+ * rule-push / node-cmd messages so Linux correlates by seq. */
+static void sendReply(uint8_t type, uint16_t seq)
+{
+    int32_t status = sendProtocolMsg(type, seq, NULL, 0);
+    if (status != SystemP_SUCCESS) {
+        DebugP_log("[M4F] sendReply 0x%02X seq=%u failed: %d\r\n",
+                    (unsigned)type, (unsigned)seq, status);
+    }
+}
+
+/* Send a reliable M4F-initiated message (requiring ACK) of the given type.
+ * Adds to pending tracker for retry. Used for EVENT and the gen2 reporters
+ * (NODE_TELEMETRY/STATE/RULE_FIRED).
+ * Returns 0 OK, -1 no slot/no endpoint, -2 encode/send fail. */
+static int sendReliable(uint8_t msg_type, const uint8_t *payload, uint16_t payload_len)
 {
     if (gLinuxEndpoint == 0) {
         return -1;  /* No Linux endpoint known yet */
     }
     if (payload_len > 128) {
-        DebugP_log("[M4F] EVENT payload too large (%u, max 128)\r\n",
-                    (unsigned)payload_len);
+        DebugP_log("[M4F] reliable 0x%02X payload too large (%u, max 128)\r\n",
+                    (unsigned)msg_type, (unsigned)payload_len);
         return -2;
     }
 
@@ -259,23 +288,143 @@ static int sendEvent(const uint8_t *payload, uint16_t payload_len)
     /* Fill pending entry */
     pa->in_use = 1;
     pa->seq = gMySeq;
-    pa->msg_type = MSG_EVENT;
+    pa->msg_type = msg_type;
     pa->retry_count = 0;
     pa->sent_at_us = ClockP_getTimeUsec();
     pa->payload_len = payload_len;
     for (uint16_t i = 0; i < payload_len; i++) pa->payload[i] = payload[i];
 
     /* Send */
-    int32_t status = sendProtocolMsg(MSG_EVENT, pa->seq, payload, payload_len);
+    int32_t status = sendProtocolMsg(msg_type, pa->seq, payload, payload_len);
     if (status != SystemP_SUCCESS) {
-        DebugP_log("[M4F] EVENT send failed: %d\r\n", status);
+        DebugP_log("[M4F] reliable 0x%02X send failed: %d\r\n",
+                    (unsigned)msg_type, status);
         pa->in_use = 0;
         return -2;
     }
 
-    DebugP_log("[M4F] TX EVENT seq=%u (%u bytes)\r\n",
-                (unsigned)pa->seq, (unsigned)payload_len);
+    DebugP_log("[M4F] TX 0x%02X seq=%u (%u bytes)\r\n",
+                (unsigned)msg_type, (unsigned)pa->seq, (unsigned)payload_len);
     return 0;
+}
+
+/* EVENT convenience wrapper (unchanged external behavior). */
+static int sendEvent(const uint8_t *payload, uint16_t payload_len)
+{
+    return sendReliable(MSG_EVENT, payload, payload_len);
+}
+
+/* ========================================================================== */
+/*  ENGINE GLUE (FreeRTOS multi-task, lock-free via queues)                    */
+/* ========================================================================== */
+/*
+ * Two tasks, no shared-state locking:
+ *   - ENGINE task: evaluates rules (on a node-data queue OR a 1s tick). Rule
+ *     firings / telemetry are pushed to gOutboxQueue. NEVER calls RPMessage_send
+ *     and NEVER touches gPendingAcks.
+ *   - COMMS task (= ipc_rpmsg_echo_main body): SOLE owner of RPMessage_send +
+ *     gPendingAcks. Drains RX, drains gOutboxQueue (-> report to Linux + node
+ *     TX), runs retries. The queues are the only cross-task channel (the gen1
+ *     coreTask pattern: queues instead of mutexes).
+ *
+ * The active ruleset is the third cross-task touch point, but it is lock-free by
+ * construction: engine_rules_commit() swaps a pointer-index atomically and
+ * engine_evaluate() reads it once into a local, so a concurrent push never
+ * corrupts an in-flight evaluation (see engine.c).
+ */
+
+typedef enum {
+    OUTBOX_RULE_FIRED = 0,   /* msg=node command, ruleIndex+action=audit */
+    OUTBOX_TELEMETRY  = 1,    /* msg=raw node reading -> Linux/cloud */
+} outbox_kind_t;
+
+typedef struct {
+    outbox_kind_t kind;
+    MessageStruct msg;
+    uint16_t      ruleIndex;
+    RuleAction    action;
+} outbox_item_t;
+
+/* --- FreeRTOS objects (static allocation; no heap) --- */
+#define ENGINE_TASK_STACK_WORDS   1024u   /* StackType_t units; tune in CCS */
+#define ENGINE_TASK_PRIORITY      2u      /* keep < comms task so RX/heartbeat win */
+#define OUTBOX_DEPTH              16u
+#define NODEIN_DEPTH              8u
+
+static StackType_t  gEngineStack[ENGINE_TASK_STACK_WORDS];
+static StaticTask_t gEngineTaskObj;
+
+static uint8_t      gOutboxStorage[OUTBOX_DEPTH * sizeof(outbox_item_t)];
+static StaticQueue_t gOutboxQueueObj;
+static QueueHandle_t gOutboxQueue;
+
+/* Node data INTO the engine (SPI -> here). Created now for the final task shape;
+ * fed once the CC1310 SPI link exists. */
+static uint8_t      gNodeInStorage[NODEIN_DEPTH * sizeof(MessageStruct)];
+static StaticQueue_t gNodeInQueueObj;
+static QueueHandle_t gNodeInQueue;
+
+/* Action sink (ENGINE task context): a rule fired. Push to the outbox; the comms
+ * task does the actual Linux report + node delivery. No RPMessage here. */
+static void engineActionSink(const MessageStruct *msg, uint16_t ruleIndex,
+                             const RuleAction *action, void *ctx)
+{
+    (void)ctx;
+    outbox_item_t item;
+    item.kind = OUTBOX_RULE_FIRED;
+    item.msg = *msg;
+    item.ruleIndex = ruleIndex;
+    item.action = *action;
+    if (xQueueSend(gOutboxQueue, &item, 0) != pdTRUE) {
+        DebugP_log("[M4F] outbox full - rule #%u action dropped\r\n",
+                    (unsigned)ruleIndex);
+    }
+}
+
+/* Node TX sink (COMMS task context): relay a command down to a node.
+ * TODO(spi): xQueueSend(qNodeOut, msg) once the CC1310 SPI link exists. */
+static void nodeTxSink(const MessageStruct *msg)
+{
+    DebugP_log("[M4F] -> node type=%u cmd=%u (SPI TODO)\r\n",
+                (unsigned)msg->type, (unsigned)msg->cmd);
+}
+
+/* ENGINE task: event-driven (node data) + 1 Hz time tick (D5). */
+static void engineTask(void *args)
+{
+    (void)args;
+    MessageStruct nodeMsg;
+
+    DebugP_log("[M4F] Engine task started\r\n");
+    while (!gbShutdown) {
+        if (xQueueReceive(gNodeInQueue, &nodeMsg, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            if (engine_update_node(&nodeMsg)) {
+                outbox_item_t item;
+                item.kind = OUTBOX_TELEMETRY;
+                item.msg = nodeMsg;
+                if (xQueueSend(gOutboxQueue, &item, 0) != pdTRUE) {
+                    DebugP_log("[M4F] outbox full - telemetry dropped\r\n");
+                }
+            }
+        }
+        /* Evaluate on every wake: node-data arrival OR the 1s timeout tick. */
+        engine_evaluate();
+    }
+    vTaskDelete(NULL);
+}
+
+/* Drain the engine outbox (COMMS task context: owns RPMessage send). */
+static void drainEngineOutbox(void)
+{
+    outbox_item_t out;
+    while (xQueueReceive(gOutboxQueue, &out, 0) == pdTRUE) {
+        if (out.kind == OUTBOX_RULE_FIRED) {
+            engine_rpmsg_report_rule_fired(out.ruleIndex, &out.action);
+            nodeTxSink(&out.msg);
+        } else {
+            engine_rpmsg_report_telemetry(&out.msg);
+        }
+    }
 }
 
 /* Periodically check pending entries, retry timed-out, giveup after MAX_RETRIES */
@@ -428,6 +577,15 @@ static void handleLinuxMessage(void)
             break;
         }
 
+        case MSG_RULE_BEGIN:
+        case MSG_RULE_ITEM:
+        case MSG_RULE_COMMIT:
+        case MSG_NODE_CMD: {
+            /* gen2 control messages -> engine glue (handles ACK/ERROR). */
+            engine_rpmsg_dispatch(msg_type, msg_seq, msg_payload, msg_payload_len);
+            break;
+        }
+
         case MSG_DEBUG_CRASH: {
             DebugP_log("[M4F] *** DEBUG: CRASH TRIGGER RECEIVED ***\r\n");
             DebugP_log("[M4F] Forcing hard fault via undefined instruction in 100ms\r\n");
@@ -476,6 +634,10 @@ static void doPeriodicTick(void)
     if ((now - gLastTickTime) >= 1000000ULL) {
         gTickCount++;
         gLastTickTime = now;
+
+        /* Engine evaluation now runs in the ENGINE task (1 Hz tick = qNodeIn
+         * receive timeout), not here. doPeriodicTick stays for comms-side
+         * periodic needs only. */
 
         /* Production: no autonomous tick log, no autonomous test EVENT.
          *
@@ -650,26 +812,49 @@ void ipc_rpmsg_echo_main(void *args)
     DebugP_log("[M4F] Shutdown handler registered\r\n");
     
     DebugP_log("[M4F] Ready for messages\r\n");
-    
+
+    /* Automation engine: init core + RPMsg glue. Active ruleset starts empty;
+     * Linux pushes it via RULE_BEGIN..COMMIT after HELLO. */
+    engine_init(engineActionSink, NULL);
+    engine_rpmsg_init(sendReliable, sendReply, nodeTxSink);
+
+    /* Cross-task queues (lock-free): engine->comms outbox, SPI->engine node-in. */
+    gOutboxQueue = xQueueCreateStatic(OUTBOX_DEPTH, sizeof(outbox_item_t),
+                                       gOutboxStorage, &gOutboxQueueObj);
+    gNodeInQueue = xQueueCreateStatic(NODEIN_DEPTH, sizeof(MessageStruct),
+                                       gNodeInStorage, &gNodeInQueueObj);
+    DebugP_assert(gOutboxQueue != NULL && gNodeInQueue != NULL);
+
+    /* Spawn the ENGINE task; this task continues as the COMMS task. */
+    (void)xTaskCreateStatic(engineTask, "engine", ENGINE_TASK_STACK_WORDS, NULL,
+                             ENGINE_TASK_PRIORITY, gEngineStack, &gEngineTaskObj);
+    DebugP_log("[M4F] Engine initialized (0 rules); engine task spawned\r\n");
+
     //testProtocol();
 
     gLastTickTime = ClockP_getTimeUsec();
     
-/* Main loop - cooperative scheduler */
+/* COMMS task loop - sole owner of RPMessage send + gPendingAcks */
     while (!gbShutdown) {
-        /* 1. Sprawdź czy callback dał nam wiadomość */
+        /* 1. RX from Linux (callback set the pending flag) */
         if (gRxBuffer.pending) {
             handleLinuxMessage();
         }
-        
-        /* 2. Periodyczne akcje */
+
+        /* 2. Engine outbox -> Linux reports + node delivery */
+        drainEngineOutbox();
+
+        /* 3. Periodic comms-side actions */
         doPeriodicTick();
-        
-        /* 3. Tu możesz dodać: sample_sensors(), check_rules(), control_relays() */
+
+        /* 4. Retry M4F-initiated reliable messages */
         processEventRetries();
 
-        /* 4. Drobny sleep żeby CPU nie kręcił w pustce */
-        ClockP_usleep(1000);  /* 1ms */
+        /* 5. Block 1 tick so the (lower-priority) ENGINE task gets to run.
+         * MUST be vTaskDelay (not ClockP_usleep): this comms task runs at the
+         * highest priority (freertos_main), so a busy-wait here would starve
+         * the engine task entirely. */
+        vTaskDelay(1U);
     }
     
     /* Linux requested shutdown - graceful cleanup */

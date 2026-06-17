@@ -185,22 +185,24 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 
 ### 🔜 NASTĘPNA SESJA — zacznij tu
 
-**Stan**: infra bramki (recovery + observability + non-root hardening) **kompletna i zweryfikowana na żywo** — cały sprint P2/P3 zamknięty 16.06 (szczegóły: ✅ Done wyżej + Session Log). Teraz pivot na **produkt: port silnika automatyzacji gen1 → gen2 (AM62)**.
+**Stan**: infra bramki kompletna. **Engine M4F (FreeRTOS multi-task) + enkoder rule-push Go — ZWERYFIKOWANE NA ŻYWO 17.06** (push 3 reguł, atomic swap, COMMIT→ACK, wire-ABI cgo↔M4F potwierdzone CRC32). Projekt CCS: `C:\Users\damia\workspace_ccstheia\ipc_rpmsg_echo_..._freertos_ti-arm-clang` ([[ccs-project-separate-from-repo]]).
 
-**👉 NASTĘPNE ZADANIE: szkielet firmware M4F (RTOS) z portem enginu.**
-- Cel: nowy projekt CCS Theia na M4F z **FreeRTOS** (MCU+ SDK 12.00) — task „engine" = port `evaluateAutomationRules()` z gen1, event-driven (na napływ danych nodu + tick czasowy dla warunków TIME), zasilany regułami wgranymi z Linuxa przez RPMsg.
-- **Ja przygotowuję źródła** (engine.c/.h oparte na `shared/automation.h` + `shared/node_protocol.h`, integracja RPMsg, szkielet tasków RTOS); **user robi projekt CCS + build/deploy** ([[deploy-verification-owned-by-user]], [[ccs-project-separate-from-repo]]).
-- Zacznij od: przeczytaj `docs/ARCHITECTURE-GEN2.md` (pełna mapa) + gen1 `automationRules.c` (ścieżki w [[legacy-gateway-code]]). Port ewaluatora ~1:1 (D6 parytet), `getDeviceParameterValue()` czyta z lokalnego `NodesData`.
+**👉 NASTĘPNE ZADANIE: firing reguł na żywo + źródło czasu, potem SPI/remote.**
+- **Smoke-test firingu (najpierw)**: engine ma reguły, ale nic nie odpala — `COND_TIME` wymaga `engine_set_time()` (nikt nie woła → false fail-safe), a `COND_PARAMETER` wymaga danych nodu (SPI, brak). Dymowo: tymczasowo zawołaj `engine_set_time(h,m)` w init + ustaw okno reguły „teraz" → oczekiwane `RULE #x fired` (M4F) + `MSG_RULE_FIRED 0x42` → Go (routowane do `eventRxCh`). To domknie pętlę engine end-to-end.
+- **Time-sync** (produkcyjnie): nowy MSG Linux→M4F z czasem (NTP na Linuxie) → `engine_set_time()`. Albo RTC na carrier (Verdin ma RTC).
+- **Potem**: SPI/CC1310 (`spi_master_task`→slave, zasila `gNodeInQueue` → odblokowuje `COND_PARAMETER` + telemetrię + realne akcje do nodów), remote access (telefon/web CRUD reguł → `PushRules`).
+- Szczegóły integracji/strojenia: `docs/ENGINE-INTEGRATION.md`.
 
-**Co JUŻ gotowe pod ten port (16.06):**
-- `docs/ARCHITECTURE-GEN2.md` — decyzje + protokoły SPI (M4F master, 2 linie handshake, ramka 128B) i RPMsg (typy 0x30–0x42, chunked rule push + atomic swap).
-- `shared/protocol.h` (+ mirror `m4f-firmware/protocol.h`): typy `MSG_RULE_*`, `MSG_NODE_*` (0x30–0x42).
-- `shared/node_protocol.h`: `MessageStruct` (1:1 gen1 → interop CC1310), `NodesData`, stałe node/cmd.
-- `shared/automation.h`: `AutomationRule` + warunki + akcje + kody. MAX_RULES=100.
-- ⚠️ **Wire-ABI**: M4F=ARM32, A53=AArch64 → enumy jako `#define` (nie pola struct), jawny padding, stałe szerokości. Nagłówki NIE skompilowane lokalnie (brak toolchaina) — pierwszy build M4F/Go to zweryfikuje.
-- ⚠️ **Sync przy buildzie**: skopiuj `shared/*.h` do projektu CCS. `Deploy-Go` kopiuje tylko `protocol.h` — jak Go zacznie używać `node_protocol.h`/`automation.h`, dorzuć je do kopiowania w Deploy-Go.
+**Co JUŻ gotowe (17.06):**
+- `m4f-firmware/engine.{c,h}` — rdzeń RTOS-agnostyczny (ewaluator port 1:1 D6 + guardy solar, NodesData folding, atomic swap + CRC32 IEEE). Lint: TI ARM clang `-Wall -Wextra` czysto.
+- `m4f-firmware/engine_rpmsg.{c,h}` — glue dispatch RULE_*/NODE_CMD + reportery; wynik przez `reply(MSG_ACK|MSG_ERROR, seq)`.
+- `m4f-firmware/ipc_rpmsg_echo.c` — **FreeRTOS 2 taski + kolejki, lock-free** (ENGINE + COMMS; comms = jedyny właściciel send+pending). Recovery/heartbeat nietknięte. NIE zlintowane lokalnie (SDK+FreeRTOS) → build w CCS.
+- `go-services/rpmsg-service/{rules.go,protocol.go,main.go}` — enkoder reguł (cgo, layout C-owned), `PushRules`, `sendReliableTyped`, `MSG_ERROR` korelacja, tryb `-test push-rules`. Build na bramce (cgo).
+- `docs/ENGINE-INTEGRATION.md` — architektura tasków/kolejek + strona Go + plan testów. Rozmiary: AutomationRule=196B, RuleAction=68B, MessageStruct/NodesData=44B.
+- **STUB/TODO**: SPI→CC1310 (`nodeTxSink` loguje, `gNodeInQueue` nikt nie zasila), time-sync (`engine_set_time` nie wołane → `COND_TIME`=false fail-safe).
+- ⚠️ `m4f-firmware/protocol.h` = mirror `shared/protocol.h` (sync przy zmianach).
 
-**Dalej w roadmapie (po enginie):** 2) remote access (telefon/web: CRUD reguł + sterowanie/monitoring; tu non-root hardening staje się krytyczny), 3) CC1310↔M4F przez SPI (przepisać CC1310 `spi_master_task`→slave + `DATA_READY`), 4) bazy (SQLite config + time-series telemetria). Patrz [[near-term-roadmap]].
+**Dalej w roadmapie:** 2) remote access (telefon/web CRUD reguł+sterowanie; źródło reguł = SQLite→PushRules), 3) CC1310↔M4F SPI (`spi_master_task`→slave + DATA_READY; SPI task zasila `gNodeInQueue` + drenuje akcje do nodów; odblokowuje firing PARAMETER + telemetrię), 4) bazy (SQLite config + time-series). Patrz [[near-term-roadmap]].
 
 **Odłożone long-term:**
 - **Warstwa C (DMSC reset)** — teraz „prawdopodobnie tak, później" (M4F trzyma żywe sterowanie → crash Linuxa nie może go zabić na ~70s). Decyzja przy dojrzewaniu enginu. OTA (RAUC A/B). Health monitoring (eMMC wear → wpina się w `bramka-reboots`/alarm). Carrier board.
@@ -305,6 +307,19 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-17 — engine M4F (FreeRTOS multi-task) + enkoder rule-push Go
+- **Przeczytany cały gen1 pod port**: `automationRules.{c,h}` (ewaluator), `coreTask.c` (folding NodesData + routing + getDeviceParameterValue + initExampleRules), `messageProtocol.h`, `spiTask.h`. Engine gen1 = czysty C bez zależności SDK → port ~1:1.
+- **Rdzeń `m4f-firmware/engine.{c,h}`** (RTOS-agnostyczny): ewaluator (port 1:1, parytet D6 + guardy solar: dedup pumpState, sBuforTemp<0), `engine_update_node` (folding z coreTask), atomic swap reguł (double-buffer + indeks aktywny podmieniany atomowo + CRC32 IEEE = `hash/crc32` Go), `engine_set_time` (TODO wołacz). Akcja przez callback.
+- **`m4f-firmware/engine_rpmsg.{c,h}`** (glue): dispatch `RULE_BEGIN/ITEM/COMMIT`+`NODE_CMD`, reportery `NODE_TELEMETRY/STATE/RULE_FIRED`. Sygnalizacja wyniku: `reply(MSG_ACK|MSG_ERROR, seq)` echo-seq (fire-and-forget) — Go koreluje po seq i natychmiast zwraca błąd na odrzucony COMMIT.
+- **DECYZJA (zmiana): od razu FreeRTOS multi-task, NIE NoRTOS** (user: „nie ma sensu potem zmieniać, testy mają być adekwatne do RTOS"). `ipc_rpmsg_echo.c` przebudowany na 2 taski + kolejki (wzór gen1 coreTask, **lock-free bez mutexów**): ENGINE task (evaluate na `gNodeInQueue` 1s timeout / dane nodu; akcje→`gOutboxQueue`) + COMMS task (= dotychczasowa pętla; **jedyny właściciel** `RPMessage_send`+`gPendingAcks`; drenuje RX + outbox + retry). Recovery/heartbeat/hardfault/shutdown **nietknięte**. `xTaskCreateStatic`/`xQueueCreateStatic` (bez sterty). Punkty strojenia: `ENGINE_TASK_STACK_WORDS/PRIORITY`, `OUTBOX_DEPTH`, `NODEIN_DEPTH`.
+- **Enkoder Go `go-services/rpmsg-service/rules.go`**: model Rule/Condition/Action + `encodeRule()` przez **cgo** (layout `AutomationRule` własności kompilatora C z `automation.h` → bajtowo identyczny z M4F, zero ryzyka offsetów). `PushRules()` = BEGIN/ITEM/COMMIT (reliable), CRC32 IEEE. `init()` asercje rozmiarów ABI (rozjazd → `abiOK=false` → push odmawia). Tryb `-test push-rules`. `protocol.go`: `sendReliableTyped()` + obsługa `MSG_ERROR` (korelacja po seq) + routing reporterów 0x40–0x42 jak EVENT.
+- **Weryfikacja lokalna** (TI ARM clang z CCS, Cortex-M4F): `engine.c`+`engine_rpmsg.c` czysto `-Wall -Wextra`; preambuła cgo z `rules.go` (helpery na `automation.h`) czysto. Rozmiary: AutomationRule=196B (RULE_ITEM 198B≤480), RuleAction=68B (RULE_FIRED 70B≤128), MessageStruct/NodesData=44B. `ipc_rpmsg_echo.c` (TI SDK+FreeRTOS) i Go (cgo, brak toolchaina lokalnie) — build dopiero w CCS / na bramce.
+- **Lesson**: lock-free przez kolejki (gen1 coreTask) > mutexy — ENGINE task nigdy nie woła `RPMessage_send`, tylko wrzuca na outbox; comms task jest jedynym właścicielem send+pending.
+- **✅ ZWERYFIKOWANE NA ŻYWO (17.06)**: projekt CCS FreeRTOS (zaimportowany `ipc_rpmsg_echo_..._freertos_ti-arm-clang`) zbudowany + Deploy-M4F + Deploy-Go + `-test push-rules`. M4F boot: `Engine task started`. Push: `RX 0x30 → 0x31×3 (198B) → 0x32`, każda ACK; Go: `[rules] pushed 3 rules (crc32=0x0A83CF84) - M4F committed`. COMMIT→ACK (nie ERROR) = count+CRC32 OK → atomic swap. **Dowodzi wire-ABI cgo↔M4F bajtowo identyczne + lock-free swap działa na FreeRTOS.** Commit po zielonym (ten wpis).
+- **Gotchas bring-up (helpery na laptopie, poza repo)**: (1) build M4F failował — `.bss` 77KB > 64KB DRAM (`g_rules` 39KB) → przeniesione do `M4F_DDR` przez sekcję `.bss.engine_rules` w `linker.cmd` projektu; (2) undefined `uart_echo_read_callback` (świeży syscfg ma debug UART w trybie CALLBACK) → no-op stub w `ipc_rpmsg_echo.c`; (3) cgo preambuła działa **per-plik** → `rules.go` musiał dostać `#include "protocol.h"` (nie tylko `automation.h`); (4) `Deploy-Go` bez `-ServiceName rpmsg-service` szedł na `protocol-test`; rozszerzony o kopiowanie wszystkich `shared/*.h` w pętli; (5) `Deploy-M4F` wskazywał stary projekt CCS → flashował stary firmware (objaw: `Unknown msg type 0x30`) → ścieżka zmieniona na nowy projekt freertos. Weryfikacja właściwego obrazu: boot banner `Engine task started`.
+- **Build lokalny (bez IDE)**: `cd Debug && gmake -j8 all` z `C:/ti/ccs2051/...` przechodzi → `.appimage.hs_fs`. Lint przenośnych TU: `tiarmclang -fsyntax-only` ([[local-ti-arm-clang]]).
+- **Następne**: smoke-test firingu (tymczasowy `engine_set_time()` + okno reguły „teraz" → `RULE_FIRED`); potem time-sync z Linuxa, SPI/CC1310 (zasili `gNodeInQueue` + realne akcje), remote access.
 
 ### 2026-06-16 — analiza starej bramki + architektura gen2 rozpisana
 - **Przeanalizowany kod gen1** (CC3235+CC1310, ścieżki w pamięci [[legacy-gateway-code]]): engine (czysty C, ≤3 warunki AND, akcje relay/msg, polling 60s), JSON reguł (ręczny parser), MessageStruct (node↔gw), SPI handshake 2-liniowy (przeczytane `spi_master_task.c` + `spiTask.c`), RF EasyLink, FRAM dual-slot, telemetria HTTP do chmury.
