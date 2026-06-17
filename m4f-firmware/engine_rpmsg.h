@@ -32,7 +32,7 @@ void engine_rpmsg_init(RpmsgEventTxFn tx_event,
                        RpmsgReplyFn   reply,
                        NodeTxFn       tx_node);
 
-/* Handle a gen2 control message (0x30..0x33). Returns true if consumed.
+/* Handle a gen2 control message (0x30..0x34). Returns true if consumed.
  * Replies MSG_ACK (echoing seq) on success, or MSG_ERROR (echoing seq) on
  * rejection so Linux can correlate immediately and resync. Call from the
  * RPMsg dispatch switch. */

@@ -187,11 +187,13 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 
 **Stan**: infra bramki kompletna. **Engine M4F (FreeRTOS multi-task) + enkoder rule-push Go — ZWERYFIKOWANE NA ŻYWO 17.06** (push 3 reguł, atomic swap, COMMIT→ACK, wire-ABI cgo↔M4F potwierdzone CRC32). Projekt CCS: `C:\Users\damia\workspace_ccstheia\ipc_rpmsg_echo_..._freertos_ti-arm-clang` ([[ccs-project-separate-from-repo]]).
 
-**👉 NASTĘPNE ZADANIE: firing reguł na żywo + źródło czasu, potem SPI/remote.**
-- **Smoke-test firingu (najpierw)**: engine ma reguły, ale nic nie odpala — `COND_TIME` wymaga `engine_set_time()` (nikt nie woła → false fail-safe), a `COND_PARAMETER` wymaga danych nodu (SPI, brak). Dymowo: tymczasowo zawołaj `engine_set_time(h,m)` w init + ustaw okno reguły „teraz" → oczekiwane `RULE #x fired` (M4F) + `MSG_RULE_FIRED 0x42` → Go (routowane do `eventRxCh`). To domknie pętlę engine end-to-end.
-- **Time-sync** (produkcyjnie): nowy MSG Linux→M4F z czasem (NTP na Linuxie) → `engine_set_time()`. Albo RTC na carrier (Verdin ma RTC).
-- **Potem**: SPI/CC1310 (`spi_master_task`→slave, zasila `gNodeInQueue` → odblokowuje `COND_PARAMETER` + telemetrię + realne akcje do nodów), remote access (telefon/web CRUD reguł → `PushRules`).
-- Szczegóły integracji/strojenia: `docs/ENGINE-INTEGRATION.md`.
+**Stan enginu**: push reguł + time-sync + firing **zweryfikowane na żywo 17.06** (pętla domknięta). Time-sync `MSG_TIME_SYNC 0x34` działa.
+
+**👉 NASTĘPNE ZADANIE: edge-trigger dedup, potem SPI/CC1310, remote access.**
+- **Edge-trigger (najpierw, blokuje sensowne akcje)**: engine level-triggered → reguła odpala co ~1s dopóki warunek true (potwierdzone w fire-smoke). Dodać per-rule „fired-state": akcja raz na przejście false→true, re-arm gdy warunek znów false. Solar `SET_RELAY` ma już dedup `pumpState` (zachować), reszta potrzebuje edge. Bez tego remote/realne akcje będą spamować.
+- **Potem SPI/CC1310** (`spi_master_task`→slave + handshake, ARCHITECTURE-GEN2 §3): SPI task zasila `gNodeInQueue` (dane nodu) i drenuje akcje do nodów → odblokowuje `COND_PARAMETER`/`COND_PARAMETER_DELTA` + telemetrię (`MSG_NODE_TELEMETRY`) + realne sterowanie.
+- **Remote access**: telefon/web → API Linux → SQLite (źródło prawdy reguł) → `PushRules`. Time-sync z NTP Linuxa (zamiast hardcode 12:00 z testu).
+- Szczegóły: `docs/ENGINE-INTEGRATION.md`. Czas produkcyjny: NTP→`SendTimeSync` albo RTC carrier.
 
 **Co JUŻ gotowe (17.06):**
 - `m4f-firmware/engine.{c,h}` — rdzeń RTOS-agnostyczny (ewaluator port 1:1 D6 + guardy solar, NodesData folding, atomic swap + CRC32 IEEE). Lint: TI ARM clang `-Wall -Wextra` czysto.
@@ -319,7 +321,10 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 - **✅ ZWERYFIKOWANE NA ŻYWO (17.06)**: projekt CCS FreeRTOS (zaimportowany `ipc_rpmsg_echo_..._freertos_ti-arm-clang`) zbudowany + Deploy-M4F + Deploy-Go + `-test push-rules`. M4F boot: `Engine task started`. Push: `RX 0x30 → 0x31×3 (198B) → 0x32`, każda ACK; Go: `[rules] pushed 3 rules (crc32=0x0A83CF84) - M4F committed`. COMMIT→ACK (nie ERROR) = count+CRC32 OK → atomic swap. **Dowodzi wire-ABI cgo↔M4F bajtowo identyczne + lock-free swap działa na FreeRTOS.** Commit po zielonym (ten wpis).
 - **Gotchas bring-up (helpery na laptopie, poza repo)**: (1) build M4F failował — `.bss` 77KB > 64KB DRAM (`g_rules` 39KB) → przeniesione do `M4F_DDR` przez sekcję `.bss.engine_rules` w `linker.cmd` projektu; (2) undefined `uart_echo_read_callback` (świeży syscfg ma debug UART w trybie CALLBACK) → no-op stub w `ipc_rpmsg_echo.c`; (3) cgo preambuła działa **per-plik** → `rules.go` musiał dostać `#include "protocol.h"` (nie tylko `automation.h`); (4) `Deploy-Go` bez `-ServiceName rpmsg-service` szedł na `protocol-test`; rozszerzony o kopiowanie wszystkich `shared/*.h` w pętli; (5) `Deploy-M4F` wskazywał stary projekt CCS → flashował stary firmware (objaw: `Unknown msg type 0x30`) → ścieżka zmieniona na nowy projekt freertos. Weryfikacja właściwego obrazu: boot banner `Engine task started`.
 - **Build lokalny (bez IDE)**: `cd Debug && gmake -j8 all` z `C:/ti/ccs2051/...` przechodzi → `.appimage.hs_fs`. Lint przenośnych TU: `tiarmclang -fsyntax-only` ([[local-ti-arm-clang]]).
-- **Następne**: smoke-test firingu (tymczasowy `engine_set_time()` + okno reguły „teraz" → `RULE_FIRED`); potem time-sync z Linuxa, SPI/CC1310 (zasili `gNodeInQueue` + realne akcje), remote access.
+- **✅ time-sync + firing ZWERYFIKOWANE NA ŻYWO (17.06)**: dodany `MSG_TIME_SYNC 0x34` (Linux→M4F, u8 hour+minute → `engine_set_time`) — realna funkcja z roadmapy zamiast hacka. Go: `SendTimeSync()` + tryb `-test fire-smoke` (time-sync 12:00 → push reguły TIME[10-14h] SEND_MESSAGE→smartphone, bez solar-guard → fires). Wynik: `RULE_FIRED #1..N` co 1s, M4F `TX 0x42` + `-> node ... (SPI TODO)`. **Pełna pętla engine domknięta**: time-sync→eval TIME→akcja→outbox→comms→RULE_FIRED→Go.
+- **⚠️ FOLLOW-UP (potwierdzony obserwacją)**: engine jest **level-triggered** — reguła odpala CO TICK (~1s) dopóki warunek prawdziwy. Solar `SET_RELAY` ma dedup `pumpState`, ale `SEND_MESSAGE`/inne akcje spamują. gen1 robił to samo, ale polling 60s maskował. Na produkcję: **edge-trigger / per-rule „fired-state"** (odpal raz na przejście false→true, ew. re-arm po wyjściu z warunku). Do zrobienia przy dojrzewaniu enginu (przed remote access / realnymi akcjami).
+- **Uwaga**: po `fire-smoke` reguła zostaje w RAM M4F i leci dalej co 1s (po rozłączeniu Go → RETRY/GIVEUP, nieszkodliwe). Czyści ją reboot M4F albo push pustego zestawu (`RULE_BEGIN(0)+COMMIT`).
+- **Następne**: edge-trigger dedup (wyżej); potem SPI/CC1310 (zasili `gNodeInQueue` → `COND_PARAMETER` + telemetria + realne akcje), remote access (telefon/web → `PushRules`).
 
 ### 2026-06-16 — analiza starej bramki + architektura gen2 rozpisana
 - **Przeanalizowany kod gen1** (CC3235+CC1310, ścieżki w pamięci [[legacy-gateway-code]]): engine (czysty C, ≤3 warunki AND, akcje relay/msg, polling 60s), JSON reguł (ręczny parser), MessageStruct (node↔gw), SPI handshake 2-liniowy (przeczytane `spi_master_task.c` + `spiTask.c`), RF EasyLink, FRAM dual-slot, telemetria HTTP do chmury.

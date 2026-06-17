@@ -102,6 +102,15 @@ bool engine_rpmsg_dispatch(uint8_t msg_type, uint16_t seq,
             return true;
         }
 
+        case MSG_TIME_SYNC: {
+            /* payload: u8 hour, u8 minute - sets the engine wall-clock so
+             * COND_TIME rules can evaluate (M4F has no RTC/NTP). */
+            if (payload_len < 2u) { sendError(seq); return true; }
+            engine_set_time(payload[0], payload[1]);
+            ackIf(seq);
+            return true;
+        }
+
         default:
             return false;  /* not ours */
     }

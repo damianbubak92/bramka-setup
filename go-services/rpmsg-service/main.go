@@ -14,7 +14,7 @@ import (
 
 func main() {
 	testMode := flag.String("test", "hello",
-		"Test mode: hello|data|spam|retry|replay|retry-drop|event|hang|crash-m4f|heartbeat|silent-hang|heartbeat-busy|push-rules")
+		"Test mode: hello|data|spam|retry|replay|retry-drop|event|hang|crash-m4f|heartbeat|silent-hang|heartbeat-busy|push-rules|fire-smoke")
 	heartbeatMs := flag.Int("heartbeat-idle-ms", 5000,
 		"Idle time before sending heartbeat PING (ms)")
 	flag.Parse()
@@ -73,6 +73,8 @@ func main() {
 			runHeartbeatBusyTest(p)
 		case "push-rules":
 			runPushRulesTest(p)
+		case "fire-smoke":
+			runFireSmokeTest(p)
 		default:
 			log.Printf("Unknown test mode: %s", *testMode)
 		}
@@ -538,6 +540,57 @@ func runPushRulesTest(p *Protocol) {
 	log.Println("[Test] m4f-watch: each RULE_* ACKed; COMMIT -> 'Engine ... rules' swap.")
 	log.Println("[Test] NOTE: TIME rules won't fire until engine_set_time() exists")
 	log.Println("[Test]       (time-sync TODO; see docs/ENGINE-INTEGRATION.md).")
+}
+
+// runFireSmokeTest: end-to-end engine firing check. Sync a fixed wall-clock,
+// push one always-in-window TIME rule with SEND_MESSAGE (no solar guard), then
+// listen for MSG_RULE_FIRED coming back from the M4F engine each ~1s tick.
+func runFireSmokeTest(p *Protocol) {
+	time.Sleep(200 * time.Millisecond)
+
+	log.Println("[Test] Sending HELLO (with retry)...")
+	if err := helloWithRetry(p); err != nil {
+		log.Printf("[Test] HELLO failed: %v", err)
+		return
+	}
+	log.Println("[Test] Connected.")
+	log.Println("[Test] === FIRE SMOKE TEST ===")
+
+	// 1) Deterministic wall-clock so COND_TIME can evaluate (M4F has no RTC).
+	const hh, mm = 12, 0
+	log.Printf("[Test] Time-sync -> %02d:%02d", hh, mm)
+	if err := p.SendTimeSync(hh, mm); err != nil {
+		log.Printf("[Test] time-sync FAILED: %v", err)
+		return
+	}
+
+	// 2) One TIME rule whose window covers 12:00, action SEND_MESSAGE to
+	//    smartphone (no solar pumpState/sBuforTemp guard -> fires on time alone).
+	rules := []Rule{{
+		Name:       "SmokeFire",
+		Conditions: []Condition{{Type: CondTime, Time: TimeCond{HourStart: 10, MinStart: 0, HourEnd: 14, MinEnd: 0}}},
+		Action:     Action{Type: ActionSendMessage, Target: DevSmartphone, Message: "SMOKE"},
+	}}
+	if err := p.PushRules(rules); err != nil {
+		log.Printf("[Test] rule push FAILED: %v", err)
+		return
+	}
+
+	log.Println("[Test] Rule committed. Engine evaluates ~1 Hz; expecting RULE_FIRED each tick.")
+	log.Println("[Test] Listening for MSG_RULE_FIRED (0x42) - Ctrl+C to stop...")
+	n := 0
+	for ev := range p.EventRx() {
+		if ev.Type == MsgRuleFired {
+			n++
+			var idx uint16
+			if len(ev.Payload) >= 2 {
+				idx = uint16(ev.Payload[0])<<8 | uint16(ev.Payload[1])
+			}
+			log.Printf("[Test] RULE_FIRED #%d ruleIndex=%d (%d bytes payload)", n, idx, len(ev.Payload))
+		} else {
+			log.Printf("[Test] EVENT type=0x%02X seq=%d (%d bytes)", ev.Type, ev.Seq, len(ev.Payload))
+		}
+	}
 }
 
 // runHeartbeatBusyTest: send DATA every 2s, verify NO PINGs fire.

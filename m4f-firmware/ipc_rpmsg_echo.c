@@ -580,7 +580,8 @@ static void handleLinuxMessage(void)
         case MSG_RULE_BEGIN:
         case MSG_RULE_ITEM:
         case MSG_RULE_COMMIT:
-        case MSG_NODE_CMD: {
+        case MSG_NODE_CMD:
+        case MSG_TIME_SYNC: {
             /* gen2 control messages -> engine glue (handles ACK/ERROR). */
             engine_rpmsg_dispatch(msg_type, msg_seq, msg_payload, msg_payload_len);
             break;

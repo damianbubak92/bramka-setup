@@ -91,6 +91,14 @@ const (
 	MaxMessageLen  = 64 // incl. null terminator
 )
 
+// M4F->Linux reporter message types (mirror protocol.h; plain Go consts so
+// non-cgo files like main.go can demux EventRx without importing "C").
+const (
+	MsgNodeTelemetry = 0x40
+	MsgNodeState     = 0x41
+	MsgRuleFired     = 0x42
+)
+
 // abiOK is false if the C header layout drifts from what we expect; rule push
 // is then refused (corruption is worse than a missing feature).
 var abiOK = true
@@ -247,6 +255,11 @@ func (p *Protocol) PushRules(rules []Rule) error {
 
 	log.Printf("[rules] pushed %d rules (crc32=0x%08X) - M4F committed", len(rules), crc)
 	return nil
+}
+
+// SendTimeSync sets the M4F engine wall-clock (for COND_TIME). Reliable.
+func (p *Protocol) SendTimeSync(hour, minute uint8) error {
+	return p.sendReliableTyped(C.MSG_TIME_SYNC, []byte{hour, minute})
 }
 
 // exampleRules mirrors gen1 initExampleRules() (coreTask.c) for the push test.
