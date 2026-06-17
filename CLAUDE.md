@@ -189,10 +189,13 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 
 **Stan enginu**: push reguł + time-sync + firing **zweryfikowane na żywo 17.06** (pętla domknięta). Time-sync `MSG_TIME_SYNC 0x34` działa.
 
-**👉 NASTĘPNE ZADANIE: edge-trigger dedup, potem SPI/CC1310, remote access.**
-- **Edge-trigger (najpierw, blokuje sensowne akcje)**: engine level-triggered → reguła odpala co ~1s dopóki warunek true (potwierdzone w fire-smoke). Dodać per-rule „fired-state": akcja raz na przejście false→true, re-arm gdy warunek znów false. Solar `SET_RELAY` ma już dedup `pumpState` (zachować), reszta potrzebuje edge. Bez tego remote/realne akcje będą spamować.
-- **Potem SPI/CC1310** (`spi_master_task`→slave + handshake, ARCHITECTURE-GEN2 §3): SPI task zasila `gNodeInQueue` (dane nodu) i drenuje akcje do nodów → odblokowuje `COND_PARAMETER`/`COND_PARAMETER_DELTA` + telemetrię (`MSG_NODE_TELEMETRY`) + realne sterowanie.
-- **Remote access**: telefon/web → API Linux → SQLite (źródło prawdy reguł) → `PushRules`. Time-sync z NTP Linuxa (zamiast hardcode 12:00 z testu).
+**👉 NASTĘPNE ZADANIE: edge-trigger + kadencja minutowa, potem SPI/CC1310, remote access.**
+- **Edge-trigger + kadencja (najpierw, mały, blokuje sensowne akcje)** — DECYZJA z userem:
+  - **kadencja**: TIME reguły co ~1 min (zmień tick `engineTask` `1000`→`60000` ms), reguły danych event-driven na `gNodeInQueue`. Bez computed-deadline (prosty timer). (Szczegóły + otwarte „wyrównanie do `:00`" w Session Log 17.06.)
+  - **edge-trigger**: per-rule „fired-state" — akcja raz na przejście warunku false→true, re-arm gdy znów false. Solar `SET_RELAY` ma już dedup `pumpState` (zachować), reszta potrzebuje edge. Wzorzec „włącz 17:32 / wyłącz 17:54" = dwie reguły TIME (ON-okno / OFF-okno), jak gen1 `initExampleRules`.
+- **Potem SPI/CC1310** (`spi_master_task`→slave + handshake, ARCHITECTURE-GEN2 §3): SPI task zasila `gNodeInQueue` (dane nodu) i drenuje akcje do nodów (`nodeTxSink`→SPI) → odblokowuje `COND_PARAMETER`/`DELTA` + telemetrię (`MSG_NODE_TELEMETRY`) + realne sterowanie.
+- **Remote access**: odtworzyć kontrakt HTTP API starej bramki (apka telefonu już działa, `httpsServerTask` port 9443+token) w Go → tłumaczy „włącz pompę" na `MSG_NODE_CMD`. Źródło prawdy reguł = SQLite → `PushRules`. Time-sync z NTP Linuxa (zamiast hardcode 12:00).
+- **🎯 TEST DOCELOWY (po SPI+remote)**: pełny flow **telefon (włącz pompę) → Go → M4F → CC1310 → RF node**, ze starą bramką wyłączoną, sprawdzić czy node poprawnie zinterpretuje komendę (najmocniejszy test E2E w realu).
 - Szczegóły: `docs/ENGINE-INTEGRATION.md`. Czas produkcyjny: NTP→`SendTimeSync` albo RTC carrier.
 
 **Co JUŻ gotowe (17.06):**
@@ -323,6 +326,7 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 - **Build lokalny (bez IDE)**: `cd Debug && gmake -j8 all` z `C:/ti/ccs2051/...` przechodzi → `.appimage.hs_fs`. Lint przenośnych TU: `tiarmclang -fsyntax-only` ([[local-ti-arm-clang]]).
 - **✅ time-sync + firing ZWERYFIKOWANE NA ŻYWO (17.06)**: dodany `MSG_TIME_SYNC 0x34` (Linux→M4F, u8 hour+minute → `engine_set_time`) — realna funkcja z roadmapy zamiast hacka. Go: `SendTimeSync()` + tryb `-test fire-smoke` (time-sync 12:00 → push reguły TIME[10-14h] SEND_MESSAGE→smartphone, bez solar-guard → fires). Wynik: `RULE_FIRED #1..N` co 1s, M4F `TX 0x42` + `-> node ... (SPI TODO)`. **Pełna pętla engine domknięta**: time-sync→eval TIME→akcja→outbox→comms→RULE_FIRED→Go.
 - **⚠️ FOLLOW-UP (potwierdzony obserwacją)**: engine jest **level-triggered** — reguła odpala CO TICK (~1s) dopóki warunek prawdziwy. Solar `SET_RELAY` ma dedup `pumpState`, ale `SEND_MESSAGE`/inne akcje spamują. gen1 robił to samo, ale polling 60s maskował. Na produkcję: **edge-trigger / per-rule „fired-state"** (odpal raz na przejście false→true, ew. re-arm po wyjściu z warunku). Do zrobienia przy dojrzewaniu enginu (przed remote access / realnymi akcjami).
+- **DECYZJA — kadencja ewaluacji (17.06, z userem)**: **hybryda**. Reguły **danych** (PARAMETER/DELTA) = event-driven (ewaluacja na napływ danych nodu z `gNodeInQueue`) + edge gdzie trzeba. Reguły **czasowe** (TIME) = periodyczny tick **co ~1 minutę** (jak gen1), NIE co 1s (za często, bez sensu — TIME ma granulację minutową). Zostajemy przy prostym timerze (timeout `xQueueReceive`), BEZ computed-deadline (przedwczesna optymalizacja; czas i tak jest „zdarzeniem", samo-naprawialny przy time-sync/zmianie reguł). Implementacyjnie: zmienić tick `pdMS_TO_TICKS(1000)`→`60000` w `engineTask`. Otwarte (zdecydować przy implementacji): wyrównanie do granicy minuty (`:00`) — dziś `MSG_TIME_SYNC` niesie tylko h+m bez sekund → albo dodać sekundy do time-sync i liczyć delay do następnej minuty, albo zaakceptować ≤60s fazy jak gen1.
 - **Uwaga**: po `fire-smoke` reguła zostaje w RAM M4F i leci dalej co 1s (po rozłączeniu Go → RETRY/GIVEUP, nieszkodliwe). Czyści ją reboot M4F albo push pustego zestawu (`RULE_BEGIN(0)+COMMIT`).
 - **Następne**: edge-trigger dedup (wyżej); potem SPI/CC1310 (zasili `gNodeInQueue` → `COND_PARAMETER` + telemetria + realne akcje), remote access (telefon/web → `PushRules`).
 
