@@ -257,9 +257,12 @@ func (p *Protocol) PushRules(rules []Rule) error {
 	return nil
 }
 
-// SendTimeSync sets the M4F engine wall-clock (for COND_TIME). Reliable.
-func (p *Protocol) SendTimeSync(hour, minute uint8) error {
-	return p.sendReliableTyped(C.MSG_TIME_SYNC, []byte{hour, minute})
+// SendTimeSync sets the M4F engine wall-clock (for COND_TIME and the :00-aligned
+// time-rule tick). Reliable. Payload: hour, minute, second. The M4F advances
+// this from its monotonic clock between syncs; re-send periodically (NTP) to
+// correct drift.
+func (p *Protocol) SendTimeSync(hour, minute, second uint8) error {
+	return p.sendReliableTyped(C.MSG_TIME_SYNC, []byte{hour, minute, second})
 }
 
 // exampleRules mirrors gen1 initExampleRules() (coreTask.c) for the push test.

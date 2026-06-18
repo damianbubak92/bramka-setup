@@ -319,9 +319,10 @@ static int sendEvent(const uint8_t *payload, uint16_t payload_len)
 /* ========================================================================== */
 /*
  * Two tasks, no shared-state locking:
- *   - ENGINE task: evaluates rules (on a node-data queue OR a 1s tick). Rule
- *     firings / telemetry are pushed to gOutboxQueue. NEVER calls RPMessage_send
- *     and NEVER touches gPendingAcks.
+ *   - ENGINE task: evaluates rules - data rules on node-data arrival, time rules
+ *     on a wall-clock minute tick aligned to :00. Rule firings / telemetry are
+ *     pushed to gOutboxQueue. NEVER calls RPMessage_send and NEVER touches
+ *     gPendingAcks.
  *   - COMMS task (= ipc_rpmsg_echo_main body): SOLE owner of RPMessage_send +
  *     gPendingAcks. Drains RX, drains gOutboxQueue (-> report to Linux + node
  *     TX), runs retries. The queues are the only cross-task channel (the gen1
@@ -364,6 +365,19 @@ static uint8_t      gNodeInStorage[NODEIN_DEPTH * sizeof(MessageStruct)];
 static StaticQueue_t gNodeInQueueObj;
 static QueueHandle_t gNodeInQueue;
 
+/* Internal sentinel posted on gNodeInQueue (COMMS task) to wake the ENGINE task
+ * after a time-sync: it runs EVAL_TIME promptly and re-aligns the tick to :00
+ * immediately, instead of waiting out its in-progress sleep. Value is outside
+ * the NODE_* range (0..5) and never appears on the wire. */
+#define ENGINE_NODEIN_TIME_RESYNC   0xEEu
+
+/* Monotonic microsecond clock for the engine wall-clock (injected at init so
+ * engine.c stays SDK-agnostic). */
+static uint64_t engineClockUsec(void)
+{
+    return ClockP_getTimeUsec();
+}
+
 /* Action sink (ENGINE task context): a rule fired. Push to the outbox; the comms
  * task does the actual Linux report + node delivery. No RPMessage here. */
 static void engineActionSink(const MessageStruct *msg, uint16_t ruleIndex,
@@ -389,7 +403,10 @@ static void nodeTxSink(const MessageStruct *msg)
                 (unsigned)msg->type, (unsigned)msg->cmd);
 }
 
-/* ENGINE task: event-driven (node data) + 1 Hz time tick (D5). */
+/* ENGINE task: data rules are event-driven (node-data queue); time rules run on
+ * a wall-clock minute tick aligned to :00. The queue receive timeout is sized to
+ * the next minute boundary, so an intervening node event does not shift the tick
+ * (recomputed each loop) - keeps TIME evaluation deterministic at :00. */
 static void engineTask(void *args)
 {
     (void)args;
@@ -397,18 +414,34 @@ static void engineTask(void *args)
 
     DebugP_log("[M4F] Engine task started\r\n");
     while (!gbShutdown) {
-        if (xQueueReceive(gNodeInQueue, &nodeMsg, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            if (engine_update_node(&nodeMsg)) {
-                outbox_item_t item;
-                item.kind = OUTBOX_TELEMETRY;
-                item.msg = nodeMsg;
-                if (xQueueSend(gOutboxQueue, &item, 0) != pdTRUE) {
-                    DebugP_log("[M4F] outbox full - telemetry dropped\r\n");
+        uint32_t ms = engine_ms_to_next_minute();  /* to next :00, sub-second precise */
+        if (xQueueReceive(gNodeInQueue, &nodeMsg, pdMS_TO_TICKS(ms)) == pdTRUE) {
+            if (nodeMsg.type == ENGINE_NODEIN_TIME_RESYNC) {
+                /* Time-sync sentinel: wake ONLY to break a stale (pre-sync) sleep
+                 * so the next loop re-sizes the timeout from the fresh clock and
+                 * aligns to :00. Do NOT evaluate here - evaluating off the :00
+                 * boundary would fire early (and double up with the boundary
+                 * timeout). No-op on purpose; fall through to recompute. */
+            } else {
+                /* Node data arrived: fold into state, emit telemetry, evaluate
+                 * the data-driven rules (COND_PARAMETER / _DELTA). */
+                if (engine_update_node(&nodeMsg)) {
+                    outbox_item_t item;
+                    item.kind = OUTBOX_TELEMETRY;
+                    item.msg = nodeMsg;
+                    if (xQueueSend(gOutboxQueue, &item, 0) != pdTRUE) {
+                        DebugP_log("[M4F] outbox full - telemetry dropped\r\n");
+                    }
                 }
+                engine_evaluate(ENGINE_EVAL_NODE);
             }
+        } else {
+            /* Timeout = we slept the full span to the :00 boundary: evaluate the
+             * time-driven rules (COND_TIME). The sentinel guarantees this sleep
+             * was sized by a valid clock (it breaks the pre-sync sleep), so the
+             * timeout only ever lands on :00. */
+            engine_evaluate(ENGINE_EVAL_TIME);
         }
-        /* Evaluate on every wake: node-data arrival OR the 1s timeout tick. */
-        engine_evaluate();
     }
     vTaskDelete(NULL);
 }
@@ -488,8 +521,12 @@ static void handleLinuxMessage(void)
         lastLoggedEndpoint = gLinuxEndpoint;
     }
 
-    DebugP_log("[M4F] RX type=0x%02X seq=%u payload_len=%u\r\n",
-                (unsigned)msg_type, (unsigned)msg_seq, (unsigned)msg_payload_len);
+    /* Heartbeat PING is silenced to keep the m4f-watch trace readable (it ticks
+     * every few seconds and works). Uncomment the guard to log it again. */
+    if (msg_type != MSG_PING) {
+        DebugP_log("[M4F] RX type=0x%02X seq=%u payload_len=%u\r\n",
+                    (unsigned)msg_type, (unsigned)msg_seq, (unsigned)msg_payload_len);
+    }
 
     /* Dispatch by message type */
     switch (msg_type) {
@@ -571,8 +608,9 @@ static void handleLinuxMessage(void)
             /* Heartbeat from Linux - reply with generic ACK.
              * MSG_PONG is deprecated, all confirmations go through MSG_ACK now.
              * M4F never initiates PING itself (one-way heartbeat: Linux->M4F). */
-            DebugP_log("[M4F] RX heartbeat PING seq=%u - replying ACK\r\n",
-                        (unsigned)msg_seq);
+            /* Silenced (heartbeat works; uncomment to debug):
+             * DebugP_log("[M4F] RX heartbeat PING seq=%u - replying ACK\r\n",
+             *             (unsigned)msg_seq); */
             sendAck(msg_seq);
             break;
         }
@@ -584,6 +622,16 @@ static void handleLinuxMessage(void)
         case MSG_TIME_SYNC: {
             /* gen2 control messages -> engine glue (handles ACK/ERROR). */
             engine_rpmsg_dispatch(msg_type, msg_seq, msg_payload, msg_payload_len);
+
+            /* Wake the engine task after a clock update so it re-aligns its
+             * minute tick to :00 immediately (engine_set_time already applied
+             * inside the dispatch). Sentinel, best-effort. */
+            if (msg_type == MSG_TIME_SYNC) {
+                MessageStruct wake;
+                memset(&wake, 0, sizeof(wake));
+                wake.type = ENGINE_NODEIN_TIME_RESYNC;
+                (void)xQueueSend(gNodeInQueue, &wake, 0);
+            }
             break;
         }
 
@@ -636,9 +684,9 @@ static void doPeriodicTick(void)
         gTickCount++;
         gLastTickTime = now;
 
-        /* Engine evaluation now runs in the ENGINE task (1 Hz tick = qNodeIn
-         * receive timeout), not here. doPeriodicTick stays for comms-side
-         * periodic needs only. */
+        /* Engine evaluation runs in the ENGINE task (node events + :00-aligned
+         * minute tick), not here. doPeriodicTick stays for comms-side periodic
+         * needs only. */
 
         /* Production: no autonomous tick log, no autonomous test EVENT.
          *
@@ -816,7 +864,7 @@ void ipc_rpmsg_echo_main(void *args)
 
     /* Automation engine: init core + RPMsg glue. Active ruleset starts empty;
      * Linux pushes it via RULE_BEGIN..COMMIT after HELLO. */
-    engine_init(engineActionSink, NULL);
+    engine_init(engineActionSink, NULL, engineClockUsec);
     engine_rpmsg_init(sendReliable, sendReply, nodeTxSink);
 
     /* Cross-task queues (lock-free): engine->comms outbox, SPI->engine node-in. */

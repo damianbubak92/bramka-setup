@@ -538,13 +538,16 @@ func runPushRulesTest(p *Protocol) {
 	}
 	log.Println("[Test] Rule push OK - M4F committed the ruleset (atomic swap).")
 	log.Println("[Test] m4f-watch: each RULE_* ACKed; COMMIT -> 'Engine ... rules' swap.")
-	log.Println("[Test] NOTE: TIME rules won't fire until engine_set_time() exists")
-	log.Println("[Test]       (time-sync TODO; see docs/ENGINE-INTEGRATION.md).")
+	log.Println("[Test] NOTE: TIME rules need a time-sync to fire; data rules need")
+	log.Println("[Test]       node input over SPI (not wired yet). See -test fire-smoke.")
 }
 
 // runFireSmokeTest: end-to-end engine firing check. Sync a fixed wall-clock,
 // push one always-in-window TIME rule with SEND_MESSAGE (no solar guard), then
-// listen for MSG_RULE_FIRED coming back from the M4F engine each ~1s tick.
+// listen for MSG_RULE_FIRED from the M4F engine. Fires land on the *engine's*
+// wall-clock minute boundary (synced to 12:00:5x here, NOT real Linux time): the
+// sync wakes the engine to re-align, so with second=50 the first RULE_FIRED hits
+// the :00 boundary ~10s later, then once per aligned minute (12:01:00, 12:02:00).
 func runFireSmokeTest(p *Protocol) {
 	time.Sleep(200 * time.Millisecond)
 
@@ -557,9 +560,10 @@ func runFireSmokeTest(p *Protocol) {
 	log.Println("[Test] === FIRE SMOKE TEST ===")
 
 	// 1) Deterministic wall-clock so COND_TIME can evaluate (M4F has no RTC).
-	const hh, mm = 12, 0
-	log.Printf("[Test] Time-sync -> %02d:%02d", hh, mm)
-	if err := p.SendTimeSync(hh, mm); err != nil {
+	//    second=50 -> first :00 boundary ~10s away (quick first fire).
+	const hh, mm, ss = 12, 0, 50
+	log.Printf("[Test] Time-sync -> %02d:%02d:%02d", hh, mm, ss)
+	if err := p.SendTimeSync(hh, mm, ss); err != nil {
 		log.Printf("[Test] time-sync FAILED: %v", err)
 		return
 	}
@@ -576,7 +580,9 @@ func runFireSmokeTest(p *Protocol) {
 		return
 	}
 
-	log.Println("[Test] Rule committed. Engine evaluates ~1 Hz; expecting RULE_FIRED each tick.")
+	log.Println("[Test] Rule committed. Expect ONE RULE_FIRED at each engine :00 boundary:")
+	log.Println("[Test] first ~10s out (12:01:00), then every 60s - no double-fire.")
+	log.Println("[Test] (log timestamps are real Linux time; fires track the synced clock.)")
 	log.Println("[Test] Listening for MSG_RULE_FIRED (0x42) - Ctrl+C to stop...")
 	n := 0
 	for ev := range p.EventRx() {

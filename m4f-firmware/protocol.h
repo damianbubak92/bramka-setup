@@ -73,7 +73,7 @@
 #define MSG_RULE_ITEM      0x31u  /* payload: u16 index (BE) + AutomationRule (1 rule/frame) */
 #define MSG_RULE_COMMIT    0x32u  /* payload: u16 expectedCount (BE) + u32 crc32 (BE) - atomic swap */
 #define MSG_NODE_CMD       0x33u  /* payload: MessageStruct - command from phone, relayed to node */
-#define MSG_TIME_SYNC      0x34u  /* payload: u8 hour, u8 minute - set engine wall-clock (COND_TIME) */
+#define MSG_TIME_SYNC      0x34u  /* payload: u8 hour, u8 minute, [u8 second] - set engine wall-clock (COND_TIME + :00 tick) */
 
 /* M4F -> Linux (telemetry / state) */
 #define MSG_NODE_TELEMETRY 0x40u  /* payload: MessageStruct - raw node reading -> cloud/DB */

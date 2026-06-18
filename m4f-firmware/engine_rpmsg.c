@@ -103,10 +103,12 @@ bool engine_rpmsg_dispatch(uint8_t msg_type, uint16_t seq,
         }
 
         case MSG_TIME_SYNC: {
-            /* payload: u8 hour, u8 minute - sets the engine wall-clock so
-             * COND_TIME rules can evaluate (M4F has no RTC/NTP). */
+            /* payload: u8 hour, u8 minute, [u8 second] - sets the engine
+             * wall-clock so COND_TIME rules evaluate and the minute tick aligns
+             * to :00 (M4F has no RTC/NTP). Seconds optional for back-compat. */
             if (payload_len < 2u) { sendError(seq); return true; }
-            engine_set_time(payload[0], payload[1]);
+            uint8_t sec = (payload_len >= 3u) ? payload[2] : 0u;
+            engine_set_time(payload[0], payload[1], sec);
             ackIf(seq);
             return true;
         }

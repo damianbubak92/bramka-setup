@@ -187,13 +187,11 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 
 **Stan**: infra bramki kompletna. **Engine M4F (FreeRTOS multi-task) + enkoder rule-push Go — ZWERYFIKOWANE NA ŻYWO 17.06** (push 3 reguł, atomic swap, COMMIT→ACK, wire-ABI cgo↔M4F potwierdzone CRC32). Projekt CCS: `C:\Users\damia\workspace_ccstheia\ipc_rpmsg_echo_..._freertos_ti-arm-clang` ([[ccs-project-separate-from-repo]]).
 
-**Stan enginu**: push reguł + time-sync + firing **zweryfikowane na żywo 17.06** (pętla domknięta). Time-sync `MSG_TIME_SYNC 0x34` działa.
+**Stan enginu**: push reguł + time-sync + firing **zweryfikowane na żywo 17.06** (pętla domknięta). **Kadencja hybrydowa (TIME=tick minutowy wyrównany do `:00`, dane=event-driven) + bucketing + level-trigger — alignment ZWERYFIKOWANY 18.06** (RULE_FIRED #2 trafił w ścianę `:00`, brak spamu 1s). Time-sync `MSG_TIME_SYNC 0x34` niesie teraz h,m,s (wyrównanie); wybudza engine task (sentinel `gNodeInQueue`).
 
-**👉 NASTĘPNE ZADANIE: edge-trigger + kadencja minutowa, potem SPI/CC1310, remote access.**
-- **Edge-trigger + kadencja (najpierw, mały, blokuje sensowne akcje)** — DECYZJA z userem:
-  - **kadencja**: TIME reguły co ~1 min (zmień tick `engineTask` `1000`→`60000` ms), reguły danych event-driven na `gNodeInQueue`. Bez computed-deadline (prosty timer). (Szczegóły + otwarte „wyrównanie do `:00`" w Session Log 17.06.)
-  - **edge-trigger**: per-rule „fired-state" — akcja raz na przejście warunku false→true, re-arm gdy znów false. Solar `SET_RELAY` ma już dedup `pumpState` (zachować), reszta potrzebuje edge. Wzorzec „włącz 17:32 / wyłącz 17:54" = dwie reguły TIME (ON-okno / OFF-okno), jak gen1 `initExampleRules`.
-- **Potem SPI/CC1310** (`spi_master_task`→slave + handshake, ARCHITECTURE-GEN2 §3): SPI task zasila `gNodeInQueue` (dane nodu) i drenuje akcje do nodów (`nodeTxSink`→SPI) → odblokowuje `COND_PARAMETER`/`DELTA` + telemetrię (`MSG_NODE_TELEMETRY`) + realne sterowanie.
+**👉 NASTĘPNE ZADANIE: SPI/CC1310, potem remote access.** (kadencja+bucketing ZROBIONE 18.06)
+- **✅ Kadencja + bucketing + wyrównany tick + dedup (18.06) — ZWERYFIKOWANE NA ŻYWO** (jeden fire na każdej `:00`, równo co 60s, heartbeaty cicho; dubel okazał się stale buildem CCS, [[ccs-project-separate-from-repo]]). **DECYZJA z userem: level-trigger + sprzężenie zwrotne ze stanu noda, NIE edge** — reguła odpala do skutku dopóki warunek prawdziwy, akcja pomijana gdy node już raportuje pożądany stan (chroni przed zgubioną 1. komendą). TIME reguły na ticku minutowym **wyrównanym do `:00`** (zegar dolicza upływ z `ClockP`), reguły danych event-driven na `gNodeInQueue`. Uogólnienie feedbacku akcji stanowych + `SEND_MESSAGE` (brak feedbacku noda — telefon polluje DB) odłożone do SPI / remote-access. Szczegóły: [[engine-eval-cadence]], Session Log 18.06.
+- **Teraz SPI/CC1310** (`spi_master_task`→slave + handshake, ARCHITECTURE-GEN2 §3): SPI task zasila `gNodeInQueue` (dane nodu) i drenuje akcje do nodów (`nodeTxSink`→SPI) → odblokowuje `COND_PARAMETER`/`DELTA` + telemetrię (`MSG_NODE_TELEMETRY`) + realne sterowanie + **uogólnione sprzężenie zwrotne** (anti-spam akcji stanowych).
 - **Remote access**: odtworzyć kontrakt HTTP API starej bramki (apka telefonu już działa, `httpsServerTask` port 9443+token) w Go → tłumaczy „włącz pompę" na `MSG_NODE_CMD`. Źródło prawdy reguł = SQLite → `PushRules`. Time-sync z NTP Linuxa (zamiast hardcode 12:00).
 - **🎯 TEST DOCELOWY (po SPI+remote)**: pełny flow **telefon (włącz pompę) → Go → M4F → CC1310 → RF node**, ze starą bramką wyłączoną, sprawdzić czy node poprawnie zinterpretuje komendę (najmocniejszy test E2E w realu).
 - Szczegóły: `docs/ENGINE-INTEGRATION.md`. Czas produkcyjny: NTP→`SendTimeSync` albo RTC carrier.
@@ -204,7 +202,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - `m4f-firmware/ipc_rpmsg_echo.c` — **FreeRTOS 2 taski + kolejki, lock-free** (ENGINE + COMMS; comms = jedyny właściciel send+pending). Recovery/heartbeat nietknięte. NIE zlintowane lokalnie (SDK+FreeRTOS) → build w CCS.
 - `go-services/rpmsg-service/{rules.go,protocol.go,main.go}` — enkoder reguł (cgo, layout C-owned), `PushRules`, `sendReliableTyped`, `MSG_ERROR` korelacja, tryb `-test push-rules`. Build na bramce (cgo).
 - `docs/ENGINE-INTEGRATION.md` — architektura tasków/kolejek + strona Go + plan testów. Rozmiary: AutomationRule=196B, RuleAction=68B, MessageStruct/NodesData=44B.
-- **STUB/TODO**: SPI→CC1310 (`nodeTxSink` loguje, `gNodeInQueue` nikt nie zasila), time-sync (`engine_set_time` nie wołane → `COND_TIME`=false fail-safe).
+- **STUB/TODO**: SPI→CC1310 (`nodeTxSink` loguje, `gNodeInQueue` zasilany tylko sentinelem time-sync — danych nodów brak). Time-sync DZIAŁA (`engine_set_time` z h,m,s).
 - ⚠️ `m4f-firmware/protocol.h` = mirror `shared/protocol.h` (sync przy zmianach).
 
 **Dalej w roadmapie:** 2) remote access (telefon/web CRUD reguł+sterowanie; źródło reguł = SQLite→PushRules), 3) CC1310↔M4F SPI (`spi_master_task`→slave + DATA_READY; SPI task zasila `gNodeInQueue` + drenuje akcje do nodów; odblokowuje firing PARAMETER + telemetrię), 4) bazy (SQLite config + time-series). Patrz [[near-term-roadmap]].
@@ -238,7 +236,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **OTA updates**: RAUC dla Linux (A/B partitions na eMMC), custom dla M4F (A/B w OSPI + ECDSA P-256 signing)
 - **Bazy**: SQLite (config, na eMMC) + InfluxDB/TimescaleDB (telemetria, na M.2 NVMe industrial)
 - **Health monitoring service**: eMMC wear `/sys/block/mmcblk0/device/life_time`, alarmy gdy zużycie >70%
-- **Carrier board production**: supercap PLP + PWR_FAIL GPIO + kernel sync on signal
+- **Carrier board production**: supercap PLP + PWR_FAIL GPIO + kernel sync on signal + **RTC z podtrzymaniem (MUST-HAVE)** — silnik pracuje na wstrzykniętym czasie; bez netu (NTP down) RTC to jedyne źródło czasu offline, inaczej reguły `COND_TIME` martwe (fail-safe). Patrz [[rtc-must-have-carrier]].
 
 ## Working Style (dla Claude Code)
 
@@ -312,6 +310,22 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-06-18 — kadencja hybrydowa + bucketing + wyrównany tick (level-trigger + feedback)
+- **DECYZJA z userem (zmiana mojego planu)**: silnik **NIE edge-trigger** tylko **level-trigger + sprzężenie zwrotne ze stanu noda**. Reguła spełniona → wysyłamy żądanie **do skutku** co tick, ale **przed wysłaniem** porównujemy żądany stan z aktualnym stanem noda; jeśli node już raportuje pożądany stan → pomijamy. Chroni przed zgubioną 1. komendą (edge by ją stracił; level retransmituje aż node potwierdzi). To uogólnienie istniejącego guardu solar `pumpState`. `SEND_MESSAGE` nie ma stanu noda (telefon = HTTPS client pollujący zewnętrzną DB co min) → semantyka odłożona; na teraz leci co tick (decyzja przy remote-access). Zapisane w [[engine-eval-cadence]].
+- **Kadencja hybrydowa + bucketing** (`engine.c`): `engine_evaluate(EngineEvalScope)` — `ENGINE_EVAL_TIME` (reguły z `COND_TIME` + zero-cond) na ticku minutowym, `ENGINE_EVAL_NODE` (`PARAMETER`/`DELTA`) na napływ danych. Reguła mieszana = oba kubełki. `rule_matches_scope()` filtruje → tick nie rusza reguł bez czasu (oszczędność CPU, wg usera).
+- **Wyrównany tick do `:00`**: `engineTask` timeout `xQueueReceive` = `engine_ms_to_next_minute()` (przeliczany co pętlę → event w pół minuty NIE przesuwa ticku). **Liczone w MILISEKUNDACH** (nie całych sekundach) — integer-flooring sekund jest kruchy na granicy minuty (tik o włos przed `:00` czyta `second=59` → mikro-sen 1s → podwójny fire; bug złapany w teście 18.06, patrz niżej). Wymaga sub-sekundowego zegara → **`MSG_TIME_SYNC` rozszerzony o sekundy** (h,m,**s**; additive, 0x34 bez zmian; Go `SendTimeSync(h,m,s)`).
+- **Zegar dolicza upływ** (`engine.c`): `engine_init(...,EngineClockFn)` wstrzykuje monotoniczny zegar (`ClockP_getTimeUsec`); `engine_set_time(h,m,s)` kotwiczy ścianę, `wall_now()` dolicza deltę. **Naprawia latentny bug**: wcześniej `g_time` był zamrożony na minucie ostatniego sync → realne „odpal o 17:32" nie działałoby bez ciągłego re-sync.
+- **Wake-on-sync**: COMMS task po `MSG_TIME_SYNC` wrzuca sentinel `ENGINE_NODEIN_TIME_RESYNC` (0xEE, poza `NODE_*`, nigdy na drucie) na `gNodeInQueue` → ENGINE task budzi się, robi `EVAL_TIME` od razu i wyrównuje tick natychmiast (bez tego pierwszy tick po syncu byłby skośny — czekałby do końca trwającego snu).
+- **Iteracje testu 18.06 (`-test fire-smoke`, sync 12:00:50, reguła TIME[10-14h] SEND_MESSAGE)** — UWAGA: fire'y trafiają w **ścianę czasu silnika** (12:01:00, 12:02:00…), NIE w realny czas Linuksa (timestampy logów to realny czas — mylące; w produkcji time-sync z NTP → realne `:00`):
+  - (a) tick na całych sekundach (`60 - second`): jitter tika na granicy → raz `second=59` → mikro-sen 1s → **lock na `:01` + podwójny fire**. FIX: `engine_ms_to_next_minute()` liczy do `:00` w **ms** (sub-sekundowo).
+  - (b) po ms-fix: ściany fire'ów `12:01:00.001` / `12:02:00.002` = **dokładnie `:00` ✓**, ale **podwójny fire na 1. granicy** (seq=1 i seq=2, 3ms). Próba 1: sentinel „tylko wybudza, bez eval" — podwójny fire ZOSTAŁ (wzór identyczny → albo firmware nieprzebudowany, albo inny mechanizm; nie ustalono jednoznacznie).
+  - (c) **FIX kuloodporny — dedup TIME na minutę** (`engine.c`, `g_last_time_min`): `EVAL_TIME` odpala reguły **maks. raz na daną minutę ściany czasu** (klucz `h*60+m`), reset w `engine_init` i `engine_rules_commit`. To dokładnie model usera („co minutę"), niezależny od liczby triggerów. FreeRTOS timeout budzi się „nie wcześniej" niż zadany → ląduje na/po `:00`, klucz minuty zawsze świeży. Sentinel-bez-eval zostaje (obrona w głąb).
+- **✅ ZWERYFIKOWANE NA ŻYWO (18.06, po czystym rebuildzie)** — DIAG-i potwierdziły: `wake=TIME (ms 9997)→FIRE→seq=1` (ściana 12:01:00), `wake=TIME (ms 59999)→seq=2` (12:02:00), `wake=TIME (ms 59998)→seq=3` (12:03:00). **Jeden** fire na każdej granicy `:00`, równo co 60s, `wake=RESYNC` = no-op, heartbeaty cicho. Pętla domknięta poprawnie. DIAG-i zdjęte.
+- **Wyciszone heartbeaty** (zakomentowane = łatwe do odkomentowania): M4F — generyczny log RX pomija `MSG_PING` + „RX heartbeat PING" zakomentowany. Go (`protocol.go`) — `TX heartbeat PING` zakomentowany, log ACK pomija `MSG_PING`, generyczny RX pomija `MSG_ACK`. Logika nietknięta.
+- **⚠️ LEKCJA — stale build w CCS**: podwójny fire utrzymywał się mimo poprawnego `engine.c` (dedup) → przyczyną był **niezrekompilowany `engine.o`**. Po zewnętrznej podmianie pliku (`cp` repo→CCS) Theia/CDT potrafi NIE wykryć zmiany i przebudować tylko część (`ipc_rpmsg_echo.o` świeży, `engine.o` stary). **Po `cp` do CCS rób `Project → Clean` / `gmake clean all`** — inaczej testujesz mix stary+nowy. Patrz [[ccs-project-separate-from-repo]].
+- **Lint**: `engine.c`/`engine_rpmsg.c` czysto `-Wall -Wextra` (TI ARM clang). `ipc_rpmsg_echo.c` (SDK+FreeRTOS) + Go (cgo) — build w CCS / na bramce. Pliki zsynchronizowane repo→CCS.
+- **Lesson**: time-sync nie wybudza śpiącego engine taska sam z siebie (idzie do COMMS, nie na `gNodeInQueue`) → bez sentinela pierwszy tick po syncu skośny. Sentinel na kolejce taska = czyste wybudzenie (kolejka to jedyny kanał blokady taska; notyfikacje FreeRTOS nie wybudzą `xQueueReceive`).
 
 ### 2026-06-17 — engine M4F (FreeRTOS multi-task) + enkoder rule-push Go
 - **Przeczytany cały gen1 pod port**: `automationRules.{c,h}` (ewaluator), `coreTask.c` (folding NodesData + routing + getDeviceParameterValue + initExampleRules), `messageProtocol.h`, `spiTask.h`. Engine gen1 = czysty C bez zależności SDK → port ~1:1.

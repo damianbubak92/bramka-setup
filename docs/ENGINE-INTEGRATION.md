@@ -80,12 +80,47 @@ tiarmclang -mcpu=cortex-m4 -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
               | gOutboxQueue (engine->comms)              | gNodeInQueue (SPI->engine; pusta do czasu SPI)
               |                                           v
    +----------+---------------- ENGINE task -------------------------------+
-   |  loop: xQueueReceive(qNodeIn, 1s timeout)                            |
-   |        - dane nodu -> engine_update_node + outbox(TELEMETRY)         |
-   |        - engine_evaluate() (na każde wybudzenie: dane LUB tick 1Hz)  |
+   |  loop: xQueueReceive(qNodeIn, timeout=do najbliższej :00)            |
+   |    dane nodu  -> engine_update_node + outbox(TELEMETRY)              |
+   |               -> engine_evaluate(ENGINE_EVAL_NODE)  [reguły danych]  |
+   |    timeout    -> engine_evaluate(ENGINE_EVAL_TIME)  [reguły czasowe] |
    |  akcja reguły -> engineActionSink -> outbox(RULE_FIRED)   (bez send!)|
    +---------------------------------------------------------------------+
 ```
+
+## Kadencja ewaluacji (hybryda)
+
+Reguły są **kubełkowane po warunkach** — każdy trigger dotyka tylko reguł, na
+które może wpłynąć (bez marnowania CPU):
+
+- **Reguły czasowe** (`COND_TIME`, też puste „always") → ewaluacja na **tick
+  minutowy wyrównany do `:00`**. Timeout `xQueueReceive` liczony jako
+  `engine_ms_to_next_minute()` (w **milisekundach**, sub-sekundowo — całe sekundy
+  jitterują na granicy minuty: tik o włos przed `:00` → mikro-sen 1s → podwójny
+  fire), przeliczany co pętlę → wiadomość od noda w pół minuty NIE przesuwa ticku
+  (determinizm `:00`).
+- **Reguły danych** (`COND_PARAMETER`/`_DELTA`) → ewaluacja **event-driven** na
+  napływ danych nodu z `gNodeInQueue`.
+- Reguła z czasem **i** danymi jest w obu kubełkach.
+
+**Level-trigger, nie edge**: reguła odpala co przebieg dopóki warunek prawdziwy.
+Anty-spam = **sprzężenie zwrotne ze stanu noda** (akcja pomijana, gdy node już
+raportuje pożądany stan — guard solar `pumpState`), NIE zatrzask zboczowy: zgubiona
+pierwsza komenda jest retransmitowana aż node potwierdzi. Uogólnienie feedbacku na
+inne akcje stanowe ląduje z SPI (jedyny realny stan dziś to `pumpState`).
+`SEND_MESSAGE` nie ma stanu noda → na razie leci co tick (decyzja odłożona do
+remote-access — realne alerty będą param-driven).
+
+**Zegar M4F**: `engine_set_time(h,m,s)` (z `MSG_TIME_SYNC`) ustawia ścianę czasu;
+engine **dolicza** upływ z monotonicznego `EngineClockFn` (`ClockP_getTimeUsec`),
+więc `COND_TIME` jest dokładny między syncami i tick trzyma się `:00`. Dryf
+koryguje okresowy re-sync z Linuxa (NTP — remote-access).
+
+**Wybudzanie przy time-syncu**: COMMS task po `MSG_TIME_SYNC` wrzuca na `gNodeInQueue`
+sentinel `ENGINE_NODEIN_TIME_RESYNC` (wartość poza zakresem `NODE_*`, nigdy na drucie).
+ENGINE task budzi się, robi `EVAL_TIME` od razu i **przelicza timeout z nowego zegara
+→ wyrównanie do `:00` natychmiast** (bez sentinela pierwszy tick po syncu byłby skośny:
+czekałby do końca trwającego snu). Dotyczy też re-syncu dryfu.
 
 **Dlaczego bez mutexów** (jak w CC3235): jedyne kanały między taskami to kolejki.
 - `RPMessage_send` + `gPendingAcks` dotyka **wyłącznie** COMMS task. ENGINE task
@@ -139,9 +174,10 @@ Go zacznie parsować payloady `NODE_*`.
 
 - **SPI → CC1310**: `nodeTxSink` tylko loguje; `gNodeInQueue` nikt nie zasila.
   Realne: SPI task (master + 2-linie handshake, ARCHITECTURE-GEN2 §3) →
-  `gNodeInQueue` (dane nodu) i drenaż akcji do nodów (`qNodeOut`).
-- **Źródło czasu**: `engine_set_time(h,m)` istnieje, nikt nie woła → `COND_TIME`
-  = false (fail-safe). Time-sync z Linuxa (nowy MSG) lub RTC carrier — §9 architektury.
+  `gNodeInQueue` (dane nodu) i drenaż akcji do nodów (`qNodeOut`). Odblokowuje
+  realne reguły danych + uogólnione sprzężenie zwrotne dla akcji stanowych.
+- **Źródło czasu**: `MSG_TIME_SYNC` (h,m,s) → `engine_set_time` działa. Produkcyjnie:
+  okresowy re-sync z NTP Linuxa (korekta dryfu) lub RTC carrier — §9 architektury.
 
 ## Testowalny milestone DZIŚ (bez SPI/CC1310)
 
@@ -152,6 +188,6 @@ Go zacznie parsować payloady `NODE_*`.
    `rpmsg-service -test push-rules`.
 3. Oczekiwane: każda `RULE_*` z ACK; `RULE_COMMIT` → atomic swap → ACK;
    `[rules] pushed 3 rules ... M4F committed`. `m4f-watch` pokazuje dispatch.
-   - Firing reguł `COND_TIME` dopiero po `engine_set_time()` (time-sync TODO).
-     Do dymowego testu można tymczasowo zawołać `engine_set_time(h,m)` w init i
-     ustawić okno czasowe reguły na „teraz" → `RULE #x fired` + `RULE_FIRED` do Go.
+   - Firing reguł `COND_TIME`: `rpmsg-service -test fire-smoke` — time-sync
+     12:00:50 + reguła w oknie 10–14h → pierwsze `RULE_FIRED` ~10s (wyrównanie
+     do `:00`), potem co minutę. Reguły danych czekają na SPI (`gNodeInQueue`).

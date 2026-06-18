@@ -18,10 +18,19 @@ static NodesData g_nodes = {
     .pumpState = 0, ._pad = {0, 0, 0},
 };
 
-static EngineTime g_time = { 0, 0, false };
-
 static EngineActionFn g_action_fn  = NULL;
 static void          *g_action_ctx = NULL;
+static EngineClockFn  g_clock_fn   = NULL;
+
+/* Wall clock for COND_TIME. M4F has no RTC: the platform injects a monotonic
+ * microsecond clock (g_clock_fn) and a wall time (engine_set_time). The engine
+ * advances the wall time by the monotonic delta, so COND_TIME stays accurate
+ * between syncs and the minute tick can align to :00. */
+static struct {
+    uint32_t base_secs;   /* seconds-of-day at last sync (0..86399) */
+    uint64_t anchor_us;   /* g_clock_fn() at last sync */
+    bool     valid;
+} g_wall = { 0, 0, false };
 
 /* Double-buffered ruleset. g_active selects the live set; the other is the
  * shadow under construction. Swapping g_active is the atomic commit.
@@ -37,6 +46,13 @@ static AutomationRule g_rules[2][MAX_RULES]
     __attribute__((section(".bss.engine_rules")));
 static uint16_t       g_count[2]  = { 0, 0 };
 static volatile uint8_t g_active  = 0;
+
+/* TIME-rule fire dedup: the wall-minute (hour*60+minute) we last evaluated TIME
+ * rules for. The minute tick is meant to run once per minute; this guarantees it
+ * even if EVAL_TIME gets triggered more than once in the same wall-minute (e.g. a
+ * scheduling quirk or a lingering wake), so TIME rules fire at most once per
+ * minute. -1 = none yet. Node-data (EVAL_NODE) rules are unaffected. */
+static int g_last_time_min = -1;
 
 /* Shadow-build state */
 static bool     g_building       = false;
@@ -67,10 +83,14 @@ static uint32_t crc32_calc(const uint8_t *data, size_t len)
 /* ========================================================================= *
  * LIFECYCLE
  * ========================================================================= */
-void engine_init(EngineActionFn action_fn, void *action_ctx)
+void engine_init(EngineActionFn action_fn, void *action_ctx,
+                 EngineClockFn clock_fn)
 {
     g_action_fn  = action_fn;
     g_action_ctx = action_ctx;
+    g_clock_fn   = clock_fn;
+    g_wall.valid = false;
+    g_last_time_min = -1;
 
     g_active = 0;
     g_count[0] = 0;
@@ -118,16 +138,51 @@ const NodesData *engine_get_state(void)
     return &g_nodes;
 }
 
-void engine_set_time(uint8_t hour, uint8_t minute)
+/* Current wall time, advancing the last sync by the monotonic delta.
+ * Returns false if no valid time / no clock source (TIME conds fail-safe off). */
+static bool wall_now(uint8_t *hour, uint8_t *minute, uint8_t *second)
 {
-    g_time.hour = hour;
-    g_time.minute = minute;
-    g_time.valid = true;
+    uint64_t now, elapsed_s;
+    uint32_t secs;
+
+    if (!g_wall.valid || g_clock_fn == NULL) {
+        return false;
+    }
+    now = g_clock_fn();
+    elapsed_s = (now - g_wall.anchor_us) / 1000000ULL;
+    secs = (uint32_t)(((uint64_t)g_wall.base_secs + elapsed_s) % 86400ULL);
+    if (hour)   *hour   = (uint8_t)(secs / 3600u);
+    if (minute) *minute = (uint8_t)((secs / 60u) % 60u);
+    if (second) *second = (uint8_t)(secs % 60u);
+    return true;
+}
+
+void engine_set_time(uint8_t hour, uint8_t minute, uint8_t second)
+{
+    g_wall.base_secs = (uint32_t)hour * 3600u + (uint32_t)minute * 60u + second;
+    g_wall.anchor_us = (g_clock_fn != NULL) ? g_clock_fn() : 0u;
+    g_wall.valid     = true;
 }
 
 void engine_clear_time(void)
 {
-    g_time.valid = false;
+    g_wall.valid = false;
+}
+
+uint32_t engine_ms_to_next_minute(void)
+{
+    uint64_t now, wall_ms, into;
+
+    if (!g_wall.valid || g_clock_fn == NULL) {
+        return 60000u;  /* no clock: free-run a 60s period (TIME rules fail-safe off) */
+    }
+    now = g_clock_fn();
+    /* Wall time in ms, advanced from the last sync. Only the within-minute
+     * remainder matters, computed at full ms resolution so the wake lands on
+     * :00 regardless of sub-second phase (no integer-second flooring jitter). */
+    wall_ms = (uint64_t)g_wall.base_secs * 1000ull + (now - g_wall.anchor_us) / 1000ull;
+    into = wall_ms % 60000ull;            /* ms elapsed into the current minute */
+    return (uint32_t)(60000ull - into);   /* 1..60000 ms to the next :00 */
 }
 
 /* ========================================================================= *
@@ -150,16 +205,15 @@ static float getDeviceParameterValue(uint8_t device, uint8_t parameter)
 
 static bool evaluateTimeCondition(const TimeCondition *tc)
 {
+    uint8_t h, m;
     bool afterStart, beforeEnd;
 
-    if (!g_time.valid) {
+    if (!wall_now(&h, &m, NULL)) {
         return false;  /* fail-safe: no clock => TIME never matches */
     }
     /* Range assumed not to cross midnight (gen1 behavior). */
-    afterStart = (g_time.hour > tc->hourStart) ||
-                 (g_time.hour == tc->hourStart && g_time.minute >= tc->minStart);
-    beforeEnd  = (g_time.hour < tc->hourEnd) ||
-                 (g_time.hour == tc->hourEnd && g_time.minute <= tc->minEnd);
+    afterStart = (h > tc->hourStart) || (h == tc->hourStart && m >= tc->minStart);
+    beforeEnd  = (h < tc->hourEnd)   || (h == tc->hourEnd   && m <= tc->minEnd);
     return afterStart && beforeEnd;
 }
 
@@ -199,7 +253,29 @@ static uint8_t targetToNodeType(uint8_t target)
     }
 }
 
-void engine_evaluate(void)
+/* Bucket a rule by its conditions so each trigger only touches relevant rules:
+ * ENGINE_EVAL_TIME -> rules carrying a COND_TIME (and zero-condition "always"
+ * rules); ENGINE_EVAL_NODE -> rules carrying a COND_PARAMETER(_DELTA). A rule
+ * with both kinds matches both scopes. */
+static bool rule_matches_scope(const AutomationRule *rule, EngineEvalScope scope)
+{
+    bool has_time = false, has_data = false;
+    int c;
+
+    for (c = 0; c < rule->conditionCount; c++) {
+        if (rule->conditions[c].conditionType == COND_TIME) {
+            has_time = true;
+        } else {
+            has_data = true;  /* COND_PARAMETER / COND_PARAMETER_DELTA */
+        }
+    }
+    if (scope == ENGINE_EVAL_TIME) {
+        return has_time || (rule->conditionCount == 0);
+    }
+    return has_data;  /* ENGINE_EVAL_NODE */
+}
+
+void engine_evaluate(EngineEvalScope scope)
 {
     uint8_t a = g_active;
     AutomationRule *rules = g_rules[a];
@@ -207,9 +283,27 @@ void engine_evaluate(void)
     uint16_t i;
     int c;
 
+    /* TIME tick runs once per wall-minute. Skip a repeat trigger in the same
+     * minute so TIME rules never double-fire (the minute is the unit of "fire
+     * to-effect once per minute"); node feedback handles per-action dedup. */
+    if (scope == ENGINE_EVAL_TIME) {
+        uint8_t h, m;
+        if (wall_now(&h, &m, NULL)) {
+            int curMin = (int)h * 60 + (int)m;
+            if (curMin == g_last_time_min) {
+                return;
+            }
+            g_last_time_min = curMin;
+        }
+    }
+
     for (i = 0; i < n; i++) {
         AutomationRule *rule = &rules[i];
         bool allConditionsMet = true;
+
+        if (!rule_matches_scope(rule, scope)) {
+            continue;  /* not in this trigger's bucket */
+        }
 
         /* gen1 parity guards (solar relay): skip if pump already in the wanted
          * state (dedup), or if the buffer sensor hasn't reported yet (<0). */
@@ -338,6 +432,7 @@ bool engine_rules_commit(uint16_t expectedCount, uint32_t crc32)
 
     g_count[g_shadow] = expectedCount;
     g_active = g_shadow;  /* atomic swap */
+    g_last_time_min = -1; /* new ruleset: allow a fresh TIME evaluation */
     return true;
 }
 

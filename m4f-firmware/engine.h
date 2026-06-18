@@ -26,12 +26,21 @@
  * M4F has no NTP. Wall-clock is injected by the integration (Linux time-sync
  * over RPMsg, or a carrier RTC - TBD, see ARCHITECTURE-GEN2.md). Until a valid
  * time is set, TIME conditions evaluate FALSE (fail-safe).
+ *
+ * The platform also injects a monotonic microsecond clock (EngineClockFn at
+ * init). The engine advances the synced wall-time by the monotonic delta, so
+ * COND_TIME stays accurate between syncs and the minute tick can align to :00.
  * ========================================================================= */
 typedef struct {
     uint8_t hour;     /* 0..23 */
     uint8_t minute;   /* 0..59 */
+    uint8_t second;   /* 0..59 */
     bool    valid;
 } EngineTime;
+
+/* Monotonic microsecond clock supplied by the platform (e.g. ClockP_getTimeUsec
+ * on the M4F). Kept as a callback so engine.c stays SDK/RTOS-agnostic. */
+typedef uint64_t (*EngineClockFn)(void);
 
 /* ========================================================================= *
  * ACTION SINK
@@ -49,7 +58,8 @@ typedef void (*EngineActionFn)(const MessageStruct *msg,
 /* ========================================================================= *
  * LIFECYCLE
  * ========================================================================= */
-void engine_init(EngineActionFn action_fn, void *action_ctx);
+void engine_init(EngineActionFn action_fn, void *action_ctx,
+                 EngineClockFn clock_fn);
 
 /* ========================================================================= *
  * LIVE STATE (NodesData) - gen1 coreTask folding, ported
@@ -62,13 +72,38 @@ void engine_init(EngineActionFn action_fn, void *action_ctx);
 bool             engine_update_node(const MessageStruct *msg);
 const NodesData *engine_get_state(void);
 
-void engine_set_time(uint8_t hour, uint8_t minute);  /* mark time valid */
-void engine_clear_time(void);                        /* mark time invalid */
+void engine_set_time(uint8_t hour, uint8_t minute, uint8_t second);  /* mark time valid */
+void engine_clear_time(void);                                        /* mark time invalid */
 
 /* ========================================================================= *
- * EVALUATION (D5: event-driven - call on node-data arrival AND a time tick)
+ * EVALUATION (hybrid cadence)
+ *
+ * Rules are bucketed by their conditions so each trigger only touches the rules
+ * it can affect (no wasted CPU):
+ *   ENGINE_EVAL_TIME - call on the wall-clock minute tick; evaluates rules that
+ *                      carry a COND_TIME (and zero-condition "always" rules).
+ *   ENGINE_EVAL_NODE - call on node-data arrival; evaluates rules that carry a
+ *                      COND_PARAMETER / COND_PARAMETER_DELTA.
+ * A rule with both time and data conditions is evaluated in BOTH passes.
+ *
+ * Firing is LEVEL-triggered: while a rule's conditions hold it fires every pass.
+ * Spam is suppressed by node-state feedback (the action is skipped once the node
+ * already reports the desired state - see the solar pumpState guard), not by an
+ * edge latch, so a lost first command is retried until the node confirms.
  * ========================================================================= */
-void engine_evaluate(void);
+typedef enum {
+    ENGINE_EVAL_TIME = 0,  /* minute tick: COND_TIME (and zero-condition) rules */
+    ENGINE_EVAL_NODE = 1,  /* node-data arrival: COND_PARAMETER(_DELTA) rules */
+} EngineEvalScope;
+
+void engine_evaluate(EngineEvalScope scope);
+
+/* Milliseconds (1..60000) until the next wall-clock minute boundary - used to
+ * align the time tick to :00. Sub-second precision on purpose: integer-second
+ * math jitters right at the boundary (a tick landing a hair early reads
+ * second=59 -> a spurious 1s micro-sleep -> double fire). Returns 60000 when no
+ * valid wall-clock is set. */
+uint32_t engine_ms_to_next_minute(void);
 
 /* ========================================================================= *
  * RULESET UPLOAD - atomic swap (fed by engine_rpmsg)

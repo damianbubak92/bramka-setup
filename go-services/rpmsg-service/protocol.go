@@ -373,8 +373,12 @@ func (p *Protocol) handleIncoming(raw []byte) {
 	// Heartbeat: any valid received message proves M4F is alive
 	p.lastRxTime.Store(time.Now().UnixNano())
 
-	log.Printf("[Protocol] RX type=0x%02X seq=%d payload_len=%d",
-		msgType, seq, len(payload))
+	// Generic RX log. MSG_ACK is skipped here: acks get a richer dedicated log
+	// below, and heartbeat (PING) acks are silenced there to keep the trace clean.
+	if msgType != C.MSG_ACK {
+		log.Printf("[Protocol] RX type=0x%02X seq=%d payload_len=%d",
+			msgType, seq, len(payload))
+	}
 
 	switch msgType {
 	case C.MSG_HELLO_ACK:
@@ -404,8 +408,11 @@ func (p *Protocol) handleIncoming(raw []byte) {
 
 		if exists {
 			rtt := time.Since(pa.sentAt)
-			log.Printf("[Protocol] ACK seq=%d type=0x%02X (RTT %v, retries=%d)",
-				seq, pa.msgType, rtt, pa.retryCount)
+			// Heartbeat (PING) acks are silenced to keep the trace clean.
+			if pa.msgType != C.MSG_PING {
+				log.Printf("[Protocol] ACK seq=%d type=0x%02X (RTT %v, retries=%d)",
+					seq, pa.msgType, rtt, pa.retryCount)
+			}
 
 			// Clear PING-in-flight if this was the heartbeat PING
 			if pa.msgType == C.MSG_PING {
@@ -466,8 +473,9 @@ func (p *Protocol) handleIncoming(raw []byte) {
 		}
 
 	case C.MSG_PING:
-		// Smart heartbeat from M4F - reply with generic ACK
-		log.Printf("[Protocol] RX heartbeat PING seq=%d - replying ACK", seq)
+		// Smart heartbeat from M4F - reply with generic ACK.
+		// Silenced (heartbeat works; uncomment to debug):
+		// log.Printf("[Protocol] RX heartbeat PING seq=%d - replying ACK", seq)
 		p.sendAck(seq)
 		// lastRxTime already updated at top of handleIncoming
 
@@ -637,8 +645,9 @@ func (p *Protocol) sendHeartbeatPing() {
 
 	p.pingInFlight.Store(true)
 
-	idleMs := (time.Now().UnixNano() - p.lastRxTime.Load()) / int64(time.Millisecond)
-	log.Printf("[Protocol] TX heartbeat PING seq=%d (idle %d ms)", seq, idleMs)
+	// Silenced (heartbeat works; uncomment to debug):
+	// idleMs := (time.Now().UnixNano() - p.lastRxTime.Load()) / int64(time.Millisecond)
+	// log.Printf("[Protocol] TX heartbeat PING seq=%d (idle %d ms)", seq, idleMs)
 
 	if err := p.transport.Send(encoded); err != nil {
 		log.Printf("[Protocol] heartbeat send failed: %v", err)
