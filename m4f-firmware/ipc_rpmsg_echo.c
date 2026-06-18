@@ -11,6 +11,7 @@
 #include "protocol.h"
 #include "engine.h"
 #include "engine_rpmsg.h"
+#include "spi_master.h"
 #include <drivers/soc.h>
 #include <drivers/uart.h>
 #include "FreeRTOS.h"
@@ -158,8 +159,10 @@ static pending_ack_t* findPendingBySeq(uint16_t seq)
 }
 
 /* === SHUTDOWN HANDLING === */
-/* Set when Linux requests graceful shutdown via remoteproc */
-static volatile uint8_t gbShutdown = 0u;
+/* Set when Linux requests graceful shutdown via remoteproc.
+ * Non-static: the SPI task (spi_master.c) also watches it to stop before
+ * doShutdown() closes the drivers (MCSPI). */
+volatile uint8_t gbShutdown = 0u;
 static volatile uint8_t gbShutdownRemotecoreID = 0u;
 
 
@@ -395,12 +398,14 @@ static void engineActionSink(const MessageStruct *msg, uint16_t ruleIndex,
     }
 }
 
-/* Node TX sink (COMMS task context): relay a command down to a node.
- * TODO(spi): xQueueSend(qNodeOut, msg) once the CC1310 SPI link exists. */
+/* Node TX sink (COMMS task context): relay a command down to a node over SPI.
+ * Hands off to the SPI master task (non-blocking); the SPI task owns the bus. */
 static void nodeTxSink(const MessageStruct *msg)
 {
-    DebugP_log("[M4F] -> node type=%u cmd=%u (SPI TODO)\r\n",
-                (unsigned)msg->type, (unsigned)msg->cmd);
+    if (!spi_master_post_cmd(msg)) {
+        DebugP_log("[M4F] -> node: SPI out queue full (type=%u cmd=%u)\r\n",
+                    (unsigned)msg->type, (unsigned)msg->cmd);
+    }
 }
 
 /* ENGINE task: data rules are event-driven (node-data queue); time rules run on
@@ -730,7 +735,12 @@ static void doShutdown(void)
     DebugP_log("[M4F] Shutdown requested by core %u\r\n",
                 (unsigned int)gbShutdownRemotecoreID);
     DebugP_log("[M4F] Closing drivers, deinit system, sending ACK\r\n");
-    
+
+    /* Give the SPI task time to notice gbShutdown and stop touching MCSPI before
+     * we close drivers (otherwise Drivers_close races an in-flight MCSPI transfer
+     * -> shutdown hangs -> "M4F won't stop"). Covers a blink (1s) + transfer (300ms). */
+    vTaskDelay(pdMS_TO_TICKS(1200));
+
     /* Match SDK example sequence exactly */
     Drivers_close();
     System_deinit();
@@ -878,6 +888,11 @@ void ipc_rpmsg_echo_main(void *args)
     (void)xTaskCreateStatic(engineTask, "engine", ENGINE_TASK_STACK_WORDS, NULL,
                              ENGINE_TASK_PRIORITY, gEngineStack, &gEngineTaskObj);
     DebugP_log("[M4F] Engine initialized (0 rules); engine task spawned\r\n");
+
+    /* SPI master link to the CC1310 (slave): feeds node data into gNodeInQueue
+     * and drains nodeTxSink commands to nodes. Drivers_open() already opened
+     * MCSPI. (Requires MCU_SPI0 + the 2 handshake GPIO in syscfg.) */
+    spi_master_init(gNodeInQueue);
 
     //testProtocol();
 
