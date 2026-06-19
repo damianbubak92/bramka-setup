@@ -203,12 +203,34 @@ static float getDeviceParameterValue(uint8_t device, uint8_t parameter)
     }
 }
 
+/* Current wall time snapped to the minute boundary (+4s forward bias) - the same
+ * notion of "tick minute" the EVAL_TIME dedup uses. Rules are authored in WHOLE
+ * minutes, and a TIME tick can wake a few seconds before/after :00 (FreeRTOS-tick
+ * vs ClockP skew, scheduling jitter). With +4s, anything from :56 onward reads as
+ * the next minute, so e.g. 22:44:56..22:45:04 all evaluate as 22:45:00 - a rule
+ * whose window starts at the boundary fires on the intended minute, never one late. */
+#define WALL_TICK_BIAS_S  4u
+
+static bool wall_now_rounded(uint8_t *hour, uint8_t *minute)
+{
+    uint8_t h, m, s;
+    uint32_t total;
+
+    if (!wall_now(&h, &m, &s)) {
+        return false;
+    }
+    total = ((uint32_t)h * 3600u + (uint32_t)m * 60u + (uint32_t)s + WALL_TICK_BIAS_S) % 86400u;
+    if (hour)   *hour   = (uint8_t)(total / 3600u);
+    if (minute) *minute = (uint8_t)((total / 60u) % 60u);
+    return true;
+}
+
 static bool evaluateTimeCondition(const TimeCondition *tc)
 {
     uint8_t h, m;
     bool afterStart, beforeEnd;
 
-    if (!wall_now(&h, &m, NULL)) {
+    if (!wall_now_rounded(&h, &m)) {
         return false;  /* fail-safe: no clock => TIME never matches */
     }
     /* Range assumed not to cross midnight (gen1 behavior). */
@@ -284,20 +306,14 @@ void engine_evaluate(EngineEvalScope scope)
     int c;
 
     /* TIME tick runs once per wall-minute. Skip a repeat trigger in the same
-     * minute so TIME rules never double-fire (the minute is the unit of "fire
-     * to-effect once per minute"); node feedback handles per-action dedup.
-     *
-     * The dedup key is biased forward by 2s: the wake is sized to the next :00 in
-     * ClockP-us but slept in FreeRTOS ticks, so the two clocks' phase skew can land
-     * the wake a few ms BEFORE :00 (reading :59 = minute N), immediately followed by
-     * the real :00 (minute N+1). Without the bias those map to different keys and
-     * BOTH fire. With +2s, a :59.99 and a :00.01 wake collapse to the same minute
-     * key -> exactly one fire per boundary. Condition eval still uses exact wall_now. */
+     * minute so TIME rules never double-fire. Keyed on the SAME rounded "tick
+     * minute" (wall_now_rounded, +2s) that evaluateTimeCondition uses, so the
+     * dedup and the COND_TIME range check agree on which minute this tick is -
+     * a wake a few ms before :00 maps to the intended minute, not the previous. */
     if (scope == ENGINE_EVAL_TIME) {
-        uint8_t h, m, s;
-        if (wall_now(&h, &m, &s)) {
-            int curMin = (int)((((uint32_t)h * 3600u + (uint32_t)m * 60u + s) + 2u)
-                               / 60u % 1440u);
+        uint8_t h, m;
+        if (wall_now_rounded(&h, &m)) {
+            int curMin = (int)h * 60 + (int)m;
             if (curMin == g_last_time_min) {
                 return;
             }
@@ -313,18 +329,25 @@ void engine_evaluate(EngineEvalScope scope)
             continue;  /* not in this trigger's bucket */
         }
 
-        /* gen1 parity guards (solar relay): skip if pump already in the wanted
-         * state (dedup), or if the buffer sensor hasn't reported yet (<0). */
+        /* Solar relay dedup (kept): skip if the pump is already in the wanted
+         * state. This is the level-trigger + node-feedback anti-spam. */
         if (rule->action.target == DEV_SOLAR_CONTROLLER &&
             rule->action.actionType == ACTION_SET_RELAY &&
             rule->action.data.relay.value == g_nodes.pumpState) {
             continue;
         }
-        if (rule->action.target == DEV_SOLAR_CONTROLLER &&
-            rule->action.actionType == ACTION_SET_RELAY &&
-            g_nodes.sBuforTemp < 0) {
-            continue;
-        }
+        /* gen1 had an extra safety guard here: skip a solar pump SET_RELAY while
+         * the buffer sensor hasn't reported (sBuforTemp < 0) - running the pump
+         * without knowing the 2nd-buffer temperature can be pointless/unsafe.
+         * REMOVED for now: the buffer node isn't streaming yet, so it would block
+         * every pump rule. Restore once node telemetry (incl. BUFOR_CONTROLLER's
+         * sBuforTemp) is being collected:
+         *   if (rule->action.target == DEV_SOLAR_CONTROLLER &&
+         *       rule->action.actionType == ACTION_SET_RELAY &&
+         *       g_nodes.sBuforTemp < 0) {
+         *       continue;
+         *   }
+         */
 
         for (c = 0; c < rule->conditionCount; c++) {
             RuleCondition *rc = &rule->conditions[c];

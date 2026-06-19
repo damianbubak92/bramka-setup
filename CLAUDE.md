@@ -319,6 +319,11 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-06-19 — reguły czasowe E2E z telefonu: guard solarny zdjęty + snap czasu ±4s ✅
+- **ZWERYFIKOWANE NA ŻYWO**: reguły `COND_TIME` → `SET_RELAY` pompa, dodane z apki, sterują pompą wg harmonogramu (ON o min X, OFF o min Y) — **co do minuty**. Pełna pętla: telefon → reguła → SQLite → push → silnik tickuje `:00` → fire → SPI → CC1310 → node → pompa.
+- **Guard `sBuforTemp < 0` usunięty** (`engine.c`, zakomentowany z notką gen1): blokował każdą solar `SET_RELAY` dopóki node bufora nie zgłosi `sBuforTemp ≥ 0` (init −20) — w teście był tylko node pompy → nic nie odpalało. Dedup `pumpState` ZOSTAJE (feedback/anty-spam). Przywrócić przy telemetrii z `BUFOR_CONTROLLER`.
+- **Bug: OFF spóźniony o minutę** (zaplanowany 22:45, fire 22:46): `evaluateTimeCondition` czytał surowy `wall_now`, a tick przez rozjazd faz wybudza się chwilę PRZED `:00` → floor czytał minutę N-1 → okno startujące na granicy nie pasowało → fire dopiero przy N+1. **Fix: `wall_now_rounded()` snap ±4s** (`WALL_TICK_BIAS_S=4`, `:56…:04 → pełna minuta`), używany spójnie w warunku ORAZ dedupie (jeden „czas ticka"). Reguły autorowane w pełnych minutach → trafiają idealnie. Szczegóły: [[engine-eval-cadence]].
+
 ### 2026-06-19 — strefa czasowa: silnik na Europe/Warsaw (embedded tzdata) ✅
 - **Problem**: Arago domyślnie UTC + **minimalna tzdata (brak Europe/Warsaw**, `timedatectl set-timezone` failuje). Silnik bierze czas z `time.Now()` Go → reguły `COND_TIME` leciały ~2h za wcześnie (PL lato = UTC+2).
 - **Fix silnika (właściwy, w Go)**: `import _ "time/tzdata"` (wbudowana baza IANA w binarce) + flaga `-tz` (default `Europe/Warsaw`) + `runServe` ładuje strefę jawnie (`time.LoadLocation`), `syncClock` liczy `time.Now().In(loc)`. → reguły poprawne **niezależnie od systemowej tzdata**, DST CET/CEST automatyczny. ZWERYFIKOWANE: log systemowy 19:32 UTC, ale `time-sync -> 21:32:51 (Europe/Warsaw)`.
