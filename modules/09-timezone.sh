@@ -22,10 +22,33 @@ GO_TZZIP="/usr/local/go/lib/time/zoneinfo.zip"
 
 echo "[*] Configuring timezone: ${TIMEZONE}"
 
-# 1) If the zone file is missing, try to provide it from Go's tzdata zip.
-if [ ! -f "$ZONE_FILE" ]; then
+# 1) If the zone file is missing, provide it from Go's tzdata zip. Fast paths
+#    first (unzip / python3 - instant); the Go extractor is a last-resort fallback
+#    (`go run` recompiles archive/zip + stdlib on the A53 -> ~2-3 min one-time).
+if [ ! -f "$ZONE_FILE" ] && [ -f "$GO_TZZIP" ]; then
     echo "[*] zoneinfo '${TIMEZONE}' not on image - extracting from Go tzdata"
-    if [ -x "$GO_BIN" ] && [ -f "$GO_TZZIP" ]; then
+    mkdir -p "$(dirname "$ZONE_FILE")"
+
+    # 1a) unzip (busybox or full) - stores entry at path "Europe/Warsaw".
+    if [ ! -f "$ZONE_FILE" ] && command -v unzip >/dev/null 2>&1; then
+        unzip -o -d /usr/share/zoneinfo "$GO_TZZIP" "$TIMEZONE" >/dev/null 2>&1 \
+            && echo "[*] extracted via unzip -> ${ZONE_FILE}" || true
+    fi
+
+    # 1b) python3 zipfile.
+    if [ ! -f "$ZONE_FILE" ] && command -v python3 >/dev/null 2>&1; then
+        python3 - "$GO_TZZIP" "$TIMEZONE" "$ZONE_FILE" <<'PY' && echo "[*] extracted via python3 -> ${ZONE_FILE}" || true
+import sys, zipfile, os
+zf, name, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+data = zipfile.ZipFile(zf).read(name)
+os.makedirs(os.path.dirname(dest), exist_ok=True)
+open(dest, "wb").write(data)
+PY
+    fi
+
+    # 1c) Go extractor (guaranteed present, but slow first run).
+    if [ ! -f "$ZONE_FILE" ] && [ -x "$GO_BIN" ]; then
+        echo "[*] (no unzip/python3 - using Go extractor, ~2-3 min first run)"
         TMPGO="$(mktemp -d)"
         cat > "$TMPGO/extract.go" <<'GOEOF'
 package main
@@ -66,11 +89,9 @@ func main() {
 GOEOF
         GOCACHE=/tmp/gocache GOPATH=/root/go "$GO_BIN" run "$TMPGO/extract.go" \
             "$GO_TZZIP" "$TIMEZONE" "$ZONE_FILE" \
-            && echo "[*] extracted ${TIMEZONE} -> ${ZONE_FILE}" \
-            || echo "[!] extraction failed"
+            && echo "[*] extracted via go -> ${ZONE_FILE}" \
+            || echo "[!] Go extractor failed"
         rm -rf "$TMPGO"
-    else
-        echo "[!] Go toolchain / tzdata zip not found (run after 04-go.sh)"
     fi
 fi
 
