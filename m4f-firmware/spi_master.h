@@ -28,4 +28,12 @@ void spi_master_init(QueueHandle_t nodeInQueue);
  * task (nodeTxSink). */
 bool spi_master_post_cmd(const MessageStruct *msg);
 
+/* Graceful shutdown: wake the SPI task so it exits promptly (it tears down the
+ * SLAVE_READY GPIO-IRQ - HwiP + bank intr + Sciclient introuter route - on exit),
+ * then block until it has fully stopped or timeoutMs elapses. MUST be called
+ * (from the comms task) BEFORE Drivers_close()/System_deinit(): a live NVIC Hwi
+ * or DMSC-held introuter route during driver teardown can wedge the remoteproc
+ * stop ("M4F won't stop"). Assumes gbShutdown is already set. */
+void spi_master_shutdown(uint32_t timeoutMs);
+
 #endif /* SPI_MASTER_H */

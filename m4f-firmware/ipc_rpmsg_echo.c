@@ -734,24 +734,26 @@ static void doShutdown(void)
 {
     DebugP_log("[M4F] Shutdown requested by core %u\r\n",
                 (unsigned int)gbShutdownRemotecoreID);
-    DebugP_log("[M4F] Closing drivers, deinit system, sending ACK\r\n");
 
-    /* Give the SPI task time to notice gbShutdown and stop touching MCSPI before
-     * we close drivers (otherwise Drivers_close races an in-flight MCSPI transfer
-     * -> shutdown hangs -> "M4F won't stop"). Covers a blink (1s) + transfer (300ms). */
-    vTaskDelay(pdMS_TO_TICKS(1200));
+    /* Stop the SPI task + tear down the SLAVE_READY GPIO-IRQ (Hwi + bank intr +
+     * Sciclient introuter route). Bounded/best-effort - won't block the stop. */
+    spi_master_shutdown(1000u);
+    DebugP_log("[M4F] SPI stopped; sending shutdown ACK\r\n");
 
-    /* Match SDK example sequence exactly */
-    Drivers_close();
-    System_deinit();
-    
+    /* Send the ACK FIRST, then halt. Linux completes the remoteproc stop on this
+     * ACK. We deliberately SKIP Drivers_close()/System_deinit(): on AM62 with the
+     * GPIO introuter route they can block here, so the ACK never goes out and the
+     * stop hangs ("M4F won't stop") - exactly what the trace showed. The core is
+     * reset + re-init'd by Linux on the next load, so that SDK teardown is not
+     * needed for a clean reload; getting the ACK out reliably is what matters. */
     if (gbShutdownRemotecoreID != 0) {
         IpcNotify_sendMsg(gbShutdownRemotecoreID,
                           IPC_NOTIFY_CLIENT_ID_RP_MBOX,
                           IPC_NOTIFY_RP_MBOX_SHUTDOWN_ACK,
                           1u);
     }
-    
+    DebugP_log("[M4F] ACK sent; halting (WFI)\r\n");
+
     /* Halt CPU */
     while (1) {
         __asm__ __volatile__ ("wfi" "\n\t": : : "memory");

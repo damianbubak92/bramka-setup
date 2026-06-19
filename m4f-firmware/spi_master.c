@@ -92,6 +92,7 @@ static HwiP_Object        gSrHwi;              /* SLAVE_READY bank interrupt */
 static bool           gIrqActive = false;      /* true once the GPIO-IRQ is wired */
 static int32_t        gIrqOutp = -1;           /* introuter OUTP claimed for SR */
 static volatile uint32_t gSrIrqCount = 0;      /* SLAVE_READY edges seen (diagnostic) */
+static volatile bool  gSpiStopped = false;     /* set after the task tears down + exits */
 
 static uint32_t       gMrBase, gSrBase;        /* AddrTranslate'd GPIO bases */
 static uint8_t        gTxSeq = 1;
@@ -310,7 +311,10 @@ static void spiTask(void *args)
         }
     }
 
-    /* Shutdown: stop touching MCSPI/GPIO before doShutdown() closes drivers. */
+    /* Shutdown: tear down the GPIO-IRQ (disable bank intr, drop the edge trigger,
+     * destruct the Hwi, release the introuter route via DMSC) BEFORE doShutdown()
+     * closes drivers - a live Hwi / held route during Drivers_close + System_deinit
+     * can wedge the remoteproc stop. mr_release() first so we stop driving the line. */
     mr_release();
     if (gIrqActive) {
         GPIO_bankIntrDisable(gSrBase, GPIO_GET_BANK_INDEX(SR_PIN));
@@ -319,7 +323,9 @@ static void spiTask(void *args)
         if (gIrqOutp >= 0) {
             (void)spi_irq_route_release((uint32_t)gIrqOutp);
         }
+        gIrqActive = false;
     }
+    gSpiStopped = true;   /* tell doShutdown() the IRQ is fully torn down */
     vTaskDelete(NULL);
 }
 
@@ -445,6 +451,29 @@ bool spi_master_post_cmd(const MessageStruct *msg)
     }
     SemaphoreP_post(&gSrSem);   /* wake the SPI task to drain the queue */
     return true;
+}
+
+void spi_master_shutdown(uint32_t timeoutMs)
+{
+    uint32_t waited = 0u;
+
+    if (gSpiTask == NULL || gSpiStopped) {
+        return;
+    }
+    /* Wake the task now (it would otherwise wait up to the backstop) so it sees
+     * gbShutdown, tears down the IRQ, and sets gSpiStopped. */
+    SemaphoreP_post(&gSrSem);
+
+    while (!gSpiStopped && waited < timeoutMs) {
+        vTaskDelay(pdMS_TO_TICKS(10u));
+        waited += 10u;
+    }
+    if (!gSpiStopped) {
+        DebugP_log("[SPI] shutdown: task did not stop in %ums (IRQ teardown may be incomplete)\r\n",
+                   (unsigned)timeoutMs);
+    } else {
+        DebugP_log("[SPI] shutdown: task stopped, IRQ torn down (%ums)\r\n", (unsigned)waited);
+    }
 }
 
 void spi_master_init(QueueHandle_t nodeInQueue)
