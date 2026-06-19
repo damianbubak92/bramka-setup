@@ -8,13 +8,15 @@
  *   SLAVE_READY  (M4F in, active-low)  - "slave armed SPI_transfer(), clock now"
  *                                        (also = slave's request-to-send).
  *
- * SLAVE_READY is POLLED, not interrupt-driven: on AM62 an MCU_GPIO interrupt for
- * the M4F must be routed through the WKUP GPIOMUX introuter via DMSC, and when
- * the M4F runs alongside Linux that resource is NOT granted to the M4F (Sciclient
- * returns -1). So the SPI task polls the SLAVE_READY level every SPI_POLL_MS.
- * NOTE: only the handshake line is polled (a cheap GPIO read, task sleeps between
- * polls) - the 128-byte data transfer itself is still INTERRUPT + CALLBACK, so no
- * CPU is burned shifting bytes.
+ * SLAVE_READY is INTERRUPT-driven (with a poll backstop). The MCU_GPIO interrupt
+ * for the M4F is routed GPIO bank 1 -> WKUP_MCU_GPIOMUX_INTROUTER0 -> OUTP -> NVIC
+ * via Sciclient. Contrary to an earlier assumption, the Linux board config DOES
+ * grant host M4_0 the introuter OUTP 4..7 (verified live by the IRQ sweep), so the
+ * route succeeds. spi_setup_slave_ready_irq() claims the first granted OUTP, wires
+ * a falling-edge bank ISR (slave pulls SLAVE_READY low = "armed / request"), and
+ * the ISR posts gSrSem. The task blocks on gSrSem; a backstop timeout still samples
+ * the level so the link survives even if an edge is ever missed. If NO OUTP is
+ * granted, it falls back to pure polling (gIrqActive=false).
  *
  * Choreography (ported from gen1, roles reversed):
  *   A) Master sends (we have a NODE_CMD): assert MASTER_READY -> wait SLAVE_READY
@@ -28,8 +30,11 @@
 #include <kernel/dpl/DebugP.h>
 #include <kernel/dpl/SemaphoreP.h>
 #include <kernel/dpl/AddrTranslateP.h>
+#include <kernel/dpl/HwiP.h>
 #include <drivers/gpio.h>
 #include <drivers/mcspi.h>
+#include <drivers/sciclient.h>
+#include <drivers/hw_include/cslr_soc.h>
 #include "ti_drivers_config.h"
 #include "ti_drivers_open_close.h"
 #include "FreeRTOS.h"
@@ -43,7 +48,7 @@
 /*  syscfg-generated symbols (verified in ti_drivers_config.h):                */
 /*  SPI_MASTER_READY = MCU_GPIO0 output on ball E5 / header pin 10.            */
 /*    (A6/pin12 was abandoned - it would not drive high, ~0.4V unloaded.)      */
-/*  SPI_SLAVE_READY  = MCU_GPIO0 pin 8 (B6, input)                             */
+/*  SPI_SLAVE_READY  = MCU_GPIO0 pin 16 (D4, input, bank 1, FALL-edge IRQ)     */
 /*  MCSPI CONFIG_MCSPI0 = MCU_SPI0, ch0 = CS1, CALLBACK, mode1, 1MHz.          */
 /* ========================================================================== */
 #define MR_BASE_CFG   (SPI_MASTER_READY_BASE_ADDR)
@@ -52,12 +57,19 @@
 #define SR_PIN        (SPI_SLAVE_READY_PIN)
 
 #define SPI_XFER_TIMEOUT_TICKS   pdMS_TO_TICKS(300u)
-#define SPI_POLL_MS              2u      /* SLAVE_READY poll interval */
+#define SPI_POLL_MS              2u      /* SLAVE_READY sample period in POLL fallback */
+#define SPI_IRQ_BACKSTOP_MS      50u     /* task wait timeout in IRQ mode (safety net) */
 #define SPI_ARM_TIMEOUT_MS       500u    /* max wait for slave to arm (scenario A); > slave hold */
 #define SPI_MAX_RETRIES          3
 #define SPI_OUT_DEPTH            8u
 #define SPI_TASK_STACK_WORDS     1024u
 #define SPI_TASK_PRIORITY        2u
+
+/* SLAVE_READY GPIO-IRQ routing (WKUP_MCU_GPIOMUX_INTROUTER0). M4_0 owns OUTP 4..7;
+ * NVIC intrNum for OUTP n = (n - 4) + 16. src_index = MCU_GPIO0 bank of SR_PIN. */
+#define SR_INTROUTER_ID    (TISCI_DEV_WKUP_MCU_GPIOMUX_INTROUTER0)
+#define SR_OUTP_FIRST      (4u)
+#define SR_OUTP_LAST       (7u)
 
 /* ========================================================================== */
 /*  State                                                                      */
@@ -75,6 +87,11 @@ static StaticTask_t   gSpiTaskObj;
 static TaskHandle_t   gSpiTask;
 
 static SemaphoreP_Object gXferDoneSem;         /* posted by MCSPI callback (ISR) */
+static SemaphoreP_Object gSrSem;               /* posted by SLAVE_READY ISR + post_cmd */
+static HwiP_Object        gSrHwi;              /* SLAVE_READY bank interrupt */
+static bool           gIrqActive = false;      /* true once the GPIO-IRQ is wired */
+static int32_t        gIrqOutp = -1;           /* introuter OUTP claimed for SR */
+static volatile uint32_t gSrIrqCount = 0;      /* SLAVE_READY edges seen (diagnostic) */
 
 static uint32_t       gMrBase, gSrBase;        /* AddrTranslate'd GPIO bases */
 static uint8_t        gTxSeq = 1;
@@ -202,55 +219,81 @@ static void spi_rx_from_slave(void)
     }
 }
 
-/* Scenario A: master initiated. Assert MASTER_READY, poll-wait for the slave to
- * arm (SLAVE_READY low), clock the command. Retry up to SPI_MAX_RETRIES. */
+/* Clock the prepared gTxFrame now that the slave is armed; release MASTER_READY. */
+static bool spi_tx_clock_now(void)
+{
+    bool ok;
+    memset(&gRxFrame, 0, sizeof(gRxFrame));
+    ok = spi_do_transfer();
+    mr_release();
+    if (ok) {
+        route_rx_frame();   /* slave may piggyback data in its RX half */
+        return true;
+    }
+    return false;
+}
+
+/* Scenario A: master initiated. Assert MASTER_READY ONCE and wait for the slave to
+ * arm (SLAVE_READY low), then clock. Do NOT re-assert per-retry: that cycled a
+ * master window against the slave's hold window and they drifted out of overlap
+ * (livelock). gen1's master used the SLAVE_READY edge IRQ and clocked instantly.
+ *
+ * IRQ mode: clear gSrSem, assert MR, then block on gSrSem until the falling edge
+ * (the slave arming) arrives - zero CPU spent waiting. A final level re-check
+ * tolerates a missed edge. POLL mode: sample the level every SPI_POLL_MS. */
 static bool spi_tx_cmd(const MessageStruct *m, uint8_t seq, uint8_t pending)
 {
-    uint32_t waited;
     frame_make_node_cmd(&gTxFrame, m, seq, pending);
 
-    /* Assert MASTER_READY ONCE and poll SLAVE_READY continuously until the slave
-     * arms (pulls it low), then clock. Do NOT re-assert per-retry: that cycled a
-     * 300ms master window against the slave's 300ms hold window and they drifted
-     * permanently out of overlap (livelock). gen1's master used the SLAVE_READY
-     * edge IRQ and clocked instantly; we poll, so we hold MASTER_READY and wait
-     * in a single window - the slave reacts to the one edge within ms. */
-    mr_assert();
-    for (waited = 0u; waited < SPI_ARM_TIMEOUT_MS; waited += SPI_POLL_MS) {
-        if (sr_is_low()) {
-            bool ok;
-            memset(&gRxFrame, 0, sizeof(gRxFrame));
-            ok = spi_do_transfer();
-            mr_release();
-            if (ok) {
-                route_rx_frame();   /* slave may piggyback data in its RX half */
-                return true;
-            }
-            return false;
+    if (gIrqActive) {
+        while (SemaphoreP_pend(&gSrSem, 0u) == SystemP_SUCCESS) { }   /* drain stale */
+        mr_assert();
+        if (sr_is_low()) {                       /* slave already armed (no new edge) */
+            return spi_tx_clock_now();
         }
-        vTaskDelay(pdMS_TO_TICKS(SPI_POLL_MS));
+        (void)SemaphoreP_pend(&gSrSem, pdMS_TO_TICKS(SPI_ARM_TIMEOUT_MS));
+        if (sr_is_low()) {
+            return spi_tx_clock_now();
+        }
+        mr_release();
+        DebugP_log("[SPI] tx: slave not ready (irq timeout)\r\n");
+        return false;
     }
-    mr_release();
-    DebugP_log("[SPI] tx: slave not ready (timeout)\r\n");
-    return false;
+
+    /* POLL fallback. */
+    {
+        uint32_t waited;
+        mr_assert();
+        for (waited = 0u; waited < SPI_ARM_TIMEOUT_MS; waited += SPI_POLL_MS) {
+            if (sr_is_low()) {
+                return spi_tx_clock_now();
+            }
+            vTaskDelay(pdMS_TO_TICKS(SPI_POLL_MS));
+        }
+        mr_release();
+        DebugP_log("[SPI] tx: slave not ready (poll timeout)\r\n");
+        return false;
+    }
 }
 
 /* ========================================================================== */
 /*  Task                                                                       */
 /* ========================================================================== */
+static int32_t spi_irq_route_release(uint32_t outp);   /* defined in IRQ section */
+
 static void spiTask(void *args)
 {
     (void)args;
-    DebugP_log("[SPI] master task started (poll SLAVE_READY @ %ums)\r\n",
-                (unsigned)SPI_POLL_MS);
+    DebugP_log("[SPI] master task started (SLAVE_READY mode = %s, OUTP=%d)\r\n",
+                gIrqActive ? "IRQ" : "POLL", (int)gIrqOutp);
 
     while (!gbShutdown) {
-        uint32_t bits = 0;
         MessageStruct cmd;
+        uint32_t waitMs = gIrqActive ? SPI_IRQ_BACKSTOP_MS : SPI_POLL_MS;
 
-        /* Wake on a posted outbound command, or after the poll interval to
-         * sample SLAVE_READY for a slave-initiated transfer. */
-        (void)xTaskNotifyWait(0u, 0xFFFFFFFFu, &bits, pdMS_TO_TICKS(SPI_POLL_MS));
+        /* Wake on: outbound command posted (post_cmd posts gSrSem), a SLAVE_READY
+         * falling edge (ISR posts gSrSem), or the backstop timeout (level resample). */
+        (void)SemaphoreP_pend(&gSrSem, pdMS_TO_TICKS(waitMs));
 
         /* 1) Master-initiated: drain outbound commands. */
         while (xQueueReceive(gSpiOutQueue, &cmd, 0) == pdTRUE) {
@@ -267,9 +310,126 @@ static void spiTask(void *args)
         }
     }
 
-    /* Shutdown: stop touching MCSPI before doShutdown() closes drivers. */
+    /* Shutdown: stop touching MCSPI/GPIO before doShutdown() closes drivers. */
     mr_release();
+    if (gIrqActive) {
+        GPIO_bankIntrDisable(gSrBase, GPIO_GET_BANK_INDEX(SR_PIN));
+        GPIO_setTrigType(gSrBase, SR_PIN, GPIO_TRIG_TYPE_NONE);
+        HwiP_destruct(&gSrHwi);
+        if (gIrqOutp >= 0) {
+            (void)spi_irq_route_release((uint32_t)gIrqOutp);
+        }
+    }
     vTaskDelete(NULL);
+}
+
+/* ========================================================================== */
+/*  SLAVE_READY GPIO interrupt (Sciclient introuter route + bank ISR)           */
+/*                                                                              */
+/*  The MCU_GPIO0 bank interrupt for the M4F is routed via                      */
+/*  WKUP_MCU_GPIOMUX_INTROUTER0 to an OUTP wired to the M4F NVIC. Host M4_0     */
+/*  owns OUTP 4..7 (verified live: the IRQ sweep returned r=0 for all four).    */
+/*  src_index = the introuter input for SLAVE_READY's GPIO bank.                */
+/*  NVIC intrNum for OUTP n = (n - 4) + 16  (CSLR ..._OUTP_4 == 0).             */
+/* ========================================================================== */
+#define SR_INTROUTER_IN \
+    ((uint16_t)(CSLR_WKUP_MCU_GPIOMUX_INTROUTER0_IN_MCU_GPIO0_GPIO_BANK_0 + \
+                GPIO_GET_BANK_INDEX(SR_PIN)))
+
+static int32_t spi_irq_route_set(uint32_t outp)
+{
+    struct tisci_msg_rm_irq_set_req  req;
+    struct tisci_msg_rm_irq_set_resp resp;
+
+    memset(&req, 0, sizeof(req));
+    req.valid_params  = TISCI_MSG_VALUE_RM_DST_ID_VALID |
+                        TISCI_MSG_VALUE_RM_DST_HOST_IRQ_VALID;
+    req.src_id        = SR_INTROUTER_ID;
+    req.src_index     = SR_INTROUTER_IN;
+    req.dst_id        = SR_INTROUTER_ID;
+    req.dst_host_irq  = (uint16_t)outp;
+    req.secondary_host = TISCI_MSG_VALUE_RM_UNUSED_SECONDARY_HOST;
+
+    return Sciclient_rmIrqSetRaw(&req, &resp, SystemP_WAIT_FOREVER);
+}
+
+static int32_t spi_irq_route_release(uint32_t outp)
+{
+    struct tisci_msg_rm_irq_release_req req;
+
+    memset(&req, 0, sizeof(req));
+    req.valid_params  = TISCI_MSG_VALUE_RM_DST_ID_VALID |
+                        TISCI_MSG_VALUE_RM_DST_HOST_IRQ_VALID;
+    req.src_id        = SR_INTROUTER_ID;
+    req.src_index     = SR_INTROUTER_IN;
+    req.dst_id        = SR_INTROUTER_ID;
+    req.dst_host_irq  = (uint16_t)outp;
+    req.secondary_host = TISCI_MSG_VALUE_RM_UNUSED_SECONDARY_HOST;
+
+    return Sciclient_rmIrqReleaseRaw(&req, SystemP_WAIT_FOREVER);
+}
+
+/* Bank ISR: slave pulled SLAVE_READY low (falling edge). Clear bank status, signal. */
+static void sr_bank_isr(void *args)
+{
+    uint32_t bankNum = GPIO_GET_BANK_INDEX(SR_PIN);
+    uint32_t pinMask = GPIO_GET_BANK_BIT_MASK(SR_PIN);
+    uint32_t st;
+    (void)args;
+
+    st = GPIO_getBankIntrStatus(gSrBase, bankNum);
+    GPIO_clearBankIntrStatus(gSrBase, bankNum, st);
+    if (st & pinMask) {
+        gSrIrqCount++;
+        SemaphoreP_post(&gSrSem);   /* ISR-safe */
+    }
+}
+
+/* Claim the first granted introuter OUTP (4..7) and wire the falling-edge bank ISR
+ * on SLAVE_READY. Sets gIrqActive; on any failure falls back to pure polling. */
+static void spi_setup_slave_ready_irq(void)
+{
+    uint32_t bankNum = GPIO_GET_BANK_INDEX(SR_PIN);
+    HwiP_Params hwiPrms;
+    int32_t routed = -1;
+    uint32_t outp;
+    int32_t  r;
+
+    for (outp = SR_OUTP_FIRST; outp <= SR_OUTP_LAST; outp++) {
+        if (spi_irq_route_set(outp) == 0) {
+            routed = (int32_t)outp;
+            break;
+        }
+    }
+    if (routed < 0) {
+        DebugP_log("[SPI][IRQ] no introuter OUTP granted to M4_0 -> POLL fallback\r\n");
+        gIrqActive = false;
+        return;
+    }
+
+    GPIO_setTrigType(gSrBase, SR_PIN, GPIO_TRIG_TYPE_FALL_EDGE);
+    GPIO_clearBankIntrStatus(gSrBase, bankNum, GPIO_getBankIntrStatus(gSrBase, bankNum));
+    GPIO_bankIntrEnable(gSrBase, bankNum);
+
+    HwiP_Params_init(&hwiPrms);
+    hwiPrms.intNum   = (uint32_t)((routed - (int32_t)SR_OUTP_FIRST) + 16);
+    hwiPrms.callback = &sr_bank_isr;
+    hwiPrms.isPulse  = 1;
+    hwiPrms.args     = NULL;
+    r = HwiP_construct(&gSrHwi, &hwiPrms);
+    if (r != SystemP_SUCCESS) {
+        DebugP_log("[SPI][IRQ] HwiP_construct failed (%d) -> POLL fallback\r\n", (int)r);
+        GPIO_bankIntrDisable(gSrBase, bankNum);
+        GPIO_setTrigType(gSrBase, SR_PIN, GPIO_TRIG_TYPE_NONE);
+        (void)spi_irq_route_release((uint32_t)routed);
+        gIrqActive = false;
+        return;
+    }
+
+    gIrqOutp   = routed;
+    gIrqActive = true;
+    DebugP_log("[SPI][IRQ] SLAVE_READY IRQ active: OUTP %d, intrNum %u, bank %u (FALL edge)\r\n",
+               (int)routed, (unsigned)hwiPrms.intNum, (unsigned)bankNum);
 }
 
 /* ========================================================================== */
@@ -283,9 +443,7 @@ bool spi_master_post_cmd(const MessageStruct *msg)
     if (xQueueSend(gSpiOutQueue, msg, 0) != pdTRUE) {
         return false;
     }
-    if (gSpiTask != NULL) {
-        xTaskNotify(gSpiTask, 0u, eNoAction);   /* wake to process the queue */
-    }
+    SemaphoreP_post(&gSrSem);   /* wake the SPI task to drain the queue */
     return true;
 }
 
@@ -298,6 +456,7 @@ void spi_master_init(QueueHandle_t nodeInQueue)
                                       gSpiOutStorage, &gSpiOutQueueObj);
     DebugP_assert(gSpiOutQueue != NULL);
     (void)SemaphoreP_constructBinary(&gXferDoneSem, 0);
+    (void)SemaphoreP_constructBinary(&gSrSem, 0);
 
     /* GPIO bases need address translation for M4F access. */
     gMrBase = (uint32_t)AddrTranslateP_getLocalAddr(MR_BASE_CFG);
@@ -307,12 +466,14 @@ void spi_master_init(QueueHandle_t nodeInQueue)
     GPIO_setDirMode(gMrBase, MR_PIN, GPIO_DIRECTION_OUTPUT);
     mr_release();
 
-    /* SLAVE_READY: input (polled - no interrupt; see file header). */
+    /* SLAVE_READY: input. Try to wire its falling-edge interrupt (poll fallback). */
     GPIO_setDirMode(gSrBase, SR_PIN, GPIO_DIRECTION_INPUT);
+    spi_setup_slave_ready_irq();
 
     gSpiTask = xTaskCreateStatic(spiTask, "spi_master", SPI_TASK_STACK_WORDS,
                                  NULL, SPI_TASK_PRIORITY, gSpiStack, &gSpiTaskObj);
     DebugP_assert(gSpiTask != NULL);
 
-    DebugP_log("[SPI] master init done (MCU_SPI0, mode1, 1MHz, CALLBACK, poll)\r\n");
+    DebugP_log("[SPI] master init done (MCU_SPI0, mode1, 1MHz, CALLBACK, %s)\r\n",
+                gIrqActive ? "IRQ" : "poll");
 }

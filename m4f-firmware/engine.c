@@ -285,11 +285,19 @@ void engine_evaluate(EngineEvalScope scope)
 
     /* TIME tick runs once per wall-minute. Skip a repeat trigger in the same
      * minute so TIME rules never double-fire (the minute is the unit of "fire
-     * to-effect once per minute"); node feedback handles per-action dedup. */
+     * to-effect once per minute"); node feedback handles per-action dedup.
+     *
+     * The dedup key is biased forward by 2s: the wake is sized to the next :00 in
+     * ClockP-us but slept in FreeRTOS ticks, so the two clocks' phase skew can land
+     * the wake a few ms BEFORE :00 (reading :59 = minute N), immediately followed by
+     * the real :00 (minute N+1). Without the bias those map to different keys and
+     * BOTH fire. With +2s, a :59.99 and a :00.01 wake collapse to the same minute
+     * key -> exactly one fire per boundary. Condition eval still uses exact wall_now. */
     if (scope == ENGINE_EVAL_TIME) {
-        uint8_t h, m;
-        if (wall_now(&h, &m, NULL)) {
-            int curMin = (int)h * 60 + (int)m;
+        uint8_t h, m, s;
+        if (wall_now(&h, &m, &s)) {
+            int curMin = (int)((((uint32_t)h * 3600u + (uint32_t)m * 60u + s) + 2u)
+                               / 60u % 1440u);
             if (curMin == g_last_time_min) {
                 return;
             }
