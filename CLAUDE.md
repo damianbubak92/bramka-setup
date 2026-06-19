@@ -319,6 +319,12 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-06-19 — strefa czasowa: silnik na Europe/Warsaw (embedded tzdata) ✅
+- **Problem**: Arago domyślnie UTC + **minimalna tzdata (brak Europe/Warsaw**, `timedatectl set-timezone` failuje). Silnik bierze czas z `time.Now()` Go → reguły `COND_TIME` leciały ~2h za wcześnie (PL lato = UTC+2).
+- **Fix silnika (właściwy, w Go)**: `import _ "time/tzdata"` (wbudowana baza IANA w binarce) + flaga `-tz` (default `Europe/Warsaw`) + `runServe` ładuje strefę jawnie (`time.LoadLocation`), `syncClock` liczy `time.Now().In(loc)`. → reguły poprawne **niezależnie od systemowej tzdata**, DST CET/CEST automatyczny. ZWERYFIKOWANE: log systemowy 19:32 UTC, ale `time-sync -> 21:32:51 (Europe/Warsaw)`.
+- **Fix systemu (moduł `09-timezone.sh` + `config.sh TIMEZONE` + export w `setup.sh`)**: ustawia systemową strefę (date/logi/boot-accounting). Bo brak zoneinfo na obrazie → moduł **wyciąga strefę z tzdata Go** (`/usr/local/go/lib/time/zoneinfo.zip` przez `go run` mały extractor), ustawia, włącza NTP; gdy się nie uda → WARN + `exit 0` (NIE wywala setupu, silnik i tak ma własną tzdata).
+- **Kontrola dryfu (dni/tygodnie)**: NTP systemowy (`systemd-timesyncd`, `timedatectl` „NTP active") koryguje zegar Linuksa ciągle; `serve` re-syncuje M4F **co 10 min** (`syncClock` ticker) → zero kumulacji dryfu online. Offline (RTC-less) → [[rtc-must-have-carrier]].
+
 ### 2026-06-19 (remote, Faza 2) — CRUD reguł z telefonu + SQLite ✅
 - **ZWERYFIKOWANE NA ŻYWO**: `getrules`/`setrules` z apki działają z **SQLite** jako źródłem prawdy. Flow: telefon dodaje regułę → `setrules` → `parseAppRules` → `store.SetRules` (zapis do `/var/lib/bramka/bramka.db`) → `PushRules` na M4F (`crc32` OK). `getrules` zwraca regułę (round-trip app JSON). Restart serve → `pushed 1 rule(s) from DB` = persystencja + push na starcie.
 - **Pliki (tylko Go)**: `rulesjson.go` (app JSON ↔ `Rule`, klucze `hS/mS/d/p/op/mn/mx`, ordinale 1:1), `store.go` (`mattn/go-sqlite3` cgo, WAL+synchronous=NORMAL, tabela `config(key,value)`, `GetRules/GetRulesJSON/SetRules`), `httpapi.go` (`handleSetRules` + `extractRulesField` z body `command=setrules&rules=…&authToken=…`, getrules zwraca blob z DB), `main.go` (flaga `-db`, `runServe` otwiera store, push **z bazy** na connect zamiast pustego).

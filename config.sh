@@ -14,6 +14,11 @@ BRAMKA_MAC="22:F4:99:37:A5:12"
 # Hostname for this device.
 BRAMKA_HOSTNAME="bramka-01"
 
+# Timezone (IANA name). Critical: the automation engine runs on the wall-clock
+# the Go service injects from Linux local time, so COND_TIME rules fire at the
+# WRONG hour if this is wrong (e.g. UTC). Set to the deployment location.
+TIMEZONE="Europe/Warsaw"
+
 # Static IP - leave empty to use DHCP with router-side reservation (recommended).
 # Or set "192.168.2.170/24" to configure static IP directly on bramka.
 BRAMKA_IP_STATIC=""

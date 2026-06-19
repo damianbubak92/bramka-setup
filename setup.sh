@@ -43,7 +43,7 @@ log_info "Tools dir:       $TOOLS_DIR"
 log_info "Firmware dir:    $FW_DIR"
 
 # Export variables so modules can use them:
-export BRAMKA_MAC BRAMKA_HOSTNAME BRAMKA_IP_STATIC
+export BRAMKA_MAC BRAMKA_HOSTNAME BRAMKA_IP_STATIC TIMEZONE
 export ETH_HW_PATH ETH_INTERFACE_NAME
 export TOOLS_DIR FW_DIR DEFAULT_FW_NAME
 export ENABLE_M4F_AUTOSTOP

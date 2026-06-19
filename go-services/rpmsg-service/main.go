@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+	_ "time/tzdata" // embed the IANA tz database: the engine wall-clock is correct
+	// even on a minimal Arago image with no system tzdata (LoadLocation works).
 )
 
 func main() {
@@ -22,6 +24,7 @@ func main() {
 	tlsKey := flag.String("tls-key", "/etc/bramka/tls/key.pem", "TLS private key for tls-cert")
 	authToken := flag.String("auth-token", defaultAuthToken, "phone API shared token")
 	dbPath := flag.String("db", "/var/lib/bramka/bramka.db", "SQLite database path (serve mode)")
+	tz := flag.String("tz", "Europe/Warsaw", "IANA timezone for the engine wall-clock (time-sync)")
 	flag.Parse()
 
 	httpCfg := HTTPConfig{Addr: *httpAddr, CertFile: *tlsCert, KeyFile: *tlsKey, AuthToken: *authToken}
@@ -83,7 +86,7 @@ func main() {
 		case "fire-smoke":
 			runFireSmokeTest(p)
 		case "serve":
-			runServe(p, httpCfg, *dbPath)
+			runServe(p, httpCfg, *dbPath, *tz)
 		default:
 			log.Printf("Unknown test mode: %s", *testMode)
 		}
@@ -612,8 +615,17 @@ func runFireSmokeTest(p *Protocol) {
 // wall-clock synced (NTP/system time), drain M4F->Linux events, and run the
 // phone-facing HTTPS API. Blocks in the HTTP server; peer-dead recovery and
 // signal handling stay in main().
-func runServe(p *Protocol, cfg HTTPConfig, dbPath string) {
+func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 	time.Sleep(200 * time.Millisecond)
+
+	// Engine wall-clock zone, loaded from embedded tzdata so it's correct even if
+	// the Arago system has no tzdata / is on UTC. Falls back to system local.
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		log.Printf("[Serve] timezone %q load failed: %v - using system local", tz, err)
+		loc = time.Local
+	}
+	log.Printf("[Serve] engine timezone: %s (now %s)", tz, time.Now().In(loc).Format("15:04:05"))
 
 	// Persistent rules store (source of truth for getrules + the on-connect push).
 	store, err := OpenStore(dbPath)
@@ -653,12 +665,12 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath string) {
 	// Engine wall-clock: the M4F has no RTC, so seed it from system time (NTP on
 	// Linux) and re-sync periodically to correct drift. Production carrier adds an
 	// RTC; until then this is the time source for COND_TIME + the :00 tick.
-	syncClock(p)
+	syncClock(p, loc)
 	go func() {
 		t := time.NewTicker(10 * time.Minute)
 		defer t.Stop()
 		for range t.C {
-			syncClock(p)
+			syncClock(p, loc)
 		}
 	}()
 
@@ -681,14 +693,14 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath string) {
 	}
 }
 
-// syncClock pushes the current system wall-clock (h:m:s) to the M4F engine.
-func syncClock(p *Protocol) {
-	now := time.Now()
+// syncClock pushes the current wall-clock (h:m:s) in loc to the M4F engine.
+func syncClock(p *Protocol, loc *time.Location) {
+	now := time.Now().In(loc)
 	if err := p.SendTimeSync(uint8(now.Hour()), uint8(now.Minute()), uint8(now.Second())); err != nil {
 		log.Printf("[Serve] time-sync failed: %v", err)
 		return
 	}
-	log.Printf("[Serve] time-sync -> %02d:%02d:%02d", now.Hour(), now.Minute(), now.Second())
+	log.Printf("[Serve] time-sync -> %02d:%02d:%02d (%s)", now.Hour(), now.Minute(), now.Second(), loc)
 }
 
 // runHeartbeatBusyTest: send DATA every 2s, verify NO PINGs fire.
