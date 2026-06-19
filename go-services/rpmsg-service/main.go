@@ -21,6 +21,7 @@ func main() {
 	tlsCert := flag.String("tls-cert", "/etc/bramka/tls/cert.pem", "TLS cert (must match the app's pinned cert)")
 	tlsKey := flag.String("tls-key", "/etc/bramka/tls/key.pem", "TLS private key for tls-cert")
 	authToken := flag.String("auth-token", defaultAuthToken, "phone API shared token")
+	dbPath := flag.String("db", "/var/lib/bramka/bramka.db", "SQLite database path (serve mode)")
 	flag.Parse()
 
 	httpCfg := HTTPConfig{Addr: *httpAddr, CertFile: *tlsCert, KeyFile: *tlsKey, AuthToken: *authToken}
@@ -82,7 +83,7 @@ func main() {
 		case "fire-smoke":
 			runFireSmokeTest(p)
 		case "serve":
-			runServe(p, httpCfg)
+			runServe(p, httpCfg, *dbPath)
 		default:
 			log.Printf("Unknown test mode: %s", *testMode)
 		}
@@ -611,8 +612,17 @@ func runFireSmokeTest(p *Protocol) {
 // wall-clock synced (NTP/system time), drain M4F->Linux events, and run the
 // phone-facing HTTPS API. Blocks in the HTTP server; peer-dead recovery and
 // signal handling stay in main().
-func runServe(p *Protocol, cfg HTTPConfig) {
+func runServe(p *Protocol, cfg HTTPConfig, dbPath string) {
 	time.Sleep(200 * time.Millisecond)
+
+	// Persistent rules store (source of truth for getrules + the on-connect push).
+	store, err := OpenStore(dbPath)
+	if err != nil {
+		log.Printf("[Serve] open DB %s failed: %v", dbPath, err)
+		return
+	}
+	defer store.Close()
+	log.Printf("[Serve] rules DB: %s", dbPath)
 
 	// Drain M4F->Linux events FIRST (before HELLO): a reconnect can find a backlog
 	// of stale telemetry/rule-fired buffered while Linux was down; consuming it
@@ -652,26 +662,23 @@ func runServe(p *Protocol, cfg HTTPConfig) {
 		}
 	}()
 
-	// Define the engine ruleset on connect so the M4F state is deterministic and
-	// stale rules from a prior session stop firing. Phase 1: empty (clean slate);
-	// Phase 2: load from SQLite.
-	rules := loadRules()
+	// Define the engine ruleset on connect from the DB (source of truth): makes
+	// M4F state deterministic and stops stale rules from a prior session firing.
+	rules, err := store.GetRules()
+	if err != nil {
+		log.Printf("[Serve] load rules from DB failed: %v (pushing empty)", err)
+		rules = []Rule{}
+	}
 	if err := p.PushRules(rules); err != nil {
 		log.Printf("[Serve] rule push failed: %v", err)
 	} else {
-		log.Printf("[Serve] pushed %d rule(s) to engine", len(rules))
+		log.Printf("[Serve] pushed %d rule(s) to engine from DB", len(rules))
 	}
 
 	log.Println("[Serve] Starting phone HTTPS API...")
-	if err := StartHTTPAPI(p, cfg); err != nil {
+	if err := StartHTTPAPI(p, store, cfg); err != nil {
 		log.Printf("[Serve] HTTP API stopped: %v", err)
 	}
-}
-
-// loadRules returns the authoritative ruleset to push to the engine. Phase 1:
-// empty (clears any leftover test rules). Phase 2: read from SQLite.
-func loadRules() []Rule {
-	return []Rule{}
 }
 
 // syncClock pushes the current system wall-clock (h:m:s) to the M4F engine.

@@ -25,10 +25,10 @@ type HTTPConfig struct {
 // contract (httpsServerTask): a POST to "/" whose request text contains
 // command=<X> and authToken=<token>. The Android client pins our leaf cert by
 // SHA-256, so CertFile/KeyFile MUST be the same pair the app was built against.
-func StartHTTPAPI(p *Protocol, cfg HTTPConfig) error {
+func StartHTTPAPI(p *Protocol, store *Store, cfg HTTPConfig) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handleCommand(p, cfg, w, r)
+		handleCommand(p, store, cfg, w, r)
 	})
 	srv := &http.Server{
 		Addr:      cfg.Addr,
@@ -43,9 +43,10 @@ func StartHTTPAPI(p *Protocol, cfg HTTPConfig) error {
 // in the query OR the body (the app posts form-urlencoded for pump/getrules and
 // a text/plain "command=setrules&rules=..." body for setrules). We match over
 // query+body uniformly instead of relying on Content-Type parsing.
-func handleCommand(p *Protocol, cfg HTTPConfig, w http.ResponseWriter, r *http.Request) {
-	bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 64*1024))
-	req := r.URL.RawQuery + "&" + string(bodyBytes)
+func handleCommand(p *Protocol, store *Store, cfg HTTPConfig, w http.ResponseWriter, r *http.Request) {
+	bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 256*1024))
+	body := string(bodyBytes)
+	req := r.URL.RawQuery + "&" + body
 
 	if !strings.Contains(req, "authToken="+cfg.AuthToken) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -61,22 +62,76 @@ func handleCommand(p *Protocol, cfg HTTPConfig, w http.ResponseWriter, r *http.R
 		respondPump(p, false, w, r)
 
 	case strings.Contains(req, "command=getrules"):
-		// Phase 2: serialize the rules held in SQLite to the app's JSON array.
+		j, err := store.GetRulesJSON()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, "DB error\n")
+			log.Printf("[HTTP] getrules DB error: %v", err)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, "[]")
-		log.Printf("[HTTP] getrules (phase-1 stub -> [])")
+		io.WriteString(w, j)
+		log.Printf("[HTTP] getrules -> %d bytes", len(j))
 
 	case strings.Contains(req, "command=setrules"):
-		// Phase 2: parse rules=<json>, persist to SQLite, PushRules to the M4F.
-		w.Header().Set("Content-Type", "text/plain")
-		io.WriteString(w, "OK")
-		log.Printf("[HTTP] setrules (phase-1 stub, NOT applied yet)")
+		handleSetRules(p, store, body, w, r)
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		io.WriteString(w, "Not Found")
 		log.Printf("[HTTP] 404 from %s (no known command)", r.RemoteAddr)
 	}
+}
+
+// handleSetRules parses the app's "rules=<json>" field, persists it, and pushes
+// the ruleset to the M4F engine. The app posts a text/plain body shaped
+// "command=setrules&rules=<JSON array>&authToken=<token>" (rules= NOT url-encoded).
+func handleSetRules(p *Protocol, store *Store, body string, w http.ResponseWriter, r *http.Request) {
+	rulesJSON, ok := extractRulesField(body)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "missing rules=\n")
+		log.Printf("[HTTP] setrules: no rules= field")
+		return
+	}
+	rules, err := parseAppRules(rulesJSON)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "bad rules JSON\n")
+		log.Printf("[HTTP] setrules: parse failed: %v", err)
+		return
+	}
+	if err := store.SetRules(rules); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "DB error\n")
+		log.Printf("[HTTP] setrules: persist failed: %v", err)
+		return
+	}
+	if err := p.PushRules(rules); err != nil {
+		// Persisted but not applied: report so the user retries; the next serve
+		// start (or retry) re-pushes from the DB.
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "saved, engine push failed\n")
+		log.Printf("[HTTP] setrules: saved %d rules but push failed: %v", len(rules), err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	io.WriteString(w, "OK")
+	log.Printf("[HTTP] setrules from %s: %d rules saved + pushed", r.RemoteAddr, len(rules))
+}
+
+// extractRulesField pulls the raw JSON after "rules=" up to "&authToken=" (or end).
+// The app sends the JSON un-encoded, so no URL-decoding (that would corrupt it).
+func extractRulesField(body string) (string, bool) {
+	i := strings.Index(body, "rules=")
+	if i < 0 {
+		return "", false
+	}
+	v := body[i+len("rules="):]
+	if j := strings.Index(v, "&authToken="); j >= 0 {
+		v = v[:j]
+	}
+	return v, true
 }
 
 func respondPump(p *Protocol, on bool, w http.ResponseWriter, r *http.Request) {
