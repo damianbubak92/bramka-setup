@@ -14,10 +14,16 @@ import (
 
 func main() {
 	testMode := flag.String("test", "hello",
-		"Test mode: hello|data|spam|retry|replay|retry-drop|event|hang|crash-m4f|heartbeat|silent-hang|heartbeat-busy|push-rules|fire-smoke")
+		"Test mode: hello|data|spam|retry|replay|retry-drop|event|hang|crash-m4f|heartbeat|silent-hang|heartbeat-busy|push-rules|fire-smoke|serve")
 	heartbeatMs := flag.Int("heartbeat-idle-ms", 5000,
 		"Idle time before sending heartbeat PING (ms)")
+	httpAddr := flag.String("http-addr", ":9443", "phone HTTPS API listen address (serve mode)")
+	tlsCert := flag.String("tls-cert", "/etc/bramka/tls/cert.pem", "TLS cert (must match the app's pinned cert)")
+	tlsKey := flag.String("tls-key", "/etc/bramka/tls/key.pem", "TLS private key for tls-cert")
+	authToken := flag.String("auth-token", defaultAuthToken, "phone API shared token")
 	flag.Parse()
+
+	httpCfg := HTTPConfig{Addr: *httpAddr, CertFile: *tlsCert, KeyFile: *tlsKey, AuthToken: *authToken}
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("=== rpmsg-service starting (test mode: %s, heartbeat idle: %dms) ===",
@@ -75,6 +81,8 @@ func main() {
 			runPushRulesTest(p)
 		case "fire-smoke":
 			runFireSmokeTest(p)
+		case "serve":
+			runServe(p, httpCfg)
 		default:
 			log.Printf("Unknown test mode: %s", *testMode)
 		}
@@ -597,6 +605,83 @@ func runFireSmokeTest(p *Protocol) {
 			log.Printf("[Test] EVENT type=0x%02X seq=%d (%d bytes)", ev.Type, ev.Seq, len(ev.Payload))
 		}
 	}
+}
+
+// runServe is the production phone-access mode: connect to the M4F, keep its
+// wall-clock synced (NTP/system time), drain M4F->Linux events, and run the
+// phone-facing HTTPS API. Blocks in the HTTP server; peer-dead recovery and
+// signal handling stay in main().
+func runServe(p *Protocol, cfg HTTPConfig) {
+	time.Sleep(200 * time.Millisecond)
+
+	// Drain M4F->Linux events FIRST (before HELLO): a reconnect can find a backlog
+	// of stale telemetry/rule-fired buffered while Linux was down; consuming it
+	// here keeps eventRx from overflowing. Phase 3 routes these to a DB + the
+	// phone state endpoint; for now just observe.
+	go func() {
+		for ev := range p.EventRx() {
+			switch ev.Type {
+			case MsgRuleFired:
+				log.Printf("[Serve] RULE_FIRED (%d bytes)", len(ev.Payload))
+			case MsgNodeTelemetry:
+				log.Printf("[Serve] NODE_TELEMETRY (%d bytes)", len(ev.Payload))
+			case MsgNodeState:
+				log.Printf("[Serve] NODE_STATE (%d bytes)", len(ev.Payload))
+			default:
+				log.Printf("[Serve] EVENT 0x%02X seq=%d (%d bytes)", ev.Type, ev.Seq, len(ev.Payload))
+			}
+		}
+	}()
+
+	log.Println("[Serve] Connecting to M4F (HELLO)...")
+	if err := helloWithRetry(p); err != nil {
+		log.Printf("[Serve] HELLO failed: %v", err)
+		return
+	}
+	log.Println("[Serve] Connected.")
+
+	// Engine wall-clock: the M4F has no RTC, so seed it from system time (NTP on
+	// Linux) and re-sync periodically to correct drift. Production carrier adds an
+	// RTC; until then this is the time source for COND_TIME + the :00 tick.
+	syncClock(p)
+	go func() {
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for range t.C {
+			syncClock(p)
+		}
+	}()
+
+	// Define the engine ruleset on connect so the M4F state is deterministic and
+	// stale rules from a prior session stop firing. Phase 1: empty (clean slate);
+	// Phase 2: load from SQLite.
+	rules := loadRules()
+	if err := p.PushRules(rules); err != nil {
+		log.Printf("[Serve] rule push failed: %v", err)
+	} else {
+		log.Printf("[Serve] pushed %d rule(s) to engine", len(rules))
+	}
+
+	log.Println("[Serve] Starting phone HTTPS API...")
+	if err := StartHTTPAPI(p, cfg); err != nil {
+		log.Printf("[Serve] HTTP API stopped: %v", err)
+	}
+}
+
+// loadRules returns the authoritative ruleset to push to the engine. Phase 1:
+// empty (clears any leftover test rules). Phase 2: read from SQLite.
+func loadRules() []Rule {
+	return []Rule{}
+}
+
+// syncClock pushes the current system wall-clock (h:m:s) to the M4F engine.
+func syncClock(p *Protocol) {
+	now := time.Now()
+	if err := p.SendTimeSync(uint8(now.Hour()), uint8(now.Minute()), uint8(now.Second())); err != nil {
+		log.Printf("[Serve] time-sync failed: %v", err)
+		return
+	}
+	log.Printf("[Serve] time-sync -> %02d:%02d:%02d", now.Hour(), now.Minute(), now.Second())
 }
 
 // runHeartbeatBusyTest: send DATA every 2s, verify NO PINGs fire.
