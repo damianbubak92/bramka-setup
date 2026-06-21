@@ -637,6 +637,9 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 	defer store.Close()
 	log.Printf("[Serve] rules DB: %s", dbPath)
 
+	// Pending node JOINs awaiting user approval (provisioning, [[provisioning-model]]).
+	joins := newJoinRegistry()
+
 	// Drain M4F->Linux events FIRST (before HELLO): a reconnect can find a backlog
 	// of stale telemetry/rule-fired buffered while Linux was down; consuming it
 	// here keeps eventRx from overflowing. Phase 3 routes these to a DB + the
@@ -647,6 +650,18 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 			case MsgRuleFired:
 				log.Printf("[Serve] RULE_FIRED (%d bytes)", len(ev.Payload))
 			case MsgNodeTelemetry:
+				// Provisioning frames (JOIN) ride the telemetry path; demux by cmd.
+				if cmd, ok := NodeMsgCmd(ev.Payload); ok && cmd == CmdJoinRequest {
+					fid, nt, ok := DecodeJoinRequest(ev.Payload)
+					if !ok {
+						log.Printf("[Serve] JOIN_REQUEST undecodable (%d bytes)", len(ev.Payload))
+						break
+					}
+					if joins.Add(fid, nt, time.Now().Unix()) {
+						log.Printf("[Serve] JOIN request: node type %d factory %x (awaiting approval)", nt, fid)
+					}
+					break
+				}
 				nodeID, nodeType, params, ok := DecodeTelemetry(ev.Payload)
 				if !ok {
 					log.Printf("[Serve] NODE_TELEMETRY undecodable (%d bytes)", len(ev.Payload))

@@ -29,19 +29,30 @@
 
 #include "Board.h"
 
+/* CC1310 factory IEEE address (FCFG1) - the per-chip identity used at JOIN.
+ * NOTE: verify FCFG1_O_MAC_15_4_0/_1 names against the installed SDK headers. */
+#include <ti/devices/DeviceFamily.h>
+#include DeviceFamily_constructPath(inc/hw_types.h)
+#include DeviceFamily_constructPath(inc/hw_memmap.h)
+#include DeviceFamily_constructPath(inc/hw_fcfg1.h)
+
 /* --- wire identity (Phase 0: fixed; provisioning assigns later) --- */
 #define TH_NODE_ADDRESS     0xF3u
 
 /* --- node_protocol.h mirror (keep byte-identical with the gateway) --- */
 #define NODE_TH_SENSOR      6u
 #define CMD_SEND_DATA_TO_DB 0u
+#define CMD_JOIN_REQUEST    4u
+#define ADDR_UNPROVISIONED  0xFFu
+#define NODE_FACTORY_ID_LEN 8u
 
 #define TH_TASK_STACK_SIZE  1024
 #define TH_TASK_PRIORITY    2
 
 /* thEventHandle events */
-#define EVENT_MEASURE       (1 << 0)   /* periodic timer tick      */
-#define EVENT_FORCE         (1 << 1)   /* button: send immediately */
+#define EVENT_MEASURE       (1 << 0)   /* periodic timer tick           */
+#define EVENT_FORCE         (1 << 1)   /* (test) send a reading now     */
+#define EVENT_JOIN          (1 << 2)   /* button: send a JOIN request   */
 
 /* radio task's send event (rfEchoTx.c) */
 #define EVENT_SEND_PACKET   (1 << 0)
@@ -65,6 +76,8 @@ typedef struct {
         struct { uint8_t pumpState; } pumpData;
         struct { float sBuforTemp; } buforData;
         struct { float temperature; float humidity; } thData;
+        struct { uint8_t factory_id[NODE_FACTORY_ID_LEN]; } joinData;
+        struct { uint8_t factory_id[NODE_FACTORY_ID_LEN]; uint8_t assigned_addr; } joinAcceptData;
         struct { char text[30]; } textData;
     } payload;
 } MessageStruct;
@@ -106,6 +119,39 @@ static void sendReading(MessageStruct *msg)
                    msg->payload.thData.temperature, msg->payload.thData.humidity);
 }
 
+/* Read the CC1310's unique factory IEEE address (8 B) - the chip identity used
+ * during provisioning, before the node has an assigned address. */
+static void read_factory_id(uint8_t out[NODE_FACTORY_ID_LEN])
+{
+    uint32_t lo = HWREG(FCFG1_BASE + FCFG1_O_MAC_15_4_0);
+    uint32_t hi = HWREG(FCFG1_BASE + FCFG1_O_MAC_15_4_1);
+    out[0] = (uint8_t)lo;        out[1] = (uint8_t)(lo >> 8);
+    out[2] = (uint8_t)(lo >> 16); out[3] = (uint8_t)(lo >> 24);
+    out[4] = (uint8_t)hi;        out[5] = (uint8_t)(hi >> 8);
+    out[6] = (uint8_t)(hi >> 16); out[7] = (uint8_t)(hi >> 24);
+}
+
+/* JOIN request: src ADDR_UNPROVISIONED, type = our node type, payload = factory
+ * id. The radio task takes the wire src from msg->id (so 0xFF here). */
+static void sendJoinRequest(MessageStruct *msg)
+{
+    msg->id   = ADDR_UNPROVISIONED;
+    msg->type = NODE_TH_SENSOR;
+    msg->cmd  = CMD_JOIN_REQUEST;
+    read_factory_id(msg->payload.joinData.factory_id);
+    msg->length = 4 + sizeof(msg->payload.joinData);   /* = 12 */
+
+    mq_send(radioQueue, (char *)msg, msg->length, 0);
+    Event_post(radioEventHandle, EVENT_SEND_PACKET);
+
+    Display_printf(display, 0, 0,
+        "[TH] JOIN sent (factory %02x%02x%02x%02x%02x%02x%02x%02x)",
+        msg->payload.joinData.factory_id[0], msg->payload.joinData.factory_id[1],
+        msg->payload.joinData.factory_id[2], msg->payload.joinData.factory_id[3],
+        msg->payload.joinData.factory_id[4], msg->payload.joinData.factory_id[5],
+        msg->payload.joinData.factory_id[6], msg->payload.joinData.factory_id[7]);
+}
+
 static void thTaskFunction(UArg arg0, UArg arg1)
 {
     uint32_t      events;
@@ -124,7 +170,12 @@ static void thTaskFunction(UArg arg0, UArg arg1)
     GPTimerCC26XX_start(hTimer);
 
     while (1) {
-        events = Event_pend(thEventHandle, 0, EVENT_MEASURE | EVENT_FORCE, BIOS_WAIT_FOREVER);
+        events = Event_pend(thEventHandle, 0,
+                            EVENT_MEASURE | EVENT_FORCE | EVENT_JOIN, BIOS_WAIT_FOREVER);
+
+        if (events & EVENT_JOIN) {
+            sendJoinRequest(&msg);
+        }
 
         bool doSend = false;
         if (events & EVENT_MEASURE) {

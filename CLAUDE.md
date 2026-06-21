@@ -334,6 +334,15 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-06-22 — provisioning Faza 1 (kroki 1-3): JOIN uplink E2E ✅ + fix dedup po reconnect
+- **ZWERYFIKOWANE NA ŻYWO**: button na nodzie → `[Serve] JOIN request: node type 6 factory ee467e22004b1200 (awaiting approval)`. Pełna ścieżka uplink: node (factory ID z FCFG) → RF (src 0xFF) → CC1310 → M4F (forward all-types) → Go demux `cmd=JOIN_REQUEST` → rejestr pending. Telemetria leci równolegle.
+- **Protokół (`shared/node_protocol.h`)**: `CMD_JOIN_REQUEST`(4)/`CMD_JOIN_ACCEPT`(5); `joinData{factory_id[8]}` (node→gw), `joinAcceptData{factory_id[8],assigned_addr}` (gw→node); adresy `ADDR_GATEWAY 0xF0` (legacy zostaje — cutover do 0x00 odłożony żeby nie psuć solar/bufor), `ADDR_UNPROVISIONED 0xFF`, pula `0x10-0xEF`. MessageStruct dalej 44B.
+- **Node (`cc1310-node-th-firmware/` + CCS)**: `read_factory_id()` z FCFG1 (`HWREG(FCFG1_BASE+FCFG1_O_MAC_15_4_0/_1)` — **zbudowało się i czyta poprawny IEEE**), **button = JOIN** (`sendJoinRequest`, id=0xFF), `rfEchoTx.c` src ramki = `tempMsg.id` (telemetria 0xF3 / JOIN 0xFF), RX akceptuje `0xFF`.
+- **Gateway CC1310 (`cc1310-firmware/radio_task.c`, mirror)**: fix hardcoded TX — `frame[0]=tempMsg->id` (było 0xF1) — kompatybilne wstecz (SendPump i tak id=0xF1), odblokowuje JOIN_ACCEPT→0xFF + komendy multi-node. (Niepotrzebne do uplinku, potrzebne do kroku 4/5.)
+- **Go**: `telemetry.go` (`NodeMsgCmd`/`DecodeJoinRequest` cgo), `join.go` (NOWY — rejestr pending, dedup po factory_id), `main.go` (demux JOIN vs telemetria).
+- **🔑 BUG FIX (pre-existing, niezawodność) — dedup po reconnect**: `protocol.go` `theirLastSeq` rósł monotonicznie i NIE resetował się przy reconnect. M4F **zeruje swój seq przy nowym HELLO**, więc po dużym backlogu (seq 18-25) żywe eventy seq 1+ leciały jako „duplikaty" → wyrzucane przed `EventRx` → drain ich nie widział (ginęła telemetria I JOIN). **Fix**: reset `theirLastSeq=0` przy `MSG_HELLO_ACK`. Objaw mylił: `[Protocol] RX` widać, `[Serve]` cicho; to NIE był panic (`tail` = czysto).
+- **Następne (krok 4)**: approve API na telefon (lista pending + approve{nazwa}) → alokacja adresu z puli + wiersz `node` + `JOIN_ACCEPT` w dół (tu wchodzi reflash gateway-CC1310 z fixem TX). Potem krok 5: node odbiera ACCEPT → NVS → przełączenie adresu.
+
 ### 2026-06-21 (wieczór) — provisioning Faza 0: nowy typ noda temp/humidity E2E ✅
 - **ZWERYFIKOWANE NA ŻYWO**: nowy node TH (typ 6) → bramka → DB. m4f-watch `[SPI] RX node data -> engine (type=6 cmd=0)` → `TX 0x40`; Go `telemetry node 243 type 6: 2 param(s) stored`; DB `node_param` 243 = temperature 25.81, humidity 45.05. 3 nody naraz (241 solar / 242 bufor / 243 TH).
 - **🔑 Bug M4F (naprawiony)**: telemetria do Linuksa była bramkowana `if (engine_update_node())` — true tylko dla znanych typów (solar/bufor folding do `NodesData`). Typ 6 → false → telemetria nie leciała (CC1310 forwardował, Go nic nie dostawał). Fix w `ipc_rpmsg_echo.c`: **raw telemetria (→DB) dla KAŻDEGO typu**, niezależnie od silnika; folding+reguły osobno dla znanych typów. Skopiowane do CCS freertos.

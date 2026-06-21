@@ -384,6 +384,14 @@ func (p *Protocol) handleIncoming(raw []byte) {
 	case C.MSG_HELLO_ACK:
 		if p.State() == StateHelloSent {
 			p.setState(StateConnected)
+			// New connection: the M4F resets its outgoing seq counter on (re)connect.
+			// Reset our idempotency baseline too, else post-reconnect events whose seq
+			// is below a prior session's backlog get dropped as "duplicates" and never
+			// reach EventRx (observed: live telemetry/JOIN silently lost after a big
+			// pre-connect backlog).
+			p.theirSeqMu.Lock()
+			p.theirLastSeq = 0
+			p.theirSeqMu.Unlock()
 			log.Printf("[Protocol] HELLO_ACK from M4F: %q", string(payload))
 		} else {
 			log.Printf("[Protocol] WARN: HELLO_ACK in state %s", p.State())

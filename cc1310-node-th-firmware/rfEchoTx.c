@@ -124,7 +124,8 @@ char rxMsg[MAX_MSG_SIZE];
 char txMsg[MAX_MSG_SIZE];
 
 extern Event_Handle thEventHandle;     /* th_sensor_task.c */
-#define EVENT_TH_FORCE   (1 << 1)      /* button -> immediate TH send */
+#define EVENT_TH_FORCE   (1 << 1)      /* (test) immediate TH send */
+#define EVENT_TH_JOIN    (1 << 2)      /* button -> send a JOIN request */
 
 uint8_t calcChecksum(const char* msg, size_t len) {
     uint8_t crc = 0;
@@ -137,8 +138,8 @@ uint8_t calcChecksum(const char* msg, size_t len) {
 
 void buttonCallback2(uint_least8_t index)
 {
-    /* Force an immediate T/H reading (handy for testing without waiting 60 s). */
-    Event_post(thEventHandle, EVENT_TH_FORCE);
+    /* Button = JOIN: the node announces itself for provisioning. */
+    Event_post(thEventHandle, EVENT_TH_JOIN);
 }
 
 static void radioTaskFunction(UArg arg0, UArg arg1)
@@ -204,7 +205,7 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                 char message[MAX_MSG_SIZE];
                 message[0] = CONCENTRATOR_ADDRESS;
                 message[1] = 'D';
-                message[2] = NODE_ADDRESS;
+                message[2] = tempMsg.id;   /* src = our address from the message (0xFF for JOIN, assigned addr otherwise) */
 
                 memcpy(&message[3], &tempMsg, tempMsg.length);
                 txSequenceNumber = txSequenceNumber + 1;
@@ -240,7 +241,7 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                         memcpy(rxMsg, packetDataPointer, packetLength);
                         rxMsg[packetLength] = '\0';
                         //Display_printf(display, 0, 0, "[Node RF] Received ACK: %02x|%c|%02x|%c%c%c%c%c%c%c%c%c%c%c%c|%d", rxMsg[0], rxMsg[1], rxMsg[2], rxMsg[3], rxMsg[4], rxMsg[5], rxMsg[6],rxMsg[7], rxMsg[8], rxMsg[9], rxMsg[10],rxMsg[11], rxMsg[12], rxMsg[13], rxMsg[14], rxMsg[packetLength-1]);
-                        if (rxMsg[0] == NODE_ADDRESS) //Sprawdzamy czy to dane dla naszego nodea
+                        if (rxMsg[0] == NODE_ADDRESS || rxMsg[0] == 0xFF) //nasz adres albo JOIN (unprovisioned)
                         {
                             if (rxMsg[1] == 'A' & rxMsg[2] == destAdress & rxMsg[3] == expectedCRC)
                             {
@@ -279,7 +280,7 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                 memcpy(rxMsg, packetDataPointer, packetLength);
                 rxMsg[packetLength] = '\0';
 
-                if (rxMsg[0] == NODE_ADDRESS) //Sprawdzamy czy to dane dla naszego nodea
+                if (rxMsg[0] == NODE_ADDRESS || rxMsg[0] == 0xFF) //nasz adres albo JOIN (unprovisioned)
                 {
                     //Display_printf(display, 0, 0, "[Node RF] Received data: %02x|%c|%02x|%c%c%c%c%c%c%c%c%c%c%c%c|%d(%d)", rxMsg[0], rxMsg[1], rxMsg[2], rxMsg[3], rxMsg[4], rxMsg[5], rxMsg[6],rxMsg[7], rxMsg[8], rxMsg[9], rxMsg[10],rxMsg[11], rxMsg[12], rxMsg[13], rxMsg[14], rxMsg[packetLength-1], calcChecksum(&rxMsg[2], packetLength - 3));
                     if (rxMsg[1] == 'D' & rxMsg[packetLength-1] == calcChecksum(&rxMsg[2], packetLength - 3))

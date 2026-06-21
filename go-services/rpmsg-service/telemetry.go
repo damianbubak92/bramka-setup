@@ -63,10 +63,44 @@ static void msg_decode(const MessageStruct *m, DecodedNode *d) {
         break;
     }
 }
+
+// Copy a JOIN_REQUEST's factory id out of the union (Go can't address union
+// members directly). The C compiler owns the layout.
+static void msg_join_factory_id(const MessageStruct *m, uint8_t out[NODE_FACTORY_ID_LEN]) {
+    memcpy(out, m->payload.joinData.factory_id, NODE_FACTORY_ID_LEN);
+}
 */
 import "C"
 
 import "unsafe"
+
+// NodeMsgCmd peeks the MessageStruct.cmd of a NODE_TELEMETRY payload so the drain
+// can route provisioning frames (CMD_JOIN_REQUEST) away from the telemetry path.
+func NodeMsgCmd(payload []byte) (cmd uint8, ok bool) {
+	need := int(unsafe.Sizeof(C.MessageStruct{}))
+	if len(payload) < need {
+		return 0, false
+	}
+	var m C.MessageStruct
+	C.memcpy(unsafe.Pointer(&m), unsafe.Pointer(&payload[0]), C.size_t(need))
+	return uint8(m.cmd), true
+}
+
+// DecodeJoinRequest extracts a joining node's factory id + type from a
+// CMD_JOIN_REQUEST MessageStruct (id is ADDR_UNPROVISIONED on the wire).
+func DecodeJoinRequest(payload []byte) (factoryID [8]byte, nodeType uint8, ok bool) {
+	need := int(unsafe.Sizeof(C.MessageStruct{}))
+	if len(payload) < need {
+		return factoryID, 0, false
+	}
+	var m C.MessageStruct
+	C.memcpy(unsafe.Pointer(&m), unsafe.Pointer(&payload[0]), C.size_t(need))
+	if uint8(m.cmd) != uint8(C.CMD_JOIN_REQUEST) {
+		return factoryID, 0, false
+	}
+	C.msg_join_factory_id(&m, (*C.uint8_t)(unsafe.Pointer(&factoryID[0])))
+	return factoryID, uint8(m._type), true
+}
 
 // NodeParam is one decoded (key, value) reading from a node. Stored generically
 // in node_param (current state) so heterogeneous node types need no schema change;

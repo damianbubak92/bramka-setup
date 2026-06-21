@@ -38,8 +38,22 @@
 #define CMD_SEND_PUMP_STATUS   1u
 #define CMD_TURN_PUMP_ON_OFF   2u
 #define CMD_SEND_TEXT_MSG      3u
+/* --- provisioning (gen2) --- */
+#define CMD_JOIN_REQUEST       4u  /* node->gw: src 0xFF, type=node type, payload.joinData       */
+#define CMD_JOIN_ACCEPT        5u  /* gw->node: dest 0xFF, payload.joinAcceptData (matched by factory_id) */
 
 #define NODE_TEXT_MAX  30u  /* textData.text capacity (gen1) */
+#define NODE_FACTORY_ID_LEN 8u  /* CC1310 FCFG IEEE address, identifies a chip pre-provisioning */
+
+/* ========================================================================= *
+ * ADDRESSES (1-byte). Phase 1 keeps the legacy gateway 0xF0 so the existing
+ * fixed-address nodes (solar 0xF1, bufor 0xF2, T/H 0xF3) keep working; the
+ * 0x00-gateway cutover is deferred. Provisioning assigns from the pool.
+ * ========================================================================= */
+#define ADDR_GATEWAY        0xF0u  /* concentrator (legacy; 0x00 cutover later) */
+#define ADDR_UNPROVISIONED  0xFFu  /* a node with no assigned address yet (JOIN src/dest) */
+#define ADDR_POOL_FIRST     0x10u  /* first assignable node address           */
+#define ADDR_POOL_LAST      0xEFu  /* last  assignable node address (~224 nodes) */
 
 /* ========================================================================= *
  * MessageStruct - one node<->gateway message.
@@ -76,6 +90,19 @@ typedef struct {
             float temperature;   /* deg C  */
             float humidity;      /* %RH    */
         } thData;
+
+        /* provisioning: node -> gateway (CMD_JOIN_REQUEST). The node's type is in
+         * MessageStruct.type; factory_id identifies the physical chip pre-address. */
+        struct {
+            uint8_t factory_id[NODE_FACTORY_ID_LEN];
+        } joinData;
+
+        /* provisioning: gateway -> node (CMD_JOIN_ACCEPT), sent to ADDR_UNPROVISIONED;
+         * the node acts only if factory_id matches its own, then stores assigned_addr. */
+        struct {
+            uint8_t factory_id[NODE_FACTORY_ID_LEN];
+            uint8_t assigned_addr;
+        } joinAcceptData;
 
         struct {
             char text[NODE_TEXT_MAX];
