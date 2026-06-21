@@ -14,16 +14,27 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 type Store struct {
 	db *sql.DB
+	// loc is the wall-clock zone for the solar daily-accumulation reset boundary
+	// (energy_gain / pump_runtime restart at local midnight).
+	loc *time.Location
 }
 
-// OpenStore opens (creating if needed) the SQLite DB and ensures the schema.
-func OpenStore(path string) (*Store, error) {
+// OpenStore opens (creating if needed) the SQLite DB and ensures the schema. loc
+// is the daily-rollover zone for solar accumulation (nil -> Europe/Warsaw).
+func OpenStore(path string, loc *time.Location) (*Store, error) {
+	if loc == nil {
+		var err error
+		if loc, err = time.LoadLocation("Europe/Warsaw"); err != nil {
+			loc = time.Local
+		}
+	}
 	dsn := path + "?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
@@ -43,7 +54,245 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	if err := initNodeSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("init node schema: %w", err)
+	}
+	return &Store{db: db, loc: loc}, nil
+}
+
+// initNodeSchema creates the node-state model + the dedicated SolarController
+// tables and seeds the param_def catalog for the node types in service today.
+//
+// Design (heterogeneous nodes, multiple instances of a type):
+//   - node        : the physical nodes (provisioning registry).
+//   - param_def   : per-node-TYPE catalog of params (label/unit/value_type +
+//                   UI order). The app reads this to render any node type;
+//                   provisioning (step #3) fills it. New node type = add rows
+//                   here, NO schema change.
+//   - node_param  : current state, one row per (node, param), UPSERTed each read
+//                   (the engine/app reads "what is node X doing now"). This is
+//                   the single generic current-state table for ALL node types.
+//
+// SolarController (and future types that need derived/accumulated data) gets a
+// DEDICATED table on top of the generic layer:
+//   - solar_history : append-only time-series; energy_gain & pump_runtime are
+//                     accumulated per local day (step #2 reads this for the
+//                     energy-yield / pump-runtime aggregations).
+//   - solar_state   : VIEW = latest history row per node + derived
+//                     generated_power_kw (no duplication, always fresh).
+//
+// There is intentionally NO generic time-series table: current state lives in
+// node_param; per-type history lives in its dedicated table only.
+//
+// The wire MessageStruct (node_protocol.h) is a typed union; the per-type
+// knowledge lives ONLY in the cgo decoder (telemetry.go), which emits generic
+// (param_key, value) pairs. node_param stays type-agnostic.
+func initNodeSchema(db *sql.DB) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS node (
+			node_id        INTEGER PRIMARY KEY,
+			node_type      INTEGER NOT NULL,
+			name           TEXT,
+			provisioned_at INTEGER,
+			last_seen      INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS param_def (
+			node_type     INTEGER NOT NULL,
+			param_key     TEXT    NOT NULL,
+			label         TEXT,
+			unit          TEXT,
+			value_type    TEXT,              -- float | int | bool | percent | text
+			archive       INTEGER NOT NULL DEFAULT 1,  -- catalog hint: param has dedicated history
+			display_order INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (node_type, param_key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS node_param (
+			node_id    INTEGER NOT NULL,
+			param_key  TEXT    NOT NULL,
+			value_num  REAL,
+			value_text TEXT,
+			ts         INTEGER NOT NULL,
+			PRIMARY KEY (node_id, param_key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS solar_history (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			node_id           INTEGER NOT NULL,
+			reading_time      INTEGER NOT NULL,   -- unix s
+			input_temp        REAL,               -- Tin
+			output_temp       REAL,               -- Tout
+			bufor1_temp       REAL,               -- T1
+			bufor2_temp       REAL,               -- T2
+			bufor3_temp       REAL,               -- T3
+			bufor4_temp       REAL,               -- T4
+			collector_temp    REAL,               -- Tcol
+			flow_rate         INTEGER,            -- %
+			second_pump_state INTEGER,            -- 0/1
+			energy_gain_delta INTEGER,            -- raw 2-min gain, kWh*10000
+			energy_gain       INTEGER,            -- accumulated this local day, kWh*10000
+			pump_runtime      INTEGER             -- accumulated this local day, minutes
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_solar_hist ON solar_history(node_id, reading_time)`,
+		`CREATE VIEW IF NOT EXISTS solar_state AS
+			SELECT node_id,
+			       bufor1_temp, bufor2_temp, bufor3_temp, bufor4_temp,
+			       collector_temp, flow_rate,
+			       30.0 * energy_gain_delta / 10000.0 AS generated_power_kw,
+			       second_pump_state, reading_time
+			FROM solar_history h
+			WHERE reading_time = (SELECT MAX(reading_time)
+			                      FROM solar_history WHERE node_id = h.node_id)`,
+	}
+	for _, q := range stmts {
+		if _, err := db.Exec(q); err != nil {
+			return err
+		}
+	}
+	return seedParamDefs(db)
+}
+
+// paramDefSeed is a built-in catalog row. Labels/units are sensible defaults for
+// the two active node types; provisioning (step #3) may override them. Units for
+// energyGain/flowRate are best-guess (verify against the node firmware).
+type paramDefSeed struct {
+	nodeType   uint8
+	key        string
+	label      string
+	unit       string
+	valueType  string
+	archive    int
+	order      int
+}
+
+// seedParamDefs is INSERT OR IGNORE: idempotent, and never clobbers admin/
+// provisioning edits to an existing (node_type, param_key).
+func seedParamDefs(db *sql.DB) error {
+	// NODE_SOLAR_CONTROLLER = 0, NODE_BUFOR_CONTROLLER = 1 (node_protocol.h).
+	seeds := []paramDefSeed{
+		{0, "Tcol", "Temp. kolektora", "°C", "float", 1, 1},
+		{0, "Tin", "Temp. zasilania", "°C", "float", 1, 2},
+		{0, "Tout", "Temp. powrotu", "°C", "float", 1, 3},
+		{0, "T1", "Temperatura T1", "°C", "float", 1, 4},
+		{0, "T2", "Temperatura T2", "°C", "float", 1, 5},
+		{0, "T3", "Temperatura T3", "°C", "float", 1, 6},
+		{0, "T4", "Temperatura T4", "°C", "float", 1, 7},
+		{0, "energyGain", "Uzysk energii", "Wh", "int", 1, 8},
+		{0, "flowRate", "Przepływ", "%", "percent", 1, 9},
+		{0, "pumpState", "Pompa", "", "bool", 1, 10},
+		{1, "sBuforTemp", "Temp. bufora", "°C", "float", 1, 1},
+	}
+	for _, d := range seeds {
+		if _, err := db.Exec(
+			`INSERT OR IGNORE INTO param_def
+			 (node_type, param_key, label, unit, value_type, archive, display_order)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			d.nodeType, d.key, d.label, d.unit, d.valueType, d.archive, d.order,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// nodeTypeSolar mirrors NODE_SOLAR_CONTROLLER (node_protocol.h). A solar full
+// reading (cmd SEND_DATA_TO_DB -> carries energyGain) also feeds solar_history.
+const nodeTypeSolar uint8 = 0
+
+// RecordTelemetry upserts the node's current state (node_param) and, for a solar
+// full reading, appends a solar_history row, all in one transaction. ts is unix s.
+func (s *Store) RecordTelemetry(nodeID, nodeType uint8, params []NodeParam, ts int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
+		`INSERT INTO node (node_id, node_type, provisioned_at, last_seen)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(node_id) DO UPDATE SET
+		     node_type = excluded.node_type,
+		     last_seen = excluded.last_seen`,
+		nodeID, nodeType, ts, ts,
+	); err != nil {
+		return err
+	}
+
+	upState, err := tx.Prepare(
+		`INSERT INTO node_param (node_id, param_key, value_num, ts)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(node_id, param_key) DO UPDATE SET
+		     value_num = excluded.value_num,
+		     ts        = excluded.ts`)
+	if err != nil {
+		return err
+	}
+	defer upState.Close()
+
+	vals := make(map[string]float64, len(params))
+	for _, pm := range params {
+		if _, err := upState.Exec(nodeID, pm.Key, pm.Num, ts); err != nil {
+			return err
+		}
+		vals[pm.Key] = pm.Num
+	}
+
+	// Solar full reading (has energyGain) -> dedicated history with daily accumulation.
+	// A pump-only update (SEND_PUMP_STATUS) carries just pumpState -> node_param only.
+	if nodeType == nodeTypeSolar {
+		if _, full := vals["energyGain"]; full {
+			if err := s.recordSolarHistory(tx, nodeID, vals, ts); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// recordSolarHistory appends one solar_history row. energy_gain and pump_runtime
+// accumulate on the previous row IF it is the same local day, else they restart
+// from this reading (midnight reset in s.loc). energy_gain_delta is the raw 2-min
+// gain (kWh*10000); pump_runtime adds the 2-min report interval whenever flow>0.
+func (s *Store) recordSolarHistory(tx *sql.Tx, nodeID uint8, v map[string]float64, ts int64) error {
+	delta := int64(v["energyGain"]) // raw 2-min gain, kWh*10000
+	pumpInc := int64(0)
+	if v["flowRate"] > 0 {
+		pumpInc = 2 // minutes (matches the node's 2-min report cadence)
+	}
+
+	var prevTime, prevEnergy, prevRuntime sql.NullInt64
+	err := tx.QueryRow(
+		`SELECT reading_time, energy_gain, pump_runtime FROM solar_history
+		 WHERE node_id = ? ORDER BY reading_time DESC LIMIT 1`, nodeID).
+		Scan(&prevTime, &prevEnergy, &prevRuntime)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+
+	energy, runtime := delta, pumpInc
+	if prevTime.Valid && sameLocalDay(prevTime.Int64, ts, s.loc) {
+		energy = prevEnergy.Int64 + delta
+		runtime = prevRuntime.Int64 + pumpInc
+	}
+
+	_, err = tx.Exec(
+		`INSERT INTO solar_history
+		 (node_id, reading_time, input_temp, output_temp,
+		  bufor1_temp, bufor2_temp, bufor3_temp, bufor4_temp, collector_temp,
+		  flow_rate, second_pump_state, energy_gain_delta, energy_gain, pump_runtime)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		nodeID, ts, v["Tin"], v["Tout"],
+		v["T1"], v["T2"], v["T3"], v["T4"], v["Tcol"],
+		int64(v["flowRate"]), int64(v["pumpState"]), delta, energy, runtime)
+	return err
+}
+
+// sameLocalDay reports whether two unix timestamps fall on the same calendar day
+// in loc (the daily accumulation reset boundary).
+func sameLocalDay(a, b int64, loc *time.Location) bool {
+	ya, ma, da := time.Unix(a, 0).In(loc).Date()
+	yb, mb, db := time.Unix(b, 0).In(loc).Date()
+	return ya == yb && ma == mb && da == db
 }
 
 func (s *Store) Close() error {

@@ -628,7 +628,8 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 	log.Printf("[Serve] engine timezone: %s (now %s)", tz, time.Now().In(loc).Format("15:04:05"))
 
 	// Persistent rules store (source of truth for getrules + the on-connect push).
-	store, err := OpenStore(dbPath)
+	// loc drives the solar daily-accumulation reset boundary.
+	store, err := OpenStore(dbPath, loc)
 	if err != nil {
 		log.Printf("[Serve] open DB %s failed: %v", dbPath, err)
 		return
@@ -646,7 +647,16 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 			case MsgRuleFired:
 				log.Printf("[Serve] RULE_FIRED (%d bytes)", len(ev.Payload))
 			case MsgNodeTelemetry:
-				log.Printf("[Serve] NODE_TELEMETRY (%d bytes)", len(ev.Payload))
+				nodeID, nodeType, params, ok := DecodeTelemetry(ev.Payload)
+				if !ok {
+					log.Printf("[Serve] NODE_TELEMETRY undecodable (%d bytes)", len(ev.Payload))
+					break
+				}
+				if err := store.RecordTelemetry(nodeID, nodeType, params, time.Now().Unix()); err != nil {
+					log.Printf("[Serve] telemetry store failed (node %d type %d): %v", nodeID, nodeType, err)
+					break
+				}
+				log.Printf("[Serve] telemetry node %d type %d: %d param(s) stored", nodeID, nodeType, len(params))
 			case MsgNodeState:
 				log.Printf("[Serve] NODE_STATE (%d bytes)", len(ev.Payload))
 			default:
