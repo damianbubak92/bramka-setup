@@ -428,16 +428,19 @@ static void engineTask(void *args)
                  * boundary would fire early (and double up with the boundary
                  * timeout). No-op on purpose; fall through to recompute. */
             } else {
-                /* Node data arrived: fold into state, emit telemetry, evaluate
-                 * the data-driven rules (COND_PARAMETER / _DELTA). */
-                if (engine_update_node(&nodeMsg)) {
-                    outbox_item_t item;
-                    item.kind = OUTBOX_TELEMETRY;
-                    item.msg = nodeMsg;
-                    if (xQueueSend(gOutboxQueue, &item, 0) != pdTRUE) {
-                        DebugP_log("[M4F] outbox full - telemetry dropped\r\n");
-                    }
+                /* Node data arrived. Forward the RAW reading to Linux (telemetry
+                 * -> DB) for EVERY node type, independently of whether the engine
+                 * recognises it: engine_update_node() only folds known types
+                 * (solar/bufor) into NodesData and returns false for the rest, but
+                 * the DB must still receive e.g. a T/H sensor. Then fold the known
+                 * types and evaluate the data-driven rules (COND_PARAMETER/_DELTA). */
+                outbox_item_t item;
+                item.kind = OUTBOX_TELEMETRY;
+                item.msg = nodeMsg;
+                if (xQueueSend(gOutboxQueue, &item, 0) != pdTRUE) {
+                    DebugP_log("[M4F] outbox full - telemetry dropped\r\n");
                 }
+                (void)engine_update_node(&nodeMsg);   /* fold known types into live state */
                 engine_evaluate(ENGINE_EVAL_NODE);
             }
         } else {

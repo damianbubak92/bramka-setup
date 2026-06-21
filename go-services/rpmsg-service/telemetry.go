@@ -11,6 +11,7 @@ package main
 #define DEC_KIND_SOLAR  1   // full solarData snapshot
 #define DEC_KIND_PUMP   2   // pumpState only (SEND_PUMP_STATUS)
 #define DEC_KIND_BUFOR  3   // sBuforTemp
+#define DEC_KIND_TH     4   // temperature + humidity
 
 // Flat, Go-readable mirror of the relevant union members. The C compiler owns
 // the union layout (shared/node_protocol.h), so msg_decode reads the CORRECT
@@ -21,6 +22,7 @@ typedef struct {
     int32_t energyGain, flowRate;
     uint8_t pumpState;
     float   sBuforTemp;
+    float   temperature, humidity;
 } DecodedNode;
 
 // Mirror of gen1's per-type message handling. A new node type = one more case
@@ -51,6 +53,11 @@ static void msg_decode(const MessageStruct *m, DecodedNode *d) {
         d->kind = DEC_KIND_BUFOR;
         d->sBuforTemp = m->payload.buforData.sBuforTemp;
         break;
+    case NODE_TH_SENSOR:
+        d->kind = DEC_KIND_TH;
+        d->temperature = m->payload.thData.temperature;
+        d->humidity    = m->payload.thData.humidity;
+        break;
     default:
         d->kind = DEC_KIND_NONE;
         break;
@@ -62,8 +69,9 @@ import "C"
 import "unsafe"
 
 // NodeParam is one decoded (key, value) reading from a node. Stored generically
-// (node_param / sample) so heterogeneous node types need no schema change. The
-// param_key matches the node_protocol.h union field name and the param_def rows.
+// in node_param (current state) so heterogeneous node types need no schema change;
+// types with derived/accumulated data also feed a dedicated table (e.g. solar).
+// The param_key matches the node_protocol.h union field name and the param_def rows.
 type NodeParam struct {
 	Key string
 	Num float64
@@ -104,6 +112,11 @@ func DecodeTelemetry(payload []byte) (nodeID, nodeType uint8, params []NodeParam
 		params = []NodeParam{{"pumpState", float64(d.pumpState)}}
 	case C.DEC_KIND_BUFOR:
 		params = []NodeParam{{"sBuforTemp", float64(d.sBuforTemp)}}
+	case C.DEC_KIND_TH:
+		params = []NodeParam{
+			{"temperature", float64(d.temperature)},
+			{"humidity", float64(d.humidity)},
+		}
 	default:
 		return nodeID, nodeType, nil, false
 	}

@@ -29,6 +29,7 @@
 #define NODE_LIGHT_CONTROLLER        3u
 #define NODE_VENTILATION_CONTROLLER  4u
 #define NODE_SMARTPHONE              5u
+#define NODE_TH_SENSOR               6u  /* gen2: ambient temperature + humidity */
 
 /* ========================================================================= *
  * COMMANDS (solar controller; extend per node type as the model grows)
@@ -70,6 +71,11 @@ typedef struct {
         struct {
             float sBuforTemp;
         } buforData;
+
+        struct {
+            float temperature;   /* deg C  */
+            float humidity;      /* %RH    */
+        } thData;
 
         struct {
             char text[NODE_TEXT_MAX];
