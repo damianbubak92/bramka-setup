@@ -37,13 +37,12 @@
 #include DeviceFamily_constructPath(inc/hw_memmap.h)
 #include DeviceFamily_constructPath(inc/hw_fcfg1.h)
 
-/* Persistence of the provisioning-assigned address via direct internal-flash
- * access (driverlib). This CC1310 project has NO syscfg, so instead of the NVS
- * driver we reserve one flash sector ourselves with a sector-aligned const array
- * (the linker allocates it in flash and keeps code/other rodata out of it) and
- * erase/program it directly. Survives reboot; a firmware reflash resets it. */
-#include DeviceFamily_constructPath(driverlib/flash.h)
-#include <ti/drivers/dpl/HwiP.h>
+/* Persistence of the provisioning-assigned address via the TI NVS driver
+ * (internal flash). The NVS region (flashBuf @ NVS_REGIONS_BASE 0x1A000) is
+ * reserved in the board file (CC1310_LAUNCHXL.c) the TI-recommended way; the
+ * driver handles flash erase/program + cache (VIMS) correctly. Survives reboot;
+ * a firmware reflash leaves it (region is NOINIT, not reprogrammed at load). */
+#include <ti/drivers/NVS.h>
 
 /* --- wire identity --- */
 #define TH_NODE_ADDRESS     0xF3u   /* factory default until provisioning assigns one */
@@ -173,51 +172,56 @@ static void sendJoinRequest(MessageStruct *msg)
         msg->payload.joinData.factory_id[6], msg->payload.joinData.factory_id[7]);
 }
 
-/* --- provisioning identity persistence (direct internal flash) --- */
-#define IDENTITY_MAGIC        0xB1A2C3D4u
-#define IDENTITY_SECTOR_SIZE  4096u   /* CC1310 flash sector size */
-typedef struct { uint32_t magic; uint8_t addr; } IdentityRec;
+/* --- provisioning identity persistence (TI NVS driver) --- */
+#define IDENTITY_MAGIC  0xB1A2C3D4u
+/* 8 B, 4-aligned: some flash needs multiple-of-4 write lengths (NVS docs). */
+typedef struct { uint32_t magic; uint8_t addr; uint8_t _pad[3]; } IdentityRec;
+static NVS_Handle gNvs = NULL;
 
-/* One reserved flash sector for the assigned address. Sector-aligned AND
- * sector-sized so erasing it touches nothing else; const => the linker places it
- * in flash and keeps other code/rodata out of this sector. */
-static const uint8_t gIdentityFlash[IDENTITY_SECTOR_SIZE]
-    __attribute__((aligned(IDENTITY_SECTOR_SIZE)));
-
-/* Read this chip's factory id and load any previously-assigned address from flash
+/* Read this chip's factory id and load any previously-assigned address from NVS
  * (so a provisioned node keeps its identity across reboots). */
 static void identity_init(void)
 {
     read_factory_id(gFactoryId);
 
-    const IdentityRec *rec = (const IdentityRec *)gIdentityFlash;
-    bool stored = (rec->magic == IDENTITY_MAGIC && rec->addr >= 0x10u && rec->addr <= 0xEFu);
-    if (stored) {
-        gNodeAddress = rec->addr;
+    NVS_init();
+    NVS_Params p;
+    NVS_Params_init(&p);
+    gNvs = NVS_open(Board_NVSINTERNAL, &p);
+
+    bool stored = false;
+    if (gNvs != NULL) {
+        IdentityRec rec;
+        if (NVS_read(gNvs, 0, &rec, sizeof(rec)) == NVS_STATUS_SUCCESS &&
+            rec.magic == IDENTITY_MAGIC && rec.addr >= 0x10u && rec.addr <= 0xEFu) {
+            gNodeAddress = rec.addr;
+            stored = true;
+        }
     }
     Display_printf(display, 0, 0, "[TH] identity: addr 0x%02x (%s)",
-                   gNodeAddress, stored ? "flash" : "default/unprovisioned");
+                   gNodeAddress,
+                   (gNvs == NULL) ? "NVS open FAILED" : (stored ? "NVS" : "default/unprovisioned"));
 }
 
-/* Persist the assigned address: erase the reserved sector, then program the
- * record. Flash erase/program stalls flash reads, so we mask interrupts for the
- * (rare, one-shot) operation - any ISR fetched from flash would otherwise hang. */
+/* Persist the assigned address. NVS_WRITE_ERASE erases the sector first; the
+ * driver handles VIMS/flash internally (this is the TI-recommended path). */
 static void identity_persist(uint8_t addr)
 {
+    if (gNvs == NULL) {
+        Display_printf(display, 0, 0, "[TH] identity persist skipped (NVS not open)");
+        return;
+    }
     IdentityRec rec;
     rec.magic = IDENTITY_MAGIC;
     rec.addr  = addr;
+    rec._pad[0] = rec._pad[1] = rec._pad[2] = 0;
 
-    uint32_t base = (uint32_t)gIdentityFlash;
-    uintptr_t key = HwiP_disable();
-    uint32_t st = FlashSectorErase(base);
-    if (st == FAPI_STATUS_SUCCESS) {
-        st = FlashProgram((uint8_t *)&rec, base, sizeof(rec));
-    }
-    HwiP_restore(key);
-
-    if (st != FAPI_STATUS_SUCCESS) {
-        Display_printf(display, 0, 0, "[TH] identity persist FAILED (flash st=%lu)", (unsigned long)st);
+    int_fast16_t st = NVS_write(gNvs, 0, &rec, sizeof(rec),
+                                NVS_WRITE_ERASE | NVS_WRITE_POST_VERIFY);
+    if (st != NVS_STATUS_SUCCESS) {
+        Display_printf(display, 0, 0, "[TH] identity persist FAILED (NVS st=%d)", (int)st);
+    } else {
+        Display_printf(display, 0, 0, "[TH] identity persisted: addr 0x%02x", addr);
     }
 }
 
