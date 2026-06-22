@@ -46,11 +46,16 @@
 #define NODE_FACTORY_ID_LEN 8u  /* CC1310 FCFG IEEE address, identifies a chip pre-provisioning */
 
 /* ========================================================================= *
- * ADDRESSES (1-byte). Phase 1 keeps the legacy gateway 0xF0 so the existing
- * fixed-address nodes (solar 0xF1, bufor 0xF2, T/H 0xF3) keep working; the
- * 0x00-gateway cutover is deferred. Provisioning assigns from the pool.
+ * ADDRESSES (1-byte). The gen2 gateway is 0x00; the legacy gen1 gateway stays
+ * 0xF0, so the CC1310 RX address filter (rxMsg[0] == CONCENTRATOR_ADDRESS) keeps
+ * the two networks isolated during dev: gen2 nodes target 0x00, the old
+ * fixed-address nodes (solar 0xF1, bufor 0xF2) still talk to gen1 on 0xF0 until
+ * reflashed. NOTE: the wire gateway address lives ONLY in the CC1310 firmware
+ * (CONCENTRATOR_ADDRESS in radio_task.c / rfEchoTx.c), never in MessageStruct.id;
+ * this constant is for documentation + future M4F/Go use. Provisioning assigns
+ * node addresses from the pool below.
  * ========================================================================= */
-#define ADDR_GATEWAY        0xF0u  /* concentrator (legacy; 0x00 cutover later) */
+#define ADDR_GATEWAY        0x00u  /* gen2 concentrator (gen1 legacy = 0xF0) */
 #define ADDR_UNPROVISIONED  0xFFu  /* a node with no assigned address yet (JOIN src/dest) */
 #define ADDR_POOL_FIRST     0x10u  /* first assignable node address           */
 #define ADDR_POOL_LAST      0xEFu  /* last  assignable node address (~224 nodes) */

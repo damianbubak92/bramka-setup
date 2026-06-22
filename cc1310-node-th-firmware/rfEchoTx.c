@@ -27,8 +27,8 @@
 #define EVENT_SEND_PACKET     (1 << 0)
 #define EVENT_RADIO_RX        (1 << 1)
 #define EVENT_ACK_SENT        (1 << 2)
-#define CONCENTRATOR_ADDRESS  0xF0
-#define NODE_ADDRESS          0xF3   /* gen2 T/H node (Phase 0 fixed addr) */
+#define CONCENTRATOR_ADDRESS  0x00   /* gen2 gateway = 0x00 (was 0xF0); old gen1 gateway ignores us, so no cross-talk / duplicates */
+#define NODE_ADDRESS          0xF3   /* gen2 T/H node (Phase 0 fixed addr; provisioning assigns a pool addr later) */
 #define NUM_APPENDED_BYTES    2
 
 typedef enum

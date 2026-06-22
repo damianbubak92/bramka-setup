@@ -14,13 +14,14 @@ import (
 // non-cgo drain can demux provisioning frames without importing C.
 const CmdJoinRequest uint8 = 4
 
-// pendingJoin is a node that pressed JOIN and awaits user approval.
+// pendingJoin is a node that pressed JOIN and awaits user approval. JSON tags
+// shape the listjoins response the phone reads in step 4.
 type pendingJoin struct {
-	FactoryID string // hex of the 8-byte CC1310 factory id (the chip identity)
-	NodeType  uint8
-	FirstSeen int64 // unix s
-	LastSeen  int64
-	Count     int // JOINs seen (the node retransmits until provisioned)
+	FactoryID string `json:"factory"`   // hex of the 8-byte CC1310 factory id (the chip identity)
+	NodeType  uint8  `json:"type"`      // NODE_* (node_protocol.h)
+	FirstSeen int64  `json:"firstSeen"` // unix s
+	LastSeen  int64  `json:"lastSeen"`
+	Count     int    `json:"count"` // JOINs seen (the node retransmits until provisioned)
 }
 
 // joinRegistry holds JOIN requests awaiting approval, keyed by factory id.
@@ -59,4 +60,33 @@ func (r *joinRegistry) List() []pendingJoin {
 		out = append(out, *p)
 	}
 	return out
+}
+
+// Get looks up a pending join by factory id (hex).
+func (r *joinRegistry) Get(factoryID string) (pendingJoin, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p := r.pending[factoryID]; p != nil {
+		return *p, true
+	}
+	return pendingJoin{}, false
+}
+
+// Remove drops a join from the pending set (call after it is provisioned).
+func (r *joinRegistry) Remove(factoryID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.pending, factoryID)
+}
+
+// factoryHexToBytes parses the 16-char hex factory id into the 8-byte form the
+// JOIN_ACCEPT wire struct carries.
+func factoryHexToBytes(s string) ([8]byte, bool) {
+	var out [8]byte
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != 8 {
+		return out, false
+	}
+	copy(out[:], b)
+	return out, true
 }

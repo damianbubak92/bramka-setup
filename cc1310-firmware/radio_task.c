@@ -29,7 +29,7 @@
 #define EVENT_ACK_SENT        (1 << 2)
 #define SEND_DATA_TO_SLAVE    (1 << 3)
 #define EVENT_RESTART_RADIO   (1 << 4)
-#define CONCENTRATOR_ADDRESS  0xF0
+#define CONCENTRATOR_ADDRESS  0x00   /* gen2 gateway = 0x00 (gen1 stays 0xF0); the RX filter below drops gen1's 0xF0 traffic so the two networks coexist during dev */
 #define NODE_ADDRESS          0xF1
 #define NUM_DATA_ENTRIES      2
 #define NUM_APPENDED_BYTES    2

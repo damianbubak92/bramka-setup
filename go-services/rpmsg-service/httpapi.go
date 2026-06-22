@@ -2,10 +2,13 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 )
 
 // defaultAuthToken matches the Android app (NetworkClient.AUTH_TOKEN) and gen1
@@ -25,10 +28,10 @@ type HTTPConfig struct {
 // contract (httpsServerTask): a POST to "/" whose request text contains
 // command=<X> and authToken=<token>. The Android client pins our leaf cert by
 // SHA-256, so CertFile/KeyFile MUST be the same pair the app was built against.
-func StartHTTPAPI(p *Protocol, store *Store, cfg HTTPConfig) error {
+func StartHTTPAPI(p *Protocol, store *Store, joins *joinRegistry, cfg HTTPConfig) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handleCommand(p, store, cfg, w, r)
+		handleCommand(p, store, joins, cfg, w, r)
 	})
 	srv := &http.Server{
 		Addr:      cfg.Addr,
@@ -43,7 +46,7 @@ func StartHTTPAPI(p *Protocol, store *Store, cfg HTTPConfig) error {
 // in the query OR the body (the app posts form-urlencoded for pump/getrules and
 // a text/plain "command=setrules&rules=..." body for setrules). We match over
 // query+body uniformly instead of relying on Content-Type parsing.
-func handleCommand(p *Protocol, store *Store, cfg HTTPConfig, w http.ResponseWriter, r *http.Request) {
+func handleCommand(p *Protocol, store *Store, joins *joinRegistry, cfg HTTPConfig, w http.ResponseWriter, r *http.Request) {
 	bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 256*1024))
 	body := string(bodyBytes)
 	req := r.URL.RawQuery + "&" + body
@@ -75,6 +78,12 @@ func handleCommand(p *Protocol, store *Store, cfg HTTPConfig, w http.ResponseWri
 
 	case strings.Contains(req, "command=setrules"):
 		handleSetRules(p, store, body, w, r)
+
+	case strings.Contains(req, "command=listjoins"):
+		handleListJoins(joins, w, r)
+
+	case strings.Contains(req, "command=approvejoin"):
+		handleApproveJoin(p, store, joins, req, w, r)
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -132,6 +141,72 @@ func extractRulesField(body string) (string, bool) {
 		v = v[:j]
 	}
 	return v, true
+}
+
+// handleListJoins returns the nodes that pressed JOIN and await approval, as a
+// JSON array the phone renders for the user (provisioning step 4).
+func handleListJoins(joins *joinRegistry, w http.ResponseWriter, r *http.Request) {
+	list := joins.List()
+	b, err := json.Marshal(list)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "marshal error\n")
+		log.Printf("[HTTP] listjoins marshal error: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+	log.Printf("[HTTP] listjoins -> %d pending", len(list))
+}
+
+// handleApproveJoin commissions a pending node: factory= identifies which JOIN
+// (from listjoins), name= is the user's label. We allocate a pool address, record
+// the node, and push JOIN_ACCEPT down to it. Request fields ride query+body as
+// "factory=<hex>&name=<label>" (url-encoded).
+func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, req string, w http.ResponseWriter, r *http.Request) {
+	vals, _ := url.ParseQuery(req)
+	factory := strings.ToLower(strings.TrimSpace(vals.Get("factory")))
+	name := strings.TrimSpace(vals.Get("name"))
+
+	pj, ok := joins.Get(factory)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, "unknown join\n")
+		log.Printf("[HTTP] approvejoin: no pending join for factory %q", factory)
+		return
+	}
+	fid, ok := factoryHexToBytes(factory)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "bad factory id\n")
+		log.Printf("[HTTP] approvejoin: bad factory id %q", factory)
+		return
+	}
+
+	addr, err := store.ProvisionNode(pj.NodeType, name, factory, time.Now().Unix())
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "provision failed\n")
+		log.Printf("[HTTP] approvejoin: provision factory %s failed: %v", factory, err)
+		return
+	}
+
+	if err := p.SendJoinAccept(fid, pj.NodeType, addr); err != nil {
+		// Provisioned in the DB but the accept didn't reach the M4F: report so the
+		// user retries (the node keeps sending JOIN; re-approve reuses the address).
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "provisioned, accept push failed\n")
+		log.Printf("[HTTP] approvejoin: factory %s got addr 0x%02X but accept push failed: %v", factory, addr, err)
+		return
+	}
+	joins.Remove(factory)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"factory": factory, "name": name, "type": pj.NodeType, "address": addr,
+	})
+	log.Printf("[HTTP] approvejoin: factory %s (type %d) -> addr 0x%02X name %q, JOIN_ACCEPT sent",
+		factory, pj.NodeType, addr, name)
 }
 
 func respondPump(p *Protocol, on bool, w http.ResponseWriter, r *http.Request) {

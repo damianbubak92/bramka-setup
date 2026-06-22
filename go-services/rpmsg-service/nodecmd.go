@@ -30,6 +30,21 @@ static void msg_make_pump(MessageStruct *m, uint8_t nodeId, uint8_t on) {
     m->payload.pumpData.pumpState = on ? 1u : 0u;
     m->length = (uint8_t)(sizeof(m->payload.pumpData) + 4u);
 }
+
+// Provisioning JOIN_ACCEPT (gateway -> node, step 4). Addressed to
+// ADDR_UNPROVISIONED (0xFF) since the node has no address yet; the unprovisioned
+// node acts only if factory_id matches its own, then stores assigned_addr (step 5).
+// type carries the node's type so the CC1310 RX/Go demux stays consistent.
+static void msg_make_join_accept(MessageStruct *m, const uint8_t *factory_id,
+                                 uint8_t node_type, uint8_t assigned_addr) {
+    memset(m, 0, sizeof(*m));
+    m->id   = ADDR_UNPROVISIONED;
+    m->type = node_type;
+    m->cmd  = CMD_JOIN_ACCEPT;
+    memcpy(m->payload.joinAcceptData.factory_id, factory_id, NODE_FACTORY_ID_LEN);
+    m->payload.joinAcceptData.assigned_addr = assigned_addr;
+    m->length = (uint8_t)(sizeof(m->payload.joinAcceptData) + 4u);
+}
 */
 import "C"
 
@@ -93,6 +108,23 @@ func (p *Protocol) SendPump(on bool) error {
 		onVal = 1
 	}
 	C.msg_make_pump(&m, C.uint8_t(pumpNodeID), onVal)
+	b := C.GoBytes(unsafe.Pointer(&m), C.int(unsafe.Sizeof(m)))
+	return p.sendReliableTyped(MsgNodeCmd, b)
+}
+
+// SendJoinAccept tells an approved, unprovisioned node its assigned address
+// (provisioning step 4). It rides MSG_NODE_CMD like SendPump (M4F -> SPI ->
+// CC1310 -> RF, addressed to 0xFF). Reliable to the M4F (it ACKs after queueing
+// for SPI); RF delivery to the node is confirmed later when the node reports
+// under its new address (step 5). The node retransmits JOIN until accepted.
+func (p *Protocol) SendJoinAccept(factoryID [8]byte, nodeType, assignedAddr uint8) error {
+	if !abiOK {
+		return fmt.Errorf("node cmd disabled: MessageStruct ABI mismatch (see startup log)")
+	}
+	var m C.MessageStruct
+	C.msg_make_join_accept(&m,
+		(*C.uint8_t)(unsafe.Pointer(&factoryID[0])),
+		C.uint8_t(nodeType), C.uint8_t(assignedAddr))
 	b := C.GoBytes(unsafe.Pointer(&m), C.int(unsafe.Sizeof(m)))
 	return p.sendReliableTyped(MsgNodeCmd, b)
 }

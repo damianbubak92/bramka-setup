@@ -14,6 +14,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -148,6 +149,13 @@ func initNodeSchema(db *sql.DB) error {
 			return err
 		}
 	}
+	// migrate: node.factory_id (the chip's CC1310 FCFG identity) - added after the
+	// original schema so a known chip's rejoin can reuse its address. ALTER fails
+	// with "duplicate column name" if it already exists; treat that as success.
+	if _, err := db.Exec(`ALTER TABLE node ADD COLUMN factory_id TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
 	return seedParamDefs(db)
 }
 
@@ -200,6 +208,82 @@ func seedParamDefs(db *sql.DB) error {
 // nodeTypeSolar mirrors NODE_SOLAR_CONTROLLER (node_protocol.h). A solar full
 // reading (cmd SEND_DATA_TO_DB -> carries energyGain) also feeds solar_history.
 const nodeTypeSolar uint8 = 0
+
+// Assignable address pool (node_protocol.h ADDR_POOL_FIRST/LAST). The legacy
+// fixed-address nodes (0xF1/0xF2/0xF3) and the gateway (0xF0) sit ABOVE this
+// range, so provisioning never collides with them.
+const (
+	addrPoolFirst = 0x10
+	addrPoolLast  = 0xEF
+)
+
+// ProvisionNode binds an approved JOIN to a logical address: the lowest free pool
+// address, recorded with the node's type/name/factory id. It is idempotent per
+// factory id - re-approving (or a known chip rejoining) reuses the same address
+// instead of consuming a new one. Returns the assigned address. ts is unix s.
+func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) (uint8, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	// Known chip -> reuse its address (idempotent re-approve / rejoin).
+	var existing sql.NullInt64
+	err = tx.QueryRow(`SELECT node_id FROM node WHERE factory_id = ?`, factoryID).Scan(&existing)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, err
+	}
+	if existing.Valid {
+		addr := uint8(existing.Int64)
+		if _, err := tx.Exec(
+			`UPDATE node SET name = ?, node_type = ?, provisioned_at = ?, last_seen = ?
+			 WHERE node_id = ?`, name, nodeType, ts, ts, addr); err != nil {
+			return 0, err
+		}
+		return addr, tx.Commit()
+	}
+
+	addr, err := allocAddr(tx)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO node (node_id, node_type, name, factory_id, provisioned_at, last_seen)
+		 VALUES (?, ?, ?, ?, ?, ?)`, addr, nodeType, name, factoryID, ts, ts); err != nil {
+		return 0, err
+	}
+	return addr, tx.Commit()
+}
+
+// allocAddr returns the lowest unused address in the pool (within the tx so the
+// read+insert is atomic against concurrent approvals).
+func allocAddr(tx *sql.Tx) (uint8, error) {
+	rows, err := tx.Query(
+		`SELECT node_id FROM node WHERE node_id BETWEEN ? AND ? ORDER BY node_id`,
+		addrPoolFirst, addrPoolLast)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	used := map[int]bool{}
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		used[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for a := addrPoolFirst; a <= addrPoolLast; a++ {
+		if !used[a] {
+			return uint8(a), nil
+		}
+	}
+	return 0, fmt.Errorf("address pool exhausted (0x%02X-0x%02X)", addrPoolFirst, addrPoolLast)
+}
 
 // RecordTelemetry upserts the node's current state (node_param) and, for a solar
 // full reading, appends a solar_history row, all in one transaction. ts is unix s.

@@ -713,7 +713,7 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 	}
 
 	log.Println("[Serve] Starting phone HTTPS API...")
-	if err := StartHTTPAPI(p, store, cfg); err != nil {
+	if err := StartHTTPAPI(p, store, joins, cfg); err != nil {
 		log.Printf("[Serve] HTTP API stopped: %v", err)
 	}
 }

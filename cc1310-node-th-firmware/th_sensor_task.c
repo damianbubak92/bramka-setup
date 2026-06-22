@@ -6,8 +6,9 @@
  * MessageStruct via the radio task (radioQueue + EVENT_SEND_PACKET). The button
  * forces an immediate send for testing.
  *
- * Phase 0 keeps the CURRENT addressing scheme: this node is 0xF3, gateway 0xF0.
- * Provisioning (later) will assign the address dynamically.
+ * Addressing: this node is 0xF3 (Phase 0 fixed), gen2 gateway is 0x00 (gen1 = 0xF0,
+ * so we no longer cross-talk with the old network). Provisioning assigns the node
+ * address dynamically later.
  *
  * Ported from solar_controller_task.c - all ADC/PWM/relay/ePaper/energy logic
  * stripped; only the timer + RF-send skeleton remains.
