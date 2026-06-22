@@ -312,13 +312,17 @@ type NodeInfo struct {
 
 // ListNodes returns the PROVISIONED nodes (those with a factory_id, i.e. they
 // went through approval) for the phone's "devices" screen. Telemetry-only rows
-// (a node seen before provisioning, e.g. the factory-default address) have no
-// factory_id and are excluded. last_seen is kept fresh by RecordTelemetry.
+// (no factory_id) are excluded; so are pending_remove rows — once the user hits
+// remove the device vanishes from the UI immediately while the gateway quietly
+// finishes (confirms with the node, frees the address, or keeps it reserved).
+// last_seen is kept fresh by RecordTelemetry.
 func (s *Store) ListNodes() ([]NodeInfo, error) {
 	rows, err := s.db.Query(
 		`SELECT node_id, node_type, COALESCE(name,''), COALESCE(factory_id,''),
 		        COALESCE(status,'active'), COALESCE(last_seen,0), COALESCE(provisioned_at,0)
-		 FROM node WHERE factory_id IS NOT NULL ORDER BY node_id`)
+		 FROM node
+		 WHERE factory_id IS NOT NULL AND COALESCE(status,'active') <> 'pending_remove'
+		 ORDER BY node_id`)
 	if err != nil {
 		return nil, err
 	}

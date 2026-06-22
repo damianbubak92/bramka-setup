@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/parameterChainRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp">
+
+    <!-- Device -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/deviceLayout"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Device"
+        app:endIconMode="dropdown_menu">
+
+        <AutoCompleteTextView
+            android:id="@+id/deviceDropdown"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="none" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!-- Parameter placeholder (wypełnia się po wyborze device) -->
+    <LinearLayout
+        android:id="@+id/parameterContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="visible"
+        android:layout_marginTop="8dp"/>
+
+    <!-- (opcjonalnie) dla Parameter Delta: drugi device+parameter można wstawić dynamicznie do tego kontenera -->
+    <LinearLayout
+        android:id="@+id/secondDeviceParameterContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:layout_marginTop="8dp"/>
+
+    <!-- Condition operator -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/conditionLayout"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Condition"
+        app:endIconMode="dropdown_menu"
+        android:layout_marginTop="8dp">
+
+        <AutoCompleteTextView
+            android:id="@+id/conditionDropdown"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="none" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!-- Value inputs placeholder -->
+    <LinearLayout
+        android:id="@+id/valueInputsContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="8dp" />
+</LinearLayout>

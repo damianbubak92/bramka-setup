@@ -29,10 +29,14 @@ type HTTPConfig struct {
 // contract (httpsServerTask): a POST to "/" whose request text contains
 // command=<X> and authToken=<token>. The Android client pins our leaf cert by
 // SHA-256, so CertFile/KeyFile MUST be the same pair the app was built against.
-func StartHTTPAPI(p *Protocol, store *Store, joins *joinRegistry, cfg HTTPConfig) error {
+func StartHTTPAPI(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, cfg HTTPConfig) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handleCommand(p, store, joins, cfg, w, r)
+		handleCommand(p, store, joins, hub, cfg, w, r)
+	})
+	// WebSocket live channel (same TLS + token); see wshub.go.
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		hub.serveWS(cfg.AuthToken, w, r)
 	})
 	srv := &http.Server{
 		Addr:      cfg.Addr,
@@ -47,7 +51,7 @@ func StartHTTPAPI(p *Protocol, store *Store, joins *joinRegistry, cfg HTTPConfig
 // in the query OR the body (the app posts form-urlencoded for pump/getrules and
 // a text/plain "command=setrules&rules=..." body for setrules). We match over
 // query+body uniformly instead of relying on Content-Type parsing.
-func handleCommand(p *Protocol, store *Store, joins *joinRegistry, cfg HTTPConfig, w http.ResponseWriter, r *http.Request) {
+func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, cfg HTTPConfig, w http.ResponseWriter, r *http.Request) {
 	bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 256*1024))
 	body := string(bodyBytes)
 	req := r.URL.RawQuery + "&" + body
@@ -87,10 +91,10 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, cfg HTTPConfi
 		handleListJoins(joins, w, r)
 
 	case strings.Contains(req, "command=approvejoin"):
-		handleApproveJoin(p, store, joins, req, w, r)
+		handleApproveJoin(p, store, joins, hub, req, w, r)
 
 	case strings.Contains(req, "command=removenode"):
-		handleRemoveNode(p, store, req, w, r)
+		handleRemoveNode(p, store, hub, req, w, r)
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -190,7 +194,7 @@ func handleListNodes(store *Store, w http.ResponseWriter, r *http.Request) {
 // (from listjoins), name= is the user's label. We allocate a pool address, record
 // the node, and push JOIN_ACCEPT down to it. Request fields ride query+body as
 // "factory=<hex>&name=<label>" (url-encoded).
-func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, req string, w http.ResponseWriter, r *http.Request) {
+func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, req string, w http.ResponseWriter, r *http.Request) {
 	vals, _ := url.ParseQuery(req)
 	factory := strings.ToLower(strings.TrimSpace(vals.Get("factory")))
 	name := strings.TrimSpace(vals.Get("name"))
@@ -227,6 +231,7 @@ func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, req strin
 		return
 	}
 	joins.Remove(factory)
+	hub.PublishNodeStatus(addr, "pending_join") // live: new device appears (awaiting confirm)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -241,7 +246,7 @@ func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, req strin
 // Request: "command=removenode&address=<dec>". Best-effort to the node (if it's
 // unreachable the row is still removed; monotonic allocation prevents the freed
 // address from being reused under a returning stale node).
-func handleRemoveNode(p *Protocol, store *Store, req string, w http.ResponseWriter, r *http.Request) {
+func handleRemoveNode(p *Protocol, store *Store, hub *WSHub, req string, w http.ResponseWriter, r *http.Request) {
 	vals, _ := url.ParseQuery(req)
 	addr64, err := strconv.ParseUint(strings.TrimSpace(vals.Get("address")), 10, 8)
 	if err != nil {
@@ -280,6 +285,7 @@ func handleRemoveNode(p *Protocol, store *Store, req string, w http.ResponseWrit
 			log.Printf("[HTTP] removenode 0x%02X: REMOVE push failed (will retry on contact): %v", addr, err)
 		}
 	}
+	hub.PublishNodeStatus(addr, "pending_remove") // live: device shows "removing"
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"address": addr, "status": "pending_remove"})

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -640,6 +641,11 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 	// Pending node JOINs awaiting user approval (provisioning, [[provisioning-model]]).
 	joins := newJoinRegistry()
 
+	// WebSocket hub: the in-app live channel (telemetry + provisioning events now;
+	// commands with reqId in Phase B). FCM (background alerts) comes later.
+	hub := newWSHub()
+	go hub.run()
+
 	// Drain M4F->Linux events FIRST (before HELLO): a reconnect can find a backlog
 	// of stale telemetry/rule-fired buffered while Linux was down; consuming it
 	// here keeps eventRx from overflowing. Phase 3 routes these to a DB + the
@@ -661,6 +667,9 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 					if joins.Add(fid, nt, time.Now().Unix()) {
 						log.Printf("[Serve] JOIN request: node type %d factory %x (awaiting approval)", nt, fid)
 					}
+					// Publish on EVERY JOIN (not just first-seen) so a user who pressed
+					// JOIN again while on the devices screen always re-pops the dialog.
+					hub.PublishJoinPending(hex.EncodeToString(fid[:]), nt)
 					break
 				}
 				if cok && cmd == CmdRemove {
@@ -670,6 +679,7 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 							log.Printf("[Serve] remove-confirm 0x%02X delete failed: %v", id, err)
 						} else {
 							log.Printf("[Serve] node 0x%02X confirmed removal - address freed", id)
+							hub.PublishNodeStatus(id, "removed") // live: drop from device list
 						}
 					}
 					break
@@ -711,8 +721,15 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 				if status == "pending_join" {
 					if err := store.MarkActive(nodeID); err == nil {
 						log.Printf("[Serve] node 0x%02X confirmed provisioning - now active", nodeID)
+						hub.PublishNodeStatus(nodeID, "active") // live: device goes online
 					}
 				}
+				// Live telemetry push to any open app (the "system feels alive" stream).
+				pm := make(map[string]float64, len(params))
+				for _, prm := range params {
+					pm[prm.Key] = prm.Num
+				}
+				hub.PublishTelemetry(nodeID, nodeType, pm, time.Now().Unix())
 				log.Printf("[Serve] telemetry node %d type %d: %d param(s) stored", nodeID, nodeType, len(params))
 			case MsgNodeState:
 				log.Printf("[Serve] NODE_STATE (%d bytes)", len(ev.Payload))
@@ -754,8 +771,8 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 		log.Printf("[Serve] pushed %d rule(s) to engine from DB", len(rules))
 	}
 
-	log.Println("[Serve] Starting phone HTTPS API...")
-	if err := StartHTTPAPI(p, store, joins, cfg); err != nil {
+	log.Println("[Serve] Starting phone HTTPS API + WebSocket (/ws)...")
+	if err := StartHTTPAPI(p, store, joins, hub, cfg); err != nil {
 		log.Printf("[Serve] HTTP API stopped: %v", err)
 	}
 }

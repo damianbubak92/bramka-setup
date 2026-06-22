@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <EditText
+        android:id="@+id/commandInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Wpisz komendę" />
+
+    <Button
+        android:id="@+id/sendButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Wyślij" />
+
+    <TextView
+        android:id="@+id/responseOutput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="20dp" />
+    <Button
+        android:id="@+id/openAutomationRulesButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Automation Rules"/>
+    <Space
+        android:layout_width="1dp"
+        android:layout_height="20dp"/>
+    <Button
+        android:id="@+id/manageDevicesButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Zarządzaj urządzeniami"/>
+    <Space
+        android:layout_width="1dp"
+        android:layout_height="30dp"/>
+    <Button
+        android:id="@+id/pumpOnButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Pump On"/>
+    <Space
+        android:layout_width="1dp"
+        android:layout_height="30dp"/>
+    <Button
+        android:id="@+id/pumpOffButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Pump Off" />
+</LinearLayout>

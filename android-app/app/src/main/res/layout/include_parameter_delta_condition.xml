@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/parameterDeltaBlock"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="8dp">
+
+    <!-- Device 1 -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/device1Layout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Device 1"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu">
+
+        <AutoCompleteTextView
+            android:id="@+id/device1Dropdown"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="none" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+
+    <!-- Parameter 1 -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/param1Layout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Parameter 1"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+        android:visibility="gone"
+        android:layout_marginTop="4dp">
+
+        <AutoCompleteTextView
+            android:id="@+id/param1Dropdown"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="none" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!-- Device 2 -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/device2Layout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Device 2"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+        android:visibility="gone"
+        android:layout_marginTop="4dp">
+
+        <AutoCompleteTextView
+            android:id="@+id/device2Dropdown"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="none" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!-- Parameter 2 -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/param2Layout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Parameter 2"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+        android:visibility="gone"
+        android:layout_marginTop="4dp">
+
+        <AutoCompleteTextView
+            android:id="@+id/param2Dropdown"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="none" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!-- Operator -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/operatorLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Condition"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+        android:visibility="gone"
+        android:layout_marginTop="4dp">
+
+        <AutoCompleteTextView
+            android:id="@+id/operatorDropdown"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="none" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!-- Thresholds: Min / Max -->
+    <LinearLayout
+        android:id="@+id/thresholdsContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:visibility="gone"
+        android:layout_marginTop="4dp"
+        android:weightSum="2">
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/minLayout"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:hint="Min"
+            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+            android:layout_marginEnd="4dp">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/minInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="numberSigned" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/maxLayout"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:hint="Max"
+            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+            android:layout_marginStart="4dp">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/maxInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="numberSigned" />
+        </com.google.android.material.textfield.TextInputLayout>
+    </LinearLayout>
+
+</LinearLayout>

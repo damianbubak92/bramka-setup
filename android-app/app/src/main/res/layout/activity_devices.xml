@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Urządzenia"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:paddingBottom="2dp"/>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Dotknij urządzenie, aby je usunąć."
+        android:textSize="12sp"
+        android:paddingBottom="8dp"/>
+
+    <TextView
+        android:id="@+id/devicesEmpty"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Brak urządzeń. Wciśnij JOIN na nowym nodzie, aby je dodać."
+        android:visibility="gone"
+        android:paddingVertical="12dp"/>
+
+    <ListView
+        android:id="@+id/devicesList"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"/>
+
+</LinearLayout>
