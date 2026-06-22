@@ -31,6 +31,19 @@ static void msg_make_pump(MessageStruct *m, uint8_t nodeId, uint8_t on) {
     m->length = (uint8_t)(sizeof(m->payload.pumpData) + 4u);
 }
 
+// Provisioning REMOVE (gateway -> node). Addressed to the node's current address;
+// the node erases its stored address (-> unprovisioned 0xFF) if factory_id matches.
+// Reuses joinData (factory_id) as the payload.
+static void msg_make_remove(MessageStruct *m, const uint8_t *factory_id,
+                            uint8_t node_type, uint8_t dest_addr) {
+    memset(m, 0, sizeof(*m));
+    m->id   = dest_addr;
+    m->type = node_type;
+    m->cmd  = CMD_REMOVE;
+    memcpy(m->payload.joinData.factory_id, factory_id, NODE_FACTORY_ID_LEN);
+    m->length = (uint8_t)(sizeof(m->payload.joinData) + 4u);
+}
+
 // Provisioning JOIN_ACCEPT (gateway -> node, step 4). Addressed to
 // ADDR_UNPROVISIONED (0xFF) since the node has no address yet; the unprovisioned
 // node acts only if factory_id matches its own, then stores assigned_addr (step 5).
@@ -125,6 +138,21 @@ func (p *Protocol) SendJoinAccept(factoryID [8]byte, nodeType, assignedAddr uint
 	C.msg_make_join_accept(&m,
 		(*C.uint8_t)(unsafe.Pointer(&factoryID[0])),
 		C.uint8_t(nodeType), C.uint8_t(assignedAddr))
+	b := C.GoBytes(unsafe.Pointer(&m), C.int(unsafe.Sizeof(m)))
+	return p.sendReliableTyped(MsgNodeCmd, b)
+}
+
+// SendRemove tells a provisioned node to drop its identity (erase its stored
+// address -> unprovisioned). Addressed to the node's current address; the node
+// matches factory_id before acting. Best-effort to RF (reliable to the M4F).
+func (p *Protocol) SendRemove(factoryID [8]byte, nodeType, nodeAddr uint8) error {
+	if !abiOK {
+		return fmt.Errorf("node cmd disabled: MessageStruct ABI mismatch (see startup log)")
+	}
+	var m C.MessageStruct
+	C.msg_make_remove(&m,
+		(*C.uint8_t)(unsafe.Pointer(&factoryID[0])),
+		C.uint8_t(nodeType), C.uint8_t(nodeAddr))
 	b := C.GoBytes(unsafe.Pointer(&m), C.int(unsafe.Sizeof(m)))
 	return p.sendReliableTyped(MsgNodeCmd, b)
 }

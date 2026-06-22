@@ -10,9 +10,13 @@ import (
 	"sync"
 )
 
-// CmdJoinRequest mirrors CMD_JOIN_REQUEST (node_protocol.h). Plain Go const so the
-// non-cgo drain can demux provisioning frames without importing C.
-const CmdJoinRequest uint8 = 4
+// CmdJoinRequest / CmdRemove mirror node_protocol.h. Plain Go consts so the
+// non-cgo drain can demux provisioning frames without importing C. A node->gw
+// CMD_REMOVE is the node's "I cleared my identity" confirmation.
+const (
+	CmdJoinRequest uint8 = 4
+	CmdRemove      uint8 = 6
+)
 
 // pendingJoin is a node that pressed JOIN and awaits user approval. JSON tags
 // shape the listjoins response the phone reads in step 4.

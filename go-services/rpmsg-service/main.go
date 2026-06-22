@@ -650,8 +650,9 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 			case MsgRuleFired:
 				log.Printf("[Serve] RULE_FIRED (%d bytes)", len(ev.Payload))
 			case MsgNodeTelemetry:
-				// Provisioning frames (JOIN) ride the telemetry path; demux by cmd.
-				if cmd, ok := NodeMsgCmd(ev.Payload); ok && cmd == CmdJoinRequest {
+				// Provisioning frames ride the telemetry path; demux by cmd.
+				cmd, cok := NodeMsgCmd(ev.Payload)
+				if cok && cmd == CmdJoinRequest {
 					fid, nt, ok := DecodeJoinRequest(ev.Payload)
 					if !ok {
 						log.Printf("[Serve] JOIN_REQUEST undecodable (%d bytes)", len(ev.Payload))
@@ -662,14 +663,55 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 					}
 					break
 				}
+				if cok && cmd == CmdRemove {
+					// Node confirmed it cleared its identity -> delete row, free address.
+					if id, ok := NodeMsgId(ev.Payload); ok {
+						if err := store.DeleteNode(id); err != nil {
+							log.Printf("[Serve] remove-confirm 0x%02X delete failed: %v", id, err)
+						} else {
+							log.Printf("[Serve] node 0x%02X confirmed removal - address freed", id)
+						}
+					}
+					break
+				}
+
 				nodeID, nodeType, params, ok := DecodeTelemetry(ev.Payload)
 				if !ok {
 					log.Printf("[Serve] NODE_TELEMETRY undecodable (%d bytes)", len(ev.Payload))
 					break
 				}
+
+				// Lifecycle gate: only registered nodes are recorded; status drives the rest.
+				status, factory, ntype, exists, err := store.NodeStatus(nodeID)
+				if err != nil {
+					log.Printf("[Serve] node status query failed (0x%02X): %v", nodeID, err)
+					break
+				}
+				if !exists {
+					log.Printf("[Serve] telemetry from unregistered node 0x%02X - ignoring (unprovisioned should be silent)", nodeID)
+					break
+				}
+				if status == "pending_remove" {
+					// Node never got the REMOVE (was offline) and is still reporting.
+					// Re-send it; don't record until it clears (self-healing).
+					if fid, fok := factoryHexToBytes(factory); fok {
+						if err := p.SendRemove(fid, ntype, nodeID); err != nil {
+							log.Printf("[Serve] re-send REMOVE to 0x%02X failed: %v", nodeID, err)
+						} else {
+							log.Printf("[Serve] node 0x%02X reporting while pending_remove - re-sent REMOVE", nodeID)
+						}
+					}
+					break
+				}
+
 				if err := store.RecordTelemetry(nodeID, nodeType, params, time.Now().Unix()); err != nil {
 					log.Printf("[Serve] telemetry store failed (node %d type %d): %v", nodeID, nodeType, err)
 					break
+				}
+				if status == "pending_join" {
+					if err := store.MarkActive(nodeID); err == nil {
+						log.Printf("[Serve] node 0x%02X confirmed provisioning - now active", nodeID)
+					}
 				}
 				log.Printf("[Serve] telemetry node %d type %d: %d param(s) stored", nodeID, nodeType, len(params))
 			case MsgNodeState:

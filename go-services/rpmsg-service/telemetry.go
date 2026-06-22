@@ -86,6 +86,18 @@ func NodeMsgCmd(payload []byte) (cmd uint8, ok bool) {
 	return uint8(m.cmd), true
 }
 
+// NodeMsgId returns the MessageStruct.id (node source address) of a
+// NODE_TELEMETRY payload - used to demux a remove-confirmation by source address.
+func NodeMsgId(payload []byte) (id uint8, ok bool) {
+	need := int(unsafe.Sizeof(C.MessageStruct{}))
+	if len(payload) < need {
+		return 0, false
+	}
+	var m C.MessageStruct
+	C.memcpy(unsafe.Pointer(&m), unsafe.Pointer(&payload[0]), C.size_t(need))
+	return uint8(m.id), true
+}
+
 // DecodeJoinRequest extracts a joining node's factory id + type from a
 // CMD_JOIN_REQUEST MessageStruct (id is ADDR_UNPROVISIONED on the wire).
 func DecodeJoinRequest(payload []byte) (factoryID [8]byte, nodeType uint8, ok bool) {

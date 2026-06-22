@@ -52,6 +52,7 @@
 #define CMD_SEND_DATA_TO_DB 0u
 #define CMD_JOIN_REQUEST    4u
 #define CMD_JOIN_ACCEPT     5u
+#define CMD_REMOVE          6u
 #define ADDR_UNPROVISIONED  0xFFu
 #define NODE_FACTORY_ID_LEN 8u
 
@@ -96,14 +97,15 @@ extern Event_Handle radioEventHandle;
 extern Display_Handle display;
 
 /* --- provisioning identity (shared with rfEchoTx.c) ---
- * gNodeAddress is the wire source/RX-filter address: factory default until a
- * JOIN_ACCEPT assigns one (then persisted to NVS if available). gFactoryId is
- * this chip's stable FCFG IEEE id, matched against JOIN_ACCEPT.factory_id. */
-uint8_t gNodeAddress = TH_NODE_ADDRESS;
+ * gNodeAddress is the wire source/RX-filter address. Default = ADDR_UNPROVISIONED
+ * (0xFF): an unprovisioned node is SILENT (no periodic telemetry), it only sends
+ * JOIN on the button. A JOIN_ACCEPT assigns a pool address (persisted to NVS);
+ * a REMOVE clears it back to 0xFF. gFactoryId = this chip's FCFG IEEE id. */
+uint8_t gNodeAddress = ADDR_UNPROVISIONED;
 uint8_t gFactoryId[NODE_FACTORY_ID_LEN];
 
 static void identity_init(void);
-static void identity_persist(uint8_t addr);
+static bool identity_persist(uint8_t addr);   /* true = written + read-back verified */
 void node_handle_rx_command(const uint8_t *bytes, uint8_t len);
 
 static Task_Struct  thTaskStruct;
@@ -203,13 +205,16 @@ static void identity_init(void)
                    (gNvs == NULL) ? "NVS open FAILED" : (stored ? "NVS" : "default/unprovisioned"));
 }
 
-/* Persist the assigned address. NVS_WRITE_ERASE erases the sector first; the
- * driver handles VIMS/flash internally (this is the TI-recommended path). */
-static void identity_persist(uint8_t addr)
+/* Persist the assigned address and PROVE it by reading back (the gateway treats
+ * this read-back as the basis of its confirmation). NVS_WRITE_ERASE erases the
+ * sector first; NVS_WRITE_POST_VERIFY already read-back-verifies inside the
+ * driver - we add an explicit read for certainty + clear logging.
+ * Returns true only when the stored value matches. */
+static bool identity_persist(uint8_t addr)
 {
     if (gNvs == NULL) {
         Display_printf(display, 0, 0, "[TH] identity persist skipped (NVS not open)");
-        return;
+        return false;
     }
     IdentityRec rec;
     rec.magic = IDENTITY_MAGIC;
@@ -220,9 +225,34 @@ static void identity_persist(uint8_t addr)
                                 NVS_WRITE_ERASE | NVS_WRITE_POST_VERIFY);
     if (st != NVS_STATUS_SUCCESS) {
         Display_printf(display, 0, 0, "[TH] identity persist FAILED (NVS st=%d)", (int)st);
-    } else {
-        Display_printf(display, 0, 0, "[TH] identity persisted: addr 0x%02x", addr);
+        return false;
     }
+
+    IdentityRec chk;
+    if (NVS_read(gNvs, 0, &chk, sizeof(chk)) != NVS_STATUS_SUCCESS ||
+        chk.magic != IDENTITY_MAGIC || chk.addr != addr) {
+        Display_printf(display, 0, 0, "[TH] identity read-back MISMATCH (addr 0x%02x)", addr);
+        return false;
+    }
+    Display_printf(display, 0, 0, "[TH] identity persisted+verified: addr 0x%02x", addr);
+    return true;
+}
+
+/* Confirm a completed REMOVE to the gateway: one final frame from the OLD
+ * address (so the gateway frees it) carrying our factory id. Sent before we go
+ * silent. The node's own ACK-match may miss (we flip to 0xFF right after), so it
+ * may retransmit a few times - harmless, the gateway's confirm is idempotent. */
+static void sendRemoveConfirm(uint8_t oldAddr)
+{
+    MessageStruct msg;
+    msg.id   = oldAddr;
+    msg.type = NODE_TH_SENSOR;
+    msg.cmd  = CMD_REMOVE;
+    memcpy(msg.payload.joinData.factory_id, gFactoryId, NODE_FACTORY_ID_LEN);
+    msg.length = 4 + sizeof(msg.payload.joinData);   /* = 12 */
+    mq_send(radioQueue, (char *)&msg, msg.length, 0);
+    Event_post(radioEventHandle, EVENT_SEND_PACKET);
+    Display_printf(display, 0, 0, "[TH] REMOVE confirm queued (from 0x%02x)", oldAddr);
 }
 
 /* Handle a gateway command addressed to this node (called from rfEchoTx.c RX with
@@ -236,12 +266,41 @@ void node_handle_rx_command(const uint8_t *bytes, uint8_t len)
 
     if (m.cmd == CMD_JOIN_ACCEPT) {
         if (memcmp(m.payload.joinAcceptData.factory_id, gFactoryId, NODE_FACTORY_ID_LEN) == 0) {
-            gNodeAddress = m.payload.joinAcceptData.assigned_addr;
-            identity_persist(gNodeAddress);
-            Display_printf(display, 0, 0,
-                "[TH] JOIN_ACCEPT: assigned addr 0x%02x (now reporting under it)", gNodeAddress);
+            uint8_t assigned = m.payload.joinAcceptData.assigned_addr;
+            /* Adopt the address ONLY after a verified NVS write+read-back. The
+             * first telemetry under it is the gateway's provisioning confirmation. */
+            if (identity_persist(assigned)) {
+                gNodeAddress = assigned;
+                Display_printf(display, 0, 0,
+                    "[TH] JOIN_ACCEPT: now 0x%02x (sending immediate confirm)", assigned);
+                /* Report once RIGHT NOW so the gateway flips us active immediately,
+                 * instead of waiting for the next periodic tick (up to 60 s). */
+                MessageStruct confirm;
+                sendReading(&confirm);
+            } else {
+                Display_printf(display, 0, 0,
+                    "[TH] JOIN_ACCEPT: NVS failed - staying unprovisioned (gateway will retry)");
+            }
         } else {
             Display_printf(display, 0, 0, "[TH] JOIN_ACCEPT for another chip - ignored");
+        }
+    } else if (m.cmd == CMD_REMOVE) {
+        if (memcmp(m.payload.joinData.factory_id, gFactoryId, NODE_FACTORY_ID_LEN) == 0) {
+            uint8_t oldAddr = gNodeAddress;
+            /* Clear identity (write 0xFF). Only after a verified clear do we send
+             * the confirmation from the OLD address and go silent. If it fails we
+             * keep the address so the gateway can retry on next contact. */
+            if (identity_persist(ADDR_UNPROVISIONED)) {
+                sendRemoveConfirm(oldAddr);
+                gNodeAddress = ADDR_UNPROVISIONED;
+                Display_printf(display, 0, 0,
+                    "[TH] REMOVE: cleared -> unprovisioned (confirmed from 0x%02x)", oldAddr);
+            } else {
+                Display_printf(display, 0, 0,
+                    "[TH] REMOVE: NVS clear failed - keeping 0x%02x (gateway will retry)", oldAddr);
+            }
+        } else {
+            Display_printf(display, 0, 0, "[TH] REMOVE for another chip - ignored");
         }
     }
 }
@@ -279,7 +338,9 @@ static void thTaskFunction(UArg arg0, UArg arg1)
         if (events & EVENT_FORCE) {
             doSend = true;
         }
-        if (doSend) {
+        /* Only a provisioned node reports telemetry; unprovisioned (0xFF) stays
+         * silent and is heard from only via JOIN (button). */
+        if (doSend && gNodeAddress != ADDR_UNPROVISIONED) {
             sendReading(&msg);
         }
     }

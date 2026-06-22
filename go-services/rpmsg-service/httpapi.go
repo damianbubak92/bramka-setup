@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -79,11 +80,17 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, cfg HTTPConfi
 	case strings.Contains(req, "command=setrules"):
 		handleSetRules(p, store, body, w, r)
 
+	case strings.Contains(req, "command=listnodes"):
+		handleListNodes(store, w, r)
+
 	case strings.Contains(req, "command=listjoins"):
 		handleListJoins(joins, w, r)
 
 	case strings.Contains(req, "command=approvejoin"):
 		handleApproveJoin(p, store, joins, req, w, r)
+
+	case strings.Contains(req, "command=removenode"):
+		handleRemoveNode(p, store, req, w, r)
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -159,6 +166,26 @@ func handleListJoins(joins *joinRegistry, w http.ResponseWriter, r *http.Request
 	log.Printf("[HTTP] listjoins -> %d pending", len(list))
 }
 
+// handleListNodes returns the provisioned nodes for the phone's device screen.
+func handleListNodes(store *Store, w http.ResponseWriter, r *http.Request) {
+	nodes, err := store.ListNodes()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "DB error\n")
+		log.Printf("[HTTP] listnodes DB error: %v", err)
+		return
+	}
+	b, err := json.Marshal(nodes)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "marshal error\n")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+	log.Printf("[HTTP] listnodes -> %d node(s)", len(nodes))
+}
+
 // handleApproveJoin commissions a pending node: factory= identifies which JOIN
 // (from listjoins), name= is the user's label. We allocate a pool address, record
 // the node, and push JOIN_ACCEPT down to it. Request fields ride query+body as
@@ -207,6 +234,56 @@ func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, req strin
 	})
 	log.Printf("[HTTP] approvejoin: factory %s (type %d) -> addr 0x%02X name %q, JOIN_ACCEPT sent",
 		factory, pj.NodeType, addr, name)
+}
+
+// handleRemoveNode unprovisions a node: tell it to drop its identity (CMD_REMOVE,
+// it erases its stored address -> unprovisioned) and delete its registry row.
+// Request: "command=removenode&address=<dec>". Best-effort to the node (if it's
+// unreachable the row is still removed; monotonic allocation prevents the freed
+// address from being reused under a returning stale node).
+func handleRemoveNode(p *Protocol, store *Store, req string, w http.ResponseWriter, r *http.Request) {
+	vals, _ := url.ParseQuery(req)
+	addr64, err := strconv.ParseUint(strings.TrimSpace(vals.Get("address")), 10, 8)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "bad address\n")
+		return
+	}
+	addr := uint8(addr64)
+
+	factory, nodeType, ok, err := store.GetNode(addr)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "DB error\n")
+		log.Printf("[HTTP] removenode get 0x%02X failed: %v", addr, err)
+		return
+	}
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, "no such node\n")
+		return
+	}
+
+	// Graceful remove: mark pending_remove (KEEP the row so the address stays
+	// reserved) and tell the node to clear itself. The row is deleted + address
+	// freed only when the node confirms (drain: a node->gw CMD_REMOVE) - see
+	// runServe. If the node is offline now, it confirms when it next speaks
+	// (drain re-sends REMOVE on hearing from a pending_remove address).
+	if err := store.SetPendingRemove(addr); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "DB error\n")
+		log.Printf("[HTTP] removenode 0x%02X set pending failed: %v", addr, err)
+		return
+	}
+	if fid, fok := factoryHexToBytes(factory); fok {
+		if err := p.SendRemove(fid, nodeType, addr); err != nil {
+			log.Printf("[HTTP] removenode 0x%02X: REMOVE push failed (will retry on contact): %v", addr, err)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"address": addr, "status": "pending_remove"})
+	log.Printf("[HTTP] removenode 0x%02X (factory %s) -> REMOVE sent, awaiting node confirm", addr, factory)
 }
 
 func respondPump(p *Protocol, on bool, w http.ResponseWriter, r *http.Request) {

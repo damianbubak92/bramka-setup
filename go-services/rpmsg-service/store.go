@@ -156,6 +156,12 @@ func initNodeSchema(db *sql.DB) error {
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return err
 	}
+	// migrate: node.status - provisioning lifecycle state (pending_join | active |
+	// pending_remove). NULL on pre-existing rows is treated as 'active'.
+	if _, err := db.Exec(`ALTER TABLE node ADD COLUMN status TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
 	return seedParamDefs(db)
 }
 
@@ -235,9 +241,13 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) 
 		return 0, err
 	}
 	if existing.Valid {
+		// Re-approve of a known chip: keep its address + update name/type. A node
+		// mid-removal (pending_remove) is revived to active (cancels the removal);
+		// otherwise the status is left as-is.
 		addr := uint8(existing.Int64)
 		if _, err := tx.Exec(
-			`UPDATE node SET name = ?, node_type = ?, provisioned_at = ?, last_seen = ?
+			`UPDATE node SET name = ?, node_type = ?, provisioned_at = ?, last_seen = ?,
+			     status = CASE WHEN status = 'pending_remove' THEN 'active' ELSE status END
 			 WHERE node_id = ?`, name, nodeType, ts, ts, addr); err != nil {
 			return 0, err
 		}
@@ -248,20 +258,115 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) 
 	if err != nil {
 		return 0, err
 	}
+	// New node: pending_join until it confirms (reports under the assigned address).
 	if _, err := tx.Exec(
-		`INSERT INTO node (node_id, node_type, name, factory_id, provisioned_at, last_seen)
-		 VALUES (?, ?, ?, ?, ?, ?)`, addr, nodeType, name, factoryID, ts, ts); err != nil {
+		`INSERT INTO node (node_id, node_type, name, factory_id, provisioned_at, last_seen, status)
+		 VALUES (?, ?, ?, ?, ?, ?, 'pending_join')`, addr, nodeType, name, factoryID, ts, ts); err != nil {
 		return 0, err
 	}
 	return addr, tx.Commit()
 }
 
-// allocAddr returns the lowest unused address in the pool (within the tx so the
-// read+insert is atomic against concurrent approvals).
+// NodeStatus returns a node's lifecycle state + identity (for the telemetry-path
+// state machine). status is 'active' for pre-migration rows (NULL).
+func (s *Store) NodeStatus(address uint8) (status, factoryID string, nodeType uint8, exists bool, err error) {
+	var st, fid sql.NullString
+	var nt int
+	e := s.db.QueryRow(
+		`SELECT COALESCE(status,'active'), COALESCE(factory_id,''), node_type
+		 FROM node WHERE node_id = ?`, address).Scan(&st, &fid, &nt)
+	if e == sql.ErrNoRows {
+		return "", "", 0, false, nil
+	}
+	if e != nil {
+		return "", "", 0, false, e
+	}
+	return st.String, fid.String, uint8(nt), true, nil
+}
+
+// MarkActive flips a node pending_join -> active (called on first telemetry from
+// the assigned address = the node's read-back confirmation).
+func (s *Store) MarkActive(address uint8) error {
+	_, err := s.db.Exec(
+		`UPDATE node SET status = 'active' WHERE node_id = ? AND status = 'pending_join'`, address)
+	return err
+}
+
+// SetPendingRemove marks a node as awaiting removal confirmation. The row (and
+// thus its address reservation) stays until the node confirms it cleared itself.
+func (s *Store) SetPendingRemove(address uint8) error {
+	_, err := s.db.Exec(`UPDATE node SET status = 'pending_remove' WHERE node_id = ?`, address)
+	return err
+}
+
+// NodeInfo is one provisioned node for the phone's device list (listnodes).
+type NodeInfo struct {
+	Address       int    `json:"address"`      // node_id (assigned address)
+	Type          int    `json:"type"`         // NODE_* (app maps to a label)
+	Name          string `json:"name"`         // user label set at approval
+	FactoryID     string `json:"factory"`      // chip identity (hex)
+	Status        string `json:"status"`       // pending_join | active | pending_remove
+	LastSeen      int64  `json:"lastSeen"`     // unix s of last telemetry (0 = never)
+	ProvisionedAt int64  `json:"provisionedAt"` // unix s
+}
+
+// ListNodes returns the PROVISIONED nodes (those with a factory_id, i.e. they
+// went through approval) for the phone's "devices" screen. Telemetry-only rows
+// (a node seen before provisioning, e.g. the factory-default address) have no
+// factory_id and are excluded. last_seen is kept fresh by RecordTelemetry.
+func (s *Store) ListNodes() ([]NodeInfo, error) {
+	rows, err := s.db.Query(
+		`SELECT node_id, node_type, COALESCE(name,''), COALESCE(factory_id,''),
+		        COALESCE(status,'active'), COALESCE(last_seen,0), COALESCE(provisioned_at,0)
+		 FROM node WHERE factory_id IS NOT NULL ORDER BY node_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []NodeInfo{}
+	for rows.Next() {
+		var n NodeInfo
+		if err := rows.Scan(&n.Address, &n.Type, &n.Name, &n.FactoryID,
+			&n.Status, &n.LastSeen, &n.ProvisionedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// GetNode returns a node's factory id (hex) and type by address.
+func (s *Store) GetNode(address uint8) (factoryID string, nodeType uint8, ok bool, err error) {
+	var fid sql.NullString
+	var nt int
+	e := s.db.QueryRow(
+		`SELECT COALESCE(factory_id,''), node_type FROM node WHERE node_id = ?`, address).
+		Scan(&fid, &nt)
+	if e == sql.ErrNoRows {
+		return "", 0, false, nil
+	}
+	if e != nil {
+		return "", 0, false, e
+	}
+	return fid.String, uint8(nt), true, nil
+}
+
+// DeleteNode removes a node's registry row (provisioning remove). Its current
+// state in node_param is left as-is (harmless; a re-provision overwrites).
+func (s *Store) DeleteNode(address uint8) error {
+	_, err := s.db.Exec(`DELETE FROM node WHERE node_id = ?`, address)
+	return err
+}
+
+// allocAddr returns the lowest free pool address (freed addresses are reused).
+// This is safe because of the graceful-remove invariant: a node's row is deleted
+// (its address freed) ONLY after the node confirms it cleared itself to
+// unprovisioned - so a freed address never has a stale node on it. An offline /
+// never-confirmed node keeps its row (pending_remove), so its address stays
+// reserved and out of the free set. Runs inside the tx.
 func allocAddr(tx *sql.Tx) (uint8, error) {
 	rows, err := tx.Query(
-		`SELECT node_id FROM node WHERE node_id BETWEEN ? AND ? ORDER BY node_id`,
-		addrPoolFirst, addrPoolLast)
+		`SELECT node_id FROM node WHERE node_id BETWEEN ? AND ?`, addrPoolFirst, addrPoolLast)
 	if err != nil {
 		return 0, err
 	}

@@ -41,6 +41,7 @@
 /* --- provisioning (gen2) --- */
 #define CMD_JOIN_REQUEST       4u  /* node->gw: src 0xFF, type=node type, payload.joinData       */
 #define CMD_JOIN_ACCEPT        5u  /* gw->node: dest 0xFF, payload.joinAcceptData (matched by factory_id) */
+#define CMD_REMOVE             6u  /* gw->node: dest = node addr, payload.joinData (factory_id); node erases its address -> unprovisioned (0xFF) */
 
 #define NODE_TEXT_MAX  30u  /* textData.text capacity (gen1) */
 #define NODE_FACTORY_ID_LEN 8u  /* CC1310 FCFG IEEE address, identifies a chip pre-provisioning */
