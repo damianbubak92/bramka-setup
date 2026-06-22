@@ -37,13 +37,22 @@
 #include DeviceFamily_constructPath(inc/hw_memmap.h)
 #include DeviceFamily_constructPath(inc/hw_fcfg1.h)
 
-/* --- wire identity (Phase 0: fixed; provisioning assigns later) --- */
-#define TH_NODE_ADDRESS     0xF3u
+/* Persistence of the provisioning-assigned address via direct internal-flash
+ * access (driverlib). This CC1310 project has NO syscfg, so instead of the NVS
+ * driver we reserve one flash sector ourselves with a sector-aligned const array
+ * (the linker allocates it in flash and keeps code/other rodata out of it) and
+ * erase/program it directly. Survives reboot; a firmware reflash resets it. */
+#include DeviceFamily_constructPath(driverlib/flash.h)
+#include <ti/drivers/dpl/HwiP.h>
+
+/* --- wire identity --- */
+#define TH_NODE_ADDRESS     0xF3u   /* factory default until provisioning assigns one */
 
 /* --- node_protocol.h mirror (keep byte-identical with the gateway) --- */
 #define NODE_TH_SENSOR      6u
 #define CMD_SEND_DATA_TO_DB 0u
 #define CMD_JOIN_REQUEST    4u
+#define CMD_JOIN_ACCEPT     5u
 #define ADDR_UNPROVISIONED  0xFFu
 #define NODE_FACTORY_ID_LEN 8u
 
@@ -87,6 +96,17 @@ extern mqd_t        radioQueue;
 extern Event_Handle radioEventHandle;
 extern Display_Handle display;
 
+/* --- provisioning identity (shared with rfEchoTx.c) ---
+ * gNodeAddress is the wire source/RX-filter address: factory default until a
+ * JOIN_ACCEPT assigns one (then persisted to NVS if available). gFactoryId is
+ * this chip's stable FCFG IEEE id, matched against JOIN_ACCEPT.factory_id. */
+uint8_t gNodeAddress = TH_NODE_ADDRESS;
+uint8_t gFactoryId[NODE_FACTORY_ID_LEN];
+
+static void identity_init(void);
+static void identity_persist(uint8_t addr);
+void node_handle_rx_command(const uint8_t *bytes, uint8_t len);
+
 static Task_Struct  thTaskStruct;
 static uint8_t      thTaskStack[TH_TASK_STACK_SIZE];
 static Event_Struct thEventStruct;
@@ -106,7 +126,7 @@ static float randHum(void)  { return 30.0f + (float)(rand() % 4000) / 100.0f; }
 
 static void sendReading(MessageStruct *msg)
 {
-    msg->id   = TH_NODE_ADDRESS;
+    msg->id   = gNodeAddress;   /* assigned address once provisioned, else factory default */
     msg->type = NODE_TH_SENSOR;
     msg->cmd  = CMD_SEND_DATA_TO_DB;
     msg->payload.thData.temperature = randTemp();
@@ -153,13 +173,83 @@ static void sendJoinRequest(MessageStruct *msg)
         msg->payload.joinData.factory_id[6], msg->payload.joinData.factory_id[7]);
 }
 
+/* --- provisioning identity persistence (direct internal flash) --- */
+#define IDENTITY_MAGIC        0xB1A2C3D4u
+#define IDENTITY_SECTOR_SIZE  4096u   /* CC1310 flash sector size */
+typedef struct { uint32_t magic; uint8_t addr; } IdentityRec;
+
+/* One reserved flash sector for the assigned address. Sector-aligned AND
+ * sector-sized so erasing it touches nothing else; const => the linker places it
+ * in flash and keeps other code/rodata out of this sector. */
+static const uint8_t gIdentityFlash[IDENTITY_SECTOR_SIZE]
+    __attribute__((aligned(IDENTITY_SECTOR_SIZE)));
+
+/* Read this chip's factory id and load any previously-assigned address from flash
+ * (so a provisioned node keeps its identity across reboots). */
+static void identity_init(void)
+{
+    read_factory_id(gFactoryId);
+
+    const IdentityRec *rec = (const IdentityRec *)gIdentityFlash;
+    bool stored = (rec->magic == IDENTITY_MAGIC && rec->addr >= 0x10u && rec->addr <= 0xEFu);
+    if (stored) {
+        gNodeAddress = rec->addr;
+    }
+    Display_printf(display, 0, 0, "[TH] identity: addr 0x%02x (%s)",
+                   gNodeAddress, stored ? "flash" : "default/unprovisioned");
+}
+
+/* Persist the assigned address: erase the reserved sector, then program the
+ * record. Flash erase/program stalls flash reads, so we mask interrupts for the
+ * (rare, one-shot) operation - any ISR fetched from flash would otherwise hang. */
+static void identity_persist(uint8_t addr)
+{
+    IdentityRec rec;
+    rec.magic = IDENTITY_MAGIC;
+    rec.addr  = addr;
+
+    uint32_t base = (uint32_t)gIdentityFlash;
+    uintptr_t key = HwiP_disable();
+    uint32_t st = FlashSectorErase(base);
+    if (st == FAPI_STATUS_SUCCESS) {
+        st = FlashProgram((uint8_t *)&rec, base, sizeof(rec));
+    }
+    HwiP_restore(key);
+
+    if (st != FAPI_STATUS_SUCCESS) {
+        Display_printf(display, 0, 0, "[TH] identity persist FAILED (flash st=%lu)", (unsigned long)st);
+    }
+}
+
+/* Handle a gateway command addressed to this node (called from rfEchoTx.c RX with
+ * the raw MessageStruct bytes). Step 5: a JOIN_ACCEPT whose factory_id matches us
+ * switches our address to the assigned one (and persists it). */
+void node_handle_rx_command(const uint8_t *bytes, uint8_t len)
+{
+    MessageStruct m;
+    if (len > sizeof(m)) len = sizeof(m);
+    memcpy(&m, bytes, len);
+
+    if (m.cmd == CMD_JOIN_ACCEPT) {
+        if (memcmp(m.payload.joinAcceptData.factory_id, gFactoryId, NODE_FACTORY_ID_LEN) == 0) {
+            gNodeAddress = m.payload.joinAcceptData.assigned_addr;
+            identity_persist(gNodeAddress);
+            Display_printf(display, 0, 0,
+                "[TH] JOIN_ACCEPT: assigned addr 0x%02x (now reporting under it)", gNodeAddress);
+        } else {
+            Display_printf(display, 0, 0, "[TH] JOIN_ACCEPT for another chip - ignored");
+        }
+    }
+}
+
 static void thTaskFunction(UArg arg0, UArg arg1)
 {
     uint32_t      events;
     uint8_t       tickCount = 0;
     MessageStruct msg;
 
-    srand((unsigned)Clock_getTicks() ^ TH_NODE_ADDRESS);
+    identity_init();
+    srand((unsigned)Clock_getTicks() ^ gNodeAddress);
 
     GPTimerCC26XX_Params_init(&tParams);
     tParams.width          = GPT_CONFIG_32BIT;

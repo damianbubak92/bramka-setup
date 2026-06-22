@@ -127,6 +127,11 @@ extern Event_Handle thEventHandle;     /* th_sensor_task.c */
 #define EVENT_TH_FORCE   (1 << 1)      /* (test) immediate TH send */
 #define EVENT_TH_JOIN    (1 << 2)      /* button -> send a JOIN request */
 
+/* Provisioning identity (owned by th_sensor_task.c): the live wire address used
+ * for the RX filter, and the gateway-command handler (JOIN_ACCEPT etc.). */
+extern uint8_t gNodeAddress;
+void node_handle_rx_command(const uint8_t *bytes, uint8_t len);
+
 uint8_t calcChecksum(const char* msg, size_t len) {
     uint8_t crc = 0;
     size_t i;
@@ -241,7 +246,7 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                         memcpy(rxMsg, packetDataPointer, packetLength);
                         rxMsg[packetLength] = '\0';
                         //Display_printf(display, 0, 0, "[Node RF] Received ACK: %02x|%c|%02x|%c%c%c%c%c%c%c%c%c%c%c%c|%d", rxMsg[0], rxMsg[1], rxMsg[2], rxMsg[3], rxMsg[4], rxMsg[5], rxMsg[6],rxMsg[7], rxMsg[8], rxMsg[9], rxMsg[10],rxMsg[11], rxMsg[12], rxMsg[13], rxMsg[14], rxMsg[packetLength-1]);
-                        if (rxMsg[0] == NODE_ADDRESS || rxMsg[0] == 0xFF) //nasz adres albo JOIN (unprovisioned)
+                        if (rxMsg[0] == gNodeAddress || rxMsg[0] == 0xFF) //nasz adres albo JOIN (unprovisioned)
                         {
                             if (rxMsg[1] == 'A' & rxMsg[2] == destAdress & rxMsg[3] == expectedCRC)
                             {
@@ -280,7 +285,7 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                 memcpy(rxMsg, packetDataPointer, packetLength);
                 rxMsg[packetLength] = '\0';
 
-                if (rxMsg[0] == NODE_ADDRESS || rxMsg[0] == 0xFF) //nasz adres albo JOIN (unprovisioned)
+                if (rxMsg[0] == gNodeAddress || rxMsg[0] == 0xFF) //nasz adres albo JOIN (unprovisioned)
                 {
                     //Display_printf(display, 0, 0, "[Node RF] Received data: %02x|%c|%02x|%c%c%c%c%c%c%c%c%c%c%c%c|%d(%d)", rxMsg[0], rxMsg[1], rxMsg[2], rxMsg[3], rxMsg[4], rxMsg[5], rxMsg[6],rxMsg[7], rxMsg[8], rxMsg[9], rxMsg[10],rxMsg[11], rxMsg[12], rxMsg[13], rxMsg[14], rxMsg[packetLength-1], calcChecksum(&rxMsg[2], packetLength - 3));
                     if (rxMsg[1] == 'D' & rxMsg[packetLength-1] == calcChecksum(&rxMsg[2], packetLength - 3))
@@ -302,15 +307,14 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                         rxCmdHandle = RF_postCmd(rfHandle, (RF_Op*)&RF_cmdPropTx, RF_PriorityNormal, echoCallbackACK, RF_EventCmdDone);
                         events = Event_pend(radioEventHandle, 0, EVENT_ACK_SENT, ACK_TIMEOUT_TICKS);
 
-                        //size_t tempStrLen = strlen(&rxMsg[3])-2;
-                        //char tempStr[MAX_MSG_SIZE];
-                        //memcpy(tempStr, &rxMsg[3], tempStrLen);
-                        //tempStr[tempStrLen] = '\0';
+                        /* Provisioning step 5: dispatch the gateway command (the
+                         * MessageStruct sits at &rxMsg[3]; frame = dest|'D'|src|msg|seq|crc,
+                         * so msg length = packetLength - 5). A JOIN_ACCEPT matching our
+                         * factory id switches gNodeAddress (and persists it). */
+                        node_handle_rx_command((const uint8_t *)&rxMsg[3], packetLength - 5);
 
-                        /* Phase 0: the T/H node has no command handler. We still
-                         * ACK the gateway (TX posted above) but drop the payload. */
                         if (events & EVENT_ACK_SENT)
-                            Display_printf(display, 0, 0, "[Node RF] Gateway cmd received, ACKed (ignored)");
+                            Display_printf(display, 0, 0, "[Node RF] Gateway cmd received + ACKed");
                         else
                             Display_printf(display, 0, 0, "[Node RF] Gateway cmd received, ACK failed");
                     }
