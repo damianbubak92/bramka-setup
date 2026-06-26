@@ -197,6 +197,7 @@ func seedParamDefs(db *sql.DB) error {
 		// NODE_TH_SENSOR = 6: current state only for now (archive=0, no history table).
 		{6, "temperature", "Temperatura", "°C", "float", 0, 1},
 		{6, "humidity", "Wilgotność", "%", "percent", 0, 2},
+		{6, "batt_mv", "Napięcie baterii", "mV", "int", 0, 3},
 	}
 	for _, d := range seeds {
 		if _, err := db.Exec(

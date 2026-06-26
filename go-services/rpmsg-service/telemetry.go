@@ -22,7 +22,8 @@ typedef struct {
     int32_t energyGain, flowRate;
     uint8_t pumpState;
     float   sBuforTemp;
-    float   temperature, humidity;
+    float    temperature, humidity;
+    uint16_t batt_mv;
 } DecodedNode;
 
 // Mirror of gen1's per-type message handling. A new node type = one more case
@@ -57,6 +58,7 @@ static void msg_decode(const MessageStruct *m, DecodedNode *d) {
         d->kind = DEC_KIND_TH;
         d->temperature = m->payload.thData.temperature;
         d->humidity    = m->payload.thData.humidity;
+        d->batt_mv     = m->payload.thData.batt_mv;
         break;
     default:
         d->kind = DEC_KIND_NONE;
@@ -162,6 +164,7 @@ func DecodeTelemetry(payload []byte) (nodeID, nodeType uint8, params []NodeParam
 		params = []NodeParam{
 			{"temperature", float64(d.temperature)},
 			{"humidity", float64(d.humidity)},
+			{"batt_mv", float64(d.batt_mv)},
 		}
 	default:
 		return nodeID, nodeType, nil, false

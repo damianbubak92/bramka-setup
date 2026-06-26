@@ -93,8 +93,9 @@ typedef struct {
         } buforData;
 
         struct {
-            float temperature;   /* deg C  */
-            float humidity;      /* %RH    */
+            float    temperature;   /* deg C  */
+            float    humidity;      /* %RH    */
+            uint16_t batt_mv;       /* BQ35100 Voltage() snapshot, mV (0 = n/a) */
         } thData;
 
         /* provisioning: node -> gateway (CMD_JOIN_REQUEST). The node's type is in
