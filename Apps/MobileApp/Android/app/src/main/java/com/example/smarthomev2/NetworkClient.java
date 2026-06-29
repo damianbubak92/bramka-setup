@@ -1,4 +1,4 @@
-package com.example.gatewaycommunicatorgen2;
+package com.example.smarthomev2;
 
 import android.content.Context;
 import android.net.wifi.WifiManager;

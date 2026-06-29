@@ -4,13 +4,13 @@ plugins {
 }
 
 android {
-    namespace = "com.example.gatewaycommunicatorgen2"
+    namespace = "com.example.smarthomev2"
     compileSdk = 34
 
     defaultConfig {
         // Fully distinct identity from gen1 (separate namespace + applicationId) so
         // the two apps never share taskAffinity/package and can't launch each other.
-        applicationId = "com.example.gatewaycommunicatorgen2"
+        applicationId = "com.example.smarthomev2"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

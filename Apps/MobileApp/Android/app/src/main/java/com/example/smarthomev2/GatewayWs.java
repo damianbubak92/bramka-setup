@@ -1,4 +1,4 @@
-package com.example.gatewaycommunicatorgen2;
+package com.example.smarthomev2;
 
 import android.os.Handler;
 import android.os.Looper;

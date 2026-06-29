@@ -1,4 +1,4 @@
-package com.example.gatewaycommunicatorgen2.ui.theme
+package com.example.smarthomev2.ui.theme
 
 import android.app.Activity
 import android.os.Build

@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "GatewayCommunicator"
+rootProject.name = "SmartHomeV2"
 include(":app")
  

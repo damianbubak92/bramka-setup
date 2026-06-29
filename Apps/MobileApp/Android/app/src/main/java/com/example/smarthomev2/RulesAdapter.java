@@ -1,4 +1,4 @@
-package com.example.gatewaycommunicatorgen2;
+package com.example.smarthomev2;
 
 import android.view.LayoutInflater;
 import android.view.View;
