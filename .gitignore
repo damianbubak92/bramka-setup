@@ -42,3 +42,8 @@ local.properties
 *.rprc
 .clangd
 *.rov.xs
+
+# CC1310 build/IDE generated
+**/Release/
+.launches/
+overview.rov.json
