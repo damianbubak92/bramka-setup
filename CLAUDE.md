@@ -20,35 +20,34 @@
 
 ### Repo struktura
 
+> **MONOREPO `C:\SmartHome`** (zmigrowane z `bramka-setup` 2026-06-29). Ścieżki w
+> starszych wpisach **Session Log** odnoszą się do układu **sprzed migracji**
+> (mapowanie „było X" niżej). Projekty CCS/Android są teraz **w repo** (nie mirrory);
+> nagłówki protokołu mają jedno źródło w `Shared/Protocol/` (CCS include-path tam celuje).
+
 ```
-bramka-setup/
-├── README.md                    # Dla ludzi - co to za projekt
-├── CLAUDE.md                    # Dla Claude Code - operating manual (TEN PLIK)
-├── setup.sh                     # Główny orchestrator bootstrap bramki
-├── config.sh                    # Zmienne (MAC, hostname, paths) - per-deployment
-├── config.sh.example            # Template do skopiowania
-├── .gitattributes               # *.sh text eol=lf (CRITICAL dla Windows devs)
-├── modules/
-│   ├── 01-network.sh            # Stały MAC + hostname (no EEPROM workaround)
-│   ├── 02-tools.sh              # m4f-watch, m4f-reload do /usr/bin
-│   ├── 03-m4f-firmware.sh       # Backup default firmware do .original
-│   ├── 04-go.sh                 # Install Go toolchain (Arago nie ma)
-│   └── 99-cleanup.sh            # Final verification + next steps log
-├── go-services/
-│   └── rpmsg-service/
-│       ├── main.go              # Entry point + test modes
-│       ├── protocol.go          # Binary protocol + heartbeat
-│       ├── transport.go         # /dev/rpmsg* IO
-│       ├── systemd_notify.go    # sd_notify dla Type=notify
-│       └── go.mod
-├── shared/
-│   └── protocol.h               # Wspólne dla M4F (C) i Go (cgo) - msg types, structs
-├── systemd/
-│   └── rpmsg-service.service    # Unit file
-└── tools/
-    ├── m4f-watch                # Live trace M4F przez remoteproc
-    └── m4f-reload               # stop+start M4F firmware (sysfs)
+SmartHome/
+├── README.md / CLAUDE.md                       # docs (TEN PLIK)
+├── Gateway/                                     # bramka: A53 Linux + M4F + CC1310 RF
+│   ├── Software/rpmsg-service/                  # Go: RPMsg bridge + HTTP/WS API (cgo)   [było go-services/]
+│   ├── Firmware/
+│   │   ├── M4F/     → projekt CCS gateway_m4f      # engine + RPMsg + SPI master         [było m4f-firmware/]
+│   │   └── CC1310/  → projekt CCS gateway_cc1310   # concentrator RF + SPI slave         [było cc1310-firmware/]
+│   ├── Setup/                                   # setup.sh, modules/, systemd/, tools/, config.sh   [było root repo]
+│   └── Hardware/                                # carrier board (TODO)
+├── Nodes/
+│   ├── TempHumNode/
+│   │   ├── Firmware/  → projekt CCS temphum_node   # CC1310+SHT35 (+BQ35100 rev1)        [było cc1310-th-hw-firmware/]
+│   │   └── Hardware/                            # KiCad rev2 (TODO)
+│   ├── LightSwitchNode/, SolarControllerNode/   # szkielety (przyszłe nody)
+├── Apps/MobileApp/AndroidApp/SmartHomeV2/       # Android Studio (com.example.smarthomev2)   [było android-app/]
+│   └── (iOS/, WebApp/ — TODO)
+├── Shared/
+│   ├── Protocol/                                # node_protocol.h, protocol.h, spi_frame.h, automation.h — SINGLE SOURCE   [było shared/]
+│   └── KiCadLib/                                # wspólne symbole/footprinty (TODO)
+└── Docs/                                        # [było docs/]
 ```
+Setup bramki (`Gateway/Setup/`): `modules/01-network..09-timezone.sh`, `systemd/rpmsg-service.service`, `tools/m4f-watch`+`m4f-reload`, `setup.sh`, `config.sh`. Symulowany node (provisioning-referencja) jest off-repo / w git-history skasowanego `cc1310-node-th-firmware` — patrz [[node-provisioning-reference]].
 
 ## Tech Stack & Conventions
 
@@ -149,12 +148,12 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - M4F MUSI mieć custom hardfault handler — bez tego silent crash
 - Firmware path: `/lib/firmware/ti-ipc/am62xx/ipc_echo_test_mcu2_0_release_strip.xer5f`
 - `setup.sh module 03-m4f-firmware.sh` tylko BACKUPS default → trzeba osobno `Deploy-M4F`
-- **`m4f-reload` zatrzymuje `rpmsg-service` przed `echo stop` M4F i restartuje po starcie (przez `trap EXIT`)** — bo P2 fast-fail: serwis widzący zniknięcie `/dev/rpmsg` robi natychmiastowy reboot bramki, co rozwalało deploy w trakcie. Restart tylko jeśli serwis był aktywny. Dotyczy też `Deploy-M4F` (woła `m4f-reload`) — helper PowerShell bez zmian. Po `git pull` na bramce: `sudo ./setup.sh` regeneruje `m4f-reload`.
+- **`m4f-reload` zatrzymuje `rpmsg-service` przed `echo stop` M4F i restartuje po starcie (przez `trap EXIT`)** — bo P2 fast-fail: serwis widzący zniknięcie `/dev/rpmsg` robi natychmiastowy reboot bramki, co rozwalało deploy w trakcie. Restart tylko jeśli serwis był aktywny. Dotyczy też `Deploy-M4F` (woła `m4f-reload`) — helper PowerShell bez zmian. Po `git pull` na bramce: `cd Gateway/Setup && sudo ./setup.sh` regeneruje `m4f-reload`.
 
 ### Disaster recovery procedure
 1. Świeży flash karty SD (Etcher na Win 10, sprawdzony workflow)
-2. `git clone https://github.com/damianbubak92/bramka-setup`
-3. `cd bramka-setup && sudo ./setup.sh` (network + tools + M4F backup + Go install)
+2. `git clone https://github.com/damianbubak92/bramka-setup` (repo wciąż nazwany `bramka-setup`; może zostać przemianowany na `SmartHome`)
+3. `cd bramka-setup/Gateway/Setup && sudo ./setup.sh` (network + tools + M4F backup + Go install) — setup żyje teraz w `Gateway/Setup/`
 4. `reboot`
 5. Z laptopa: `Deploy-M4F` (custom firmware) + `Deploy-Go -Build` + `Install-GoService`
 6. Plus DHCP reservation w routerze (MAC `22:F4:99:37:A5:12` → IP `192.168.2.170`)
@@ -204,7 +203,7 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **Dedup CC1310 zepsuty/brakuje** — dowód (gen1 on): ten sam seq RF przechodził 2×. Siedzi w `radio_task.c` (CCS, poza repo). W produkcji gen1 off → nieblokujące, ale do naprawy.
 - SPI scenario-A RX-routing edge-case + `pending`/drenaż serii + wyciszenie logów SPI.
 
-**Drobne TODO (z drogi):** apka gen2 (`sendRawPost` przez pickUrl pod LAN setrules); systemowy `date` na bramce → `git pull && sudo ./setup.sh` (moduł 09).
+**Drobne TODO (z drogi):** apka gen2 (`sendRawPost` przez pickUrl pod LAN setrules); systemowy `date` na bramce → `git pull && (cd Gateway/Setup && sudo ./setup.sh)` (moduł 09).
 
 **TODO — mirror build-config firmware do repo (odtwarzalność „flash from scratch"):** dziś mirrorujemy tylko ŹRÓDŁA firmware (zweryfikowane 23.06: wszystkie SYNC z CCS, repo kompletne). Pliki KONFIGURACJI BUDOWY żyją tylko w projektach CCS i NIE są w repo: M4F `linker.cmd` (sekcja `g_rules`→`M4F_DDR`), `*.syscfg`, board config; CC1310 `CC1310_LAUNCHXL.c` (region NVS), `*.syscfg`, linker `.cmd`, `smartrf_settings/` (PHY RF). Kluczowe zmiany są opisane w CLAUDE.md, ale dla pełnej odtwarzalności od zera warto dorzucić te pliki do repo (zdecydować zakres: całe projekty CCS vs tylko zmienione configi). Ścieżki CCS: [[cc1310-ccs-project-paths]], [[ccs-project-separate-from-repo]].
 

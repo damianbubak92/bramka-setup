@@ -7,26 +7,28 @@ Repozytorium konfiguracji i kodu dla bramki IoT na AM62 SoC (SK-AM62B-P1 dev kit
 - **SoC**: TI AM62 (Cortex-A53 quad + Cortex-M4F + Cortex-R5F)
 - **Linux**: Arago 2025.01 (kernel 6.18.13-ti, ARM64)
 - **Komunikacja**: Linux ↔ M4F przez RPMsg (binary protocol z CRC16)
-- **Język aplikacji Linux**: Go 1.23.x (instalowany przez `modules/04-go.sh`)
+- **Język aplikacji Linux**: Go 1.23.x (instalowany przez `Gateway/Setup/modules/04-go.sh`)
 - **Firmware M4F**: TI MCU+ SDK 12.00, NoRTOS
 
 ## Struktura repo
-bramka-setup/
-├── setup.sh                      # Główny skrypt instalacyjny
-├── modules/                      # Moduły setup (network, tools, m4f, etc.)
-├── shared/
-│   └── protocol.h                # Wspólny header protokołu (M4F + Go)
-├── m4f-firmware/
-│   ├── ipc_rpmsg_echo.c          # M4F firmware source
-│   └── protocol.h                # Kopia (sync z shared/)
-├── go-services/
-│   └── protocol-test/            # Go service implementujący protokół
-│       └── main.go
-├── examples/                     # Wzorce kodu do referencji
-└── docs/                         # Dokumentacja
-├── M4F_SHUTDOWN.md
-├── PROTOCOL.md               # NEW: opis binary protocol
-└── TROUBLESHOOTING.md        # NEW: lessons learned
+
+> Ten README opisuje **wczesny stan (sama bramka, RPMsg)**. Projekt urósł do
+> **monorepo `SmartHome`** (engine M4F, CC1310 RF, nody, apka Android) — pełny
+> aktualny stan, konwencje i Session Log w **`CLAUDE.md`**. (Repo na GitHub wciąż
+> nazwany `bramka-setup`; może zostać przemianowany na `SmartHome`.)
+
+```
+SmartHome/                (zmigrowane z bramka-setup 2026-06-29)
+├── Gateway/              # bramka (A53 Linux + M4F + CC1310 RF)
+│   ├── Software/         #   Go: rpmsg-service (RPMsg bridge + HTTP/WS API, cgo)
+│   ├── Firmware/         #   CCS: M4F (gateway_m4f) + CC1310 (gateway_cc1310)
+│   ├── Setup/            #   setup.sh, modules/, systemd/, tools/, config.sh
+│   └── Hardware/         #   carrier board (TODO)
+├── Nodes/                # TempHumNode/{Firmware = temphum_node, Hardware}, Light/Solar (szkielety)
+├── Apps/                 # MobileApp/AndroidApp/SmartHomeV2 (Android Studio); iOS/, WebApp/ (TODO)
+├── Shared/               # Protocol/ (node_protocol.h, protocol.h, spi_frame.h — SINGLE SOURCE), KiCadLib/
+└── Docs/
+```
 
 ## Quick start
 
@@ -35,7 +37,7 @@ bramka-setup/
 # 1. Świeży flash karty SD (Etcher)
 # 2. SSH do bramki:
 git clone https://github.com/damianbubak92/bramka-setup
-cd bramka-setup
+cd bramka-setup/Gateway/Setup
 sudo ./setup.sh    # network + tools + m4f firmware backup + GO INSTALL
 reboot
 # 3. Z laptopa:
