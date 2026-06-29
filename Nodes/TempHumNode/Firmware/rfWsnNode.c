@@ -37,7 +37,7 @@
 #include DeviceFamily_constructPath(driverlib/gpio.h)
 #include DeviceFamily_constructPath(driverlib/prcm.h)
 
-#define NODE_MODE_DONE   1          /* 1 = power-cycle (DONE); 0 = bench loop  */
+#define NODE_MODE_DONE   0          /* 1 = power-cycle (DONE); 0 = bench loop  */
 #define NODE_LOOP_S      15         /* bench-loop interval (NODE_MODE_DONE==0) */
 #define NODE_ADDRESS     0x1Au      /* fixed for now (provisioning later)      */
 #define DONE_DIO         IOID_23    /* TPL5111 DONE feedback line              */
@@ -48,7 +48,9 @@ static uint8_t      nodeTaskStack[2048];
 /* Watch these in the debugger (no UART on this board). */
 static volatile float    g_temp = 0.0f, g_hum = 0.0f;
 static volatile uint16_t g_batt_mv = 0;
-static volatile bool     g_okTH = false, g_okBatt = false, g_acked = false;
+static volatile uint8_t  g_soh = 0;
+static volatile int32_t  g_acc_uah = 0;   /* cumulative used uAh (ACC mode) - consumption measurement */
+static volatile bool     g_okTH = false, g_okBatt = false, g_okSoh = false, g_okAcc = false, g_acked = false;
 static volatile uint32_t g_cycle = 0;
 
 static void done_init(void)
@@ -75,22 +77,21 @@ static void assert_done(void)
     GPIO_writeDio(DONE_DIO, 0);            /* back to idle low     */
 }
 
-static void measure_and_send(void)
+/* Read sensors + battery accumulator and send one telemetry frame. Assumes I2C
+ * is open and a gauging session is already active (caller owns GAUGE_START/STOP). */
+static void read_and_send(void)
 {
     g_cycle++;
-    if (!sensors_init()) {
-        System_printf("[node] I2C init FAILED\n"); System_flush();
-        return;
-    }
+    g_okAcc  = sensors_read_used_uah((int32_t *)&g_acc_uah);  /* cumulative used uAh (continuous session) */
+    sensors_read_opconfig((uint8_t *)&g_soh);                 /* DIAG: OpConfig A (GMSEL=bits[1:0]) -> soh_pct */
     g_okTH   = sensors_read_th((float *)&g_temp, (float *)&g_hum);
-    g_okBatt = sensors_read_batt_mv((uint16_t *)&g_batt_mv);   /* gauge started+polled in sensors_init */
-    sensors_close();
+    g_okBatt = sensors_read_batt_mv((uint16_t *)&g_batt_mv);
 
-    System_printf("[node] cycle %u  T=%d.%02d C  H=%d.%02d %%  batt=%u mV (th=%d b=%d)\n",
+    System_printf("[node] cycle %u  T=%d.%02d C  H=%d.%02d %%  batt=%u mV  usedUAh=%ld  opcfg=0x%02x  (th=%d b=%d a=%d)\n",
                   g_cycle,
                   (int)g_temp, (int)((g_temp - (int)g_temp) * 100),
                   (int)g_hum,  (int)((g_hum  - (int)g_hum)  * 100),
-                  g_batt_mv, g_okTH, g_okBatt);
+                  g_batt_mv, (long)g_acc_uah, g_soh, g_okTH, g_okBatt, g_okAcc);
     System_flush();
 
     if (g_okTH) {
@@ -102,7 +103,9 @@ static void measure_and_send(void)
         msg.payload.thData.temperature = g_temp;
         msg.payload.thData.humidity    = g_hum;
         msg.payload.thData.batt_mv     = g_okBatt ? g_batt_mv : 0;
-        msg.length = 4 + sizeof(msg.payload.thData);   /* header + thData */
+        msg.payload.thData.soh_pct     = g_soh;                        /* DIAG: OpConfig A byte */
+        msg.payload.thData.acc_uah     = g_okAcc ? g_acc_uah : 0;      /* cumulative used uAh */
+        msg.length = 4 + sizeof(msg.payload.thData);
 
         g_acked = radio_send_message(&msg, ADDR_GATEWAY);
         System_printf("[node] RF -> gateway 0x%02x: acked=%d\n", ADDR_GATEWAY, g_acked);
@@ -114,15 +117,31 @@ static void nodeTaskFunction(UArg a0, UArg a1)
 {
     done_init();                       /* DONE held low ASAP */
 
+    if (!sensors_init()) {
+        System_printf("[node] I2C init FAILED\n"); System_flush();
+    }
+    bool comm = sensors_commission();  /* ensure ACC mode + design cap (idempotent) */
+    System_printf("[node] commission=%d\n", comm); System_flush();
+
 #if NODE_MODE_DONE
-    measure_and_send();
+    /* Production-style: one session brackets the work, then power off. (Note: with
+     * per-cycle power-off the gauge can't accumulate across cycles - that's why the
+     * measurement uses bench mode below.) */
+    sensors_gauge_begin();
+    read_and_send();
+    sensors_gauge_end();
+    sensors_close();
     System_printf("[node] asserting DONE (DIO23) -> power off\n"); System_flush();
     assert_done();
     while (1) {}                       /* wait for the timer to cut power */
 #else
-    /* Bench/JTAG loop: never powers off, repeats so you can watch it live. */
+    /* MEASUREMENT (bench, continuous power on battery, NO JTAG): ONE gauging
+     * session for the whole run, so AccumulatedCapacity accumulates continuously.
+     * acc_uah should climb steadily -> average current = d(acc_uah)/d(time).
+     * Per-loop GAUGE_START/STOP would reset the accumulator each loop (the bug). */
+    sensors_gauge_begin();             /* GAUGE_START once - never stop */
     for (;;) {
-        measure_and_send();
+        read_and_send();
         Task_sleep((NODE_LOOP_S * 1000000UL) / Clock_tickPeriod);
     }
 #endif
