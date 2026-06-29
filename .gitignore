@@ -20,3 +20,20 @@ desktop.ini
 *.pem
 *.key
 *.crt
+
+# --- monorepo: build artifacts across toolchains ---
+# CCS / TI firmware
+**/Debug/
+**/Release/
+*.out
+*.obj
+*.map
+# KiCad
+*-backups/
+fp-info-cache
+*.kicad_prl
+*-bak
+# Android
+**/build/
+**/.gradle/
+local.properties
