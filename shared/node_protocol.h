@@ -95,7 +95,9 @@ typedef struct {
         struct {
             float    temperature;   /* deg C  */
             float    humidity;      /* %RH    */
-            uint16_t batt_mv;       /* BQ35100 Voltage() snapshot, mV (0 = n/a) */
+            uint16_t batt_mv;       /* BQ35100 Voltage(), mV (0 = n/a)              */
+            uint8_t  soh_pct;       /* BQ35100 StateOfHealth, % (SOH mode; 0 = n/a) */
+            int32_t  acc_uah;       /* BQ35100 AccumulatedCapacity, cumulative used uAh (ACC mode) */
         } thData;
 
         /* provisioning: node -> gateway (CMD_JOIN_REQUEST). The node's type is in

@@ -198,6 +198,8 @@ func seedParamDefs(db *sql.DB) error {
 		{6, "temperature", "Temperatura", "°C", "float", 0, 1},
 		{6, "humidity", "Wilgotność", "%", "percent", 0, 2},
 		{6, "batt_mv", "Napięcie baterii", "mV", "int", 0, 3},
+		{6, "soh_pct", "Kondycja baterii (SOH)", "%", "int", 0, 4},
+		{6, "acc_uah", "Zużycie skumulowane", "µAh", "int", 0, 5},
 	}
 	for _, d := range seeds {
 		if _, err := db.Exec(
