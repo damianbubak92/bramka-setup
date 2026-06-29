@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<?ccsproject version="1.0"?>
+<projectOptions>
+	<ccsVariant value="50:Theia-based"/>
+	<ccsVersion value="70.5.1"/>
+	<deviceFamily value="TMS470"/>
+	<connection value="common/targetdb/connections/TIXDS110_Connection.xml"/>
+	<executableActions value=""/>
+	<createSlaveProjects value=""/>
+	<ignoreDefaultDeviceSettings value="true"/>
+	<ignoreDefaultCCSSettings value="true"/>
+	<activeTargetConfiguration value="targetConfigs/AM62.ccxml"/>
+	<templateProperties value="id=example.projectspec.gateway_m4f"/>
+	<isTargetConfigurationManual value="false"/>
+	<origin value="C:\ti\mcu_plus_sdk_am62x_12_00_00_27\examples\drivers\ipc\ipc_rpmsg_echo_linux\am62x-sk\m4fss0-0_freertos\ti-arm-clang\example.projectspec"/>
+	<filesToOpen value=""/>
+</projectOptions>

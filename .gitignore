@@ -37,3 +37,8 @@ fp-info-cache
 **/build/
 **/.gradle/
 local.properties
+
+# CCS-generated (M4F)
+*.rprc
+.clangd
+*.rov.xs
