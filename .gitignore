@@ -33,6 +33,8 @@ desktop.ini
 fp-info-cache
 *.kicad_prl
 *-bak
+*.lck
+~*.lck
 # Android
 **/build/
 **/.gradle/
