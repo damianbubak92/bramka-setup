@@ -35,6 +35,7 @@ fp-info-cache
 *-bak
 *.lck
 ~*.lck
+_autosave-*
 # Android
 **/build/
 **/.gradle/

@@ -737,7 +737,7 @@
 		(uuid "e44e2f7e-d996-4cab-aed3-27005d6cf102")
 	)
 	(embedded_fonts no)
-	(model "CC1310F128RGZR.stp"
+	(model "C:/SmartHome/Shared/KiCadLib/3dmodels/CC1310F128RGZR.step"
 		(offset
 			(xyz 0 0 0)
 		)
@@ -745,7 +745,7 @@
 			(xyz 1 1 1)
 		)
 		(rotate
-			(xyz 0 0 0)
+			(xyz -90 0 0)
 		)
 	)
 )
