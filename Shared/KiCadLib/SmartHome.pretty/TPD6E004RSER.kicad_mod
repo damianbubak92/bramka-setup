@@ -272,7 +272,7 @@
 		(uuid "23edc441-8ddd-4f19-94e6-0f83c85a70c6")
 	)
 	(embedded_fonts no)
-	(model "TPD6E004RSER.stp"
+	(model "C:/SmartHome/Shared/KiCadLib/3dmodels/TPD6E004RSER.stp"
 		(offset
 			(xyz 0 0 0)
 		)

@@ -1,0 +1,327 @@
+(footprint "TC2030-IDC"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(property "Reference" "TC1"
+		(at 4.445 -0.635 180)
+		(layer "F.SilkS")
+		(uuid "eaa309f1-e539-42c6-969e-b111241a654d")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "TC2030-IDC"
+		(at -5.08 -3.81 180)
+		(layer "F.Fab")
+		(uuid "1fa416a4-91ff-4e73-9c95-e0f2f3311a34")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "26e9824f-4b95-450e-8138-5ee216231c6b")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Description" "PLUG-OF-NAILS 6-PIN W/ LEGS 8"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "0aaf573b-de62-4bf6-a5c6-360b91c47f55")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "MF" "Tag-Connect LLC"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "ea12ea69-46b3-4868-bdf5-ff040bcf7b22")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Package" "None"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "79328557-0ac7-423b-bf0a-62d781715456")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Price" "None"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "1584c555-c275-4243-91db-abf213a905bf")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "SnapEDA_Link" "https://www.snapeda.com/parts/TC2030-IDC/Tag-Connect/view-part/?ref=snap"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "3ffc2a0b-f1b1-45b5-a5d6-25227864063d")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "MP" "TC2030-IDC"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "0af9f3e2-2a75-4d72-8dd8-8092fa0ee81c")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Availability" "In Stock"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "6fa91d9e-3363-4dd8-8ee9-a8f73d34ad86")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Check_prices" "https://www.snapeda.com/parts/TC2030-IDC/Tag-Connect/view-part/?ref=eda"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "fe5f2dd6-180d-4d09-a994-12558096145b")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(sheetname "/")
+	(sheetfile "temphum_node.kicad_sch")
+	(attr through_hole)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_poly
+		(pts
+			(xy -3.3147 -5.14985) (xy -1.7653 -5.14985) (xy -1.7653 -2.54) (xy -3.3147 -2.54)
+		)
+		(stroke
+			(width 0.01)
+			(type solid)
+		)
+		(fill yes)
+		(layer "B.CrtYd")
+		(uuid "523557c3-f380-4681-af66-817b02254f3b")
+	)
+	(fp_poly
+		(pts
+			(xy -3.3147 2.54) (xy -1.7653 2.54) (xy -1.7653 5.14985) (xy -3.3147 5.14985)
+		)
+		(stroke
+			(width 0.01)
+			(type solid)
+		)
+		(fill yes)
+		(layer "B.CrtYd")
+		(uuid "0779d5bb-ae1b-4f4c-87e8-2ff7db124169")
+	)
+	(fp_poly
+		(pts
+			(xy -0.1397 -5.14985) (xy 1.4097 -5.14985) (xy 1.4097 -2.54) (xy -0.1397 -2.54)
+		)
+		(stroke
+			(width 0.01)
+			(type solid)
+		)
+		(fill yes)
+		(layer "B.CrtYd")
+		(uuid "4b0ffcff-4074-40ac-9b13-f72745cae027")
+	)
+	(fp_poly
+		(pts
+			(xy -0.1397 2.54) (xy 1.4097 2.54) (xy 1.4097 5.14985) (xy -0.1397 5.14985)
+		)
+		(stroke
+			(width 0.01)
+			(type solid)
+		)
+		(fill yes)
+		(layer "B.CrtYd")
+		(uuid "2b688534-ccff-40d3-80e4-b495d252c9db")
+	)
+	(pad "" np_thru_hole circle
+		(at -2.54 -2.54)
+		(size 2.3749 2.3749)
+		(drill 2.3749)
+		(layers "*.Cu" "*.Mask")
+		(uuid "b35ebec9-ee7a-431d-ad69-cbbe505f397c")
+	)
+	(pad "" np_thru_hole circle
+		(at -2.54 0)
+		(size 0.9906 0.9906)
+		(drill 0.9906)
+		(layers "*.Cu" "*.Mask")
+		(uuid "2efcd609-28ad-47c0-b32f-dca18b92c7e4")
+	)
+	(pad "" np_thru_hole circle
+		(at -2.54 2.54)
+		(size 2.3749 2.3749)
+		(drill 2.3749)
+		(layers "*.Cu" "*.Mask")
+		(uuid "c1fd03c1-7daf-46f6-93e0-38331e47b706")
+	)
+	(pad "" np_thru_hole circle
+		(at 0.635 -2.54)
+		(size 2.3749 2.3749)
+		(drill 2.3749)
+		(layers "*.Cu" "*.Mask")
+		(uuid "cbffab34-87b5-4394-9d30-96d033e6dcdf")
+	)
+	(pad "" np_thru_hole circle
+		(at 0.635 2.54)
+		(size 2.3749 2.3749)
+		(drill 2.3749)
+		(layers "*.Cu" "*.Mask")
+		(uuid "2cf50d8c-f0df-4df2-b800-63536139d185")
+	)
+	(pad "" np_thru_hole circle
+		(at 2.54 -1.016)
+		(size 0.9906 0.9906)
+		(drill 0.9906)
+		(layers "*.Cu" "*.Mask")
+		(uuid "4a150958-1e0d-4d5e-ada8-d6b5e067df17")
+	)
+	(pad "" np_thru_hole circle
+		(at 2.54 1.016)
+		(size 0.9906 0.9906)
+		(drill 0.9906)
+		(layers "*.Cu" "*.Mask")
+		(uuid "e4e449ce-090b-4c84-ab2b-af9986ddf1e5")
+	)
+	(pad "1" smd circle
+		(at -1.27 0.635)
+		(size 0.7874 0.7874)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0.102)
+		(uuid "317b193e-865d-4602-93bc-601b7653efee")
+	)
+	(pad "2" smd circle
+		(at -1.27 -0.635)
+		(size 0.7874 0.7874)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0.102)
+		(uuid "1f83c100-2607-4c99-a137-8276ecca39da")
+	)
+	(pad "3" smd circle
+		(at 0 0.635)
+		(size 0.7874 0.7874)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0.102)
+		(uuid "d47ff504-e5c4-44e3-a6dc-d06da2a79d67")
+	)
+	(pad "4" smd circle
+		(at 0 -0.635)
+		(size 0.7874 0.7874)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0.102)
+		(uuid "7a6b229c-0abf-4cc6-8ba0-2a404ba94cd4")
+	)
+	(pad "5" smd circle
+		(at 1.27 0.635)
+		(size 0.7874 0.7874)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0.102)
+		(uuid "58d2ec82-354a-4b14-a352-22461d387c2d")
+	)
+	(pad "6" smd circle
+		(at 1.27 -0.635)
+		(size 0.7874 0.7874)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0.102)
+		(uuid "6ac42fa2-47e5-4a8e-aeb3-65f377e2d93d")
+	)
+	(zone
+		(layer "F.Cu")
+		(uuid "0afeac37-6fff-4a0d-86b6-2c9ca8f2e4fc")
+		(hatch full 0.508)
+		(connect_pads
+			(clearance 0)
+		)
+		(min_thickness 0.01)
+		(keepout
+			(tracks not_allowed)
+			(vias not_allowed)
+			(pads not_allowed)
+			(copperpour not_allowed)
+			(footprints allowed)
+		)
+		(placement
+			(enabled no)
+			(sheetname "")
+		)
+		(fill
+			(thermal_gap 0.508)
+			(thermal_bridge_width 0.508)
+			(island_removal_mode 0)
+		)
+		(polygon
+			(pts
+				(xy -1.27 -0.635) (xy 1.27 -0.635) (xy 1.27 0.635) (xy -1.27 0.635)
+			)
+		)
+	)
+	(embedded_fonts no)
+	(model "C:/SmartHome/Shared/KiCadLib/3dmodels/TC2030-IDC.step"
+		(hide yes)
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz -90 -0 -0)
+		)
+	)
+)

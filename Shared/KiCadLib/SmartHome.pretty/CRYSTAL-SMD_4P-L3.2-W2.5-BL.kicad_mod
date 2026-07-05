@@ -1,0 +1,191 @@
+(footprint "CRYSTAL-SMD_4P-L3.2-W2.5-BL"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(property "Reference" "U7"
+		(at 0 -2.64 0)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "4fc7326b-ab2a-46f1-973b-349c2c86cb3e")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "ECS-240-9-33B-CWN-TR"
+		(at 0 4.85 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "d183a0de-21b2-4816-b186-1b53de6fbba0")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://www.lcsc.com/datasheet/C2450735.pdf"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "0dabad35-d67b-4441-8f36-e9421a0aee93")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "e3a10c40-481e-4ee6-a268-5535e928c272")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "LCSC Part" "C2450735"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "0f83835c-a722-4af0-b5ca-212bf07786c9")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Manufacturer" "ECS"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "1938249b-94f8-4cf2-867f-856a319bff2f")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "MPN" "ECS-240-9-33B-CWN-TR"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "f5eee197-1d9f-4638-bc0a-388e0a48811a")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(sheetname "/")
+	(sheetfile "temphum_node.kicad_sch")
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_circle
+		(center -1.96 1.62)
+		(end -1.9 1.62)
+		(stroke
+			(width 0.2)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.SilkS")
+		(uuid "54aef7c7-94e1-461a-ad25-1895377a659a")
+	)
+	(fp_circle
+		(center -1.27 0.89)
+		(end -1.14 0.89)
+		(stroke
+			(width 0.25)
+			(type solid)
+		)
+		(fill no)
+		(layer "Cmts.User")
+		(uuid "b70cf6e0-4e7d-4618-b6d6-1c3d89f7fc96")
+	)
+	(fp_line
+		(start -2.24 -1.84)
+		(end 2.21 -1.84)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "d4299062-ddbf-442b-976d-30c4b42a238a")
+	)
+	(fp_line
+		(start -2.24 1.88)
+		(end -2.24 -1.83)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "8af69818-86e1-489b-a159-b7177cc453e3")
+	)
+	(fp_line
+		(start 2.21 1.89)
+		(end -2.24 1.89)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "8899eac7-1caa-4b71-84c1-98ecd659d45c")
+	)
+	(fp_line
+		(start 2.22 -1.84)
+		(end 2.22 1.89)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "f7331c78-b59f-43b0-9dfd-84e7a1451660")
+	)
+	(pad "1" smd rect
+		(at -1.1 0.85)
+		(size 1.4 1.2)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "f40eb139-0e69-4e02-8d6c-2364a6c4baca")
+	)
+	(pad "2" smd rect
+		(at 1.1 0.85)
+		(size 1.4 1.2)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "86d4109a-e600-4d54-8339-daaf5b075047")
+	)
+	(pad "3" smd rect
+		(at 1.1 -0.85)
+		(size 1.4 1.2)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "91be59f9-fe10-4ddf-96a1-f85250de4bab")
+	)
+	(pad "4" smd rect
+		(at -1.1 -0.85)
+		(size 1.4 1.2)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "db138856-82a8-47d4-93de-d0005501c55a")
+	)
+	(embedded_fonts no)
+	(model "C:/SmartHome/Shared/KiCadLib/3dmodels/CRYSTAL-SMD_4P-L3.2-W2.5-BL.wrl"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+)
