@@ -628,6 +628,203 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "SmartHome:BLM18HE152SN1D"
+			(pin_numbers
+				(hide yes)
+			)
+			(pin_names
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "L8"
+				(at -0.0306 6.35 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "BLM18HE152SN1D"
+				(at -0.0306 3.81 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" "SmartHome:L0603"
+				(at 0 -7.62 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" "https://lcsc.com/product-detail/Ferrite-Beads-And-Chips_muRata_BLM18HE152SN1D_1-5KR-25-at100MHz_C82155.html"
+				(at 0 -10.16 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Manufacturer" "muRata(村田)"
+				(at 0 -12.7 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "MPN" "BLM18HE152SN1D"
+				(at 0 -15.24 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "LCSC Part" "C82155"
+				(at 0 -17.78 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "Ferrite Beads"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "BLM18HE152SN1D_0_1"
+				(arc
+					(start -3.782 0.02)
+					(mid -2.772 1.11)
+					(end -1.762 0.02)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(arc
+					(start -1.876 0.02)
+					(mid -0.866 1.11)
+					(end 0.144 0.02)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(arc
+					(start 0.02 0.02)
+					(mid 1.03 1.11)
+					(end 2.04 0.02)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(arc
+					(start 1.956 0.02)
+					(mid 2.966 1.09)
+					(end 3.976 0.02)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(pin unspecified line
+					(at -5.08 0 0)
+					(length 1.27)
+					(name "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin unspecified line
+					(at 5.08 0 180)
+					(length 1.27)
+					(name "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "SmartHome:DFE252012PD-2R2M=P2"
 			(pin_numbers
 				(hide yes)
@@ -1823,6 +2020,203 @@
 						)
 					)
 					(number "11"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
+		(symbol "SmartHome:MLZ2012N6R8LT000"
+			(pin_numbers
+				(hide yes)
+			)
+			(pin_names
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "L11"
+				(at -0.03 6.35 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "MLZ2012N6R8LT000"
+				(at -0.03 3.81 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" "SmartHome:IND-SMD_L2.0-W1.3"
+				(at 0 -7.62 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" "https://lcsc.com/product-detail/Inductors-SMD_TDK_MLZ2012N6R8LT000_6-8uH-20_C82157.html"
+				(at 0 -10.16 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Manufacturer" "TDK"
+				(at 0 -12.7 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "MPN" "MLZ2012N6R8LT000"
+				(at 0 -15.24 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "LCSC Part" "C82157"
+				(at 0 -17.78 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "Inductors/Coils/Transformers"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "MLZ2012N6R8LT000_0_1"
+				(arc
+					(start -4.036 0.02)
+					(mid -3.026 1.1)
+					(end -2.016 0.02)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(arc
+					(start -2.13 0.02)
+					(mid -1.12 1.1)
+					(end -0.11 0.02)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(arc
+					(start -0.234 0.02)
+					(mid 0.776 1.1)
+					(end 1.786 0.02)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(arc
+					(start 1.702 0.02)
+					(mid 2.712 1.1)
+					(end 3.722 0.02)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(pin unspecified line
+					(at -5.08 0 0)
+					(length 1.27)
+					(name "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin unspecified line
+					(at 5.08 0 180)
+					(length 1.27)
+					(name "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -5446,184 +5840,6 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "SmartSwitch:L"
-			(pin_numbers
-				(hide yes)
-			)
-			(pin_names
-				(offset 1.016)
-				(hide yes)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "L"
-				(at -1.27 0 90)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "L"
-				(at 1.905 0 90)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "Inductor"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_keywords" "inductor choke coil reactor magnetic"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_fp_filters" "Choke_* *Coil* Inductor_* L_*"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(symbol "L_0_1"
-				(arc
-					(start 0 2.54)
-					(mid 0.6323 1.905)
-					(end 0 1.27)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(arc
-					(start 0 1.27)
-					(mid 0.6323 0.635)
-					(end 0 0)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(arc
-					(start 0 0)
-					(mid 0.6323 -0.635)
-					(end 0 -1.27)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(arc
-					(start 0 -1.27)
-					(mid 0.6323 -1.905)
-					(end 0 -2.54)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-			)
-			(symbol "L_1_1"
-				(pin passive line
-					(at 0 3.81 270)
-					(length 1.27)
-					(name "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at 0 -3.81 90)
-					(length 1.27)
-					(name "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "SmartSwitch:LQG15HZ27NJ02D"
 			(pin_names
 				(hide yes)
@@ -8556,6 +8772,16 @@
 	)
 	(wire
 		(pts
+			(xy 72.39 22.86) (xy 77.47 22.86)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4e6e960a-f792-48d0-bd9b-90046e3620b8")
+	)
+	(wire
+		(pts
 			(xy 350.52 248.92) (xy 350.52 251.46)
 		)
 		(stroke
@@ -9146,16 +9372,6 @@
 	)
 	(wire
 		(pts
-			(xy 72.39 22.86) (xy 80.01 22.86)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7eaa6db2-c50b-420a-86df-127b332a5f5f")
-	)
-	(wire
-		(pts
 			(xy 93.98 39.37) (xy 107.95 39.37)
 		)
 		(stroke
@@ -9313,6 +9529,16 @@
 			(type default)
 		)
 		(uuid "8951d87f-d16e-4aac-8e43-8af8a9ed6718")
+	)
+	(wire
+		(pts
+			(xy 193.04 22.86) (xy 199.39 22.86)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "89556cf2-1a68-4ed0-bb21-63bd876bcd0e")
 	)
 	(wire
 		(pts
@@ -10503,16 +10729,6 @@
 			(type default)
 		)
 		(uuid "e81afb65-9578-4a73-a7c3-fa0206b8bc50")
-	)
-	(wire
-		(pts
-			(xy 198.12 22.86) (xy 201.93 22.86)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e87da29e-79d2-4121-9780-50d7d4099587")
 	)
 	(wire
 		(pts
@@ -11838,7 +12054,7 @@
 	)
 	(global_label "DCDC_SW"
 		(shape input)
-		(at 198.12 22.86 180)
+		(at 193.04 22.86 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -11848,7 +12064,7 @@
 		)
 		(uuid "90a96a7f-fddd-4e0b-90b9-4954b0913449")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 186.4263 22.86 0)
+			(at 181.3463 22.86 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13189,7 +13405,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:C_0402"
 			(at 289.2552 185.42 0)
 			(hide yes)
 			(show_name no)
@@ -14265,140 +14481,6 @@
 		)
 	)
 	(symbol
-		(lib_id "SmartSwitch:L")
-		(at 205.74 22.86 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "213ffbb1-b25d-45c8-a280-95000d27a21b")
-		(property "Reference" "L9"
-			(at 205.74 17.78 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "6.8uH"
-			(at 205.74 20.32 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "SmartHome:MLZ2012N6R8LT000_0805"
-			(at 205.74 22.86 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "https://product.tdk.com/system/files/dam/doc/product/inductor/inductor/smd/catalog/inductor_commercial_decoupling_mlz2012_en.pdf?ref_disty=mouser"
-			(at 205.74 22.86 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" ""
-			(at 205.74 22.86 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Mouser" "MLZ2012N6R8LT000"
-			(at 205.74 22.86 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "MPN" "MLZ2012N6R8LT000"
-			(at 205.74 20.32 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Manufacturer" "TDK"
-			(at 205.74 20.32 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Type" "Extended"
-			(at 205.74 20.32 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C82157"
-			(at 205.74 20.32 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "0ec95909-241a-4662-91e5-3685d258ea6f")
-		)
-		(pin "2"
-			(uuid "7eb7dbba-83f4-42a4-926b-a368f6320499")
-		)
-		(instances
-			(project "temphum_node"
-				(path "/358a1866-d11c-4a88-8391-435a3f8bdd5e"
-					(reference "L9")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "SmartSwitch:GND")
 		(at 137.16 92.71 0)
 		(unit 1)
@@ -14973,7 +15055,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:R_0603"
 			(at 187.96 328.168 90)
 			(hide yes)
 			(show_name no)
@@ -15054,7 +15136,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:R_0603"
 			(at 282.448 181.61 90)
 			(hide yes)
 			(show_name no)
@@ -15365,7 +15447,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C105226"
+		(property "LCSC" "C86295"
 			(at 215.5952 34.29 0)
 			(hide yes)
 			(show_name no)
@@ -15498,7 +15580,7 @@
 				)
 			)
 		)
-		(property "Footprint" "CRCW060310K0FKEA:RESC1608X50N"
+		(property "Footprint" "SmartHome:R_0603"
 			(at 266.7 235.458 90)
 			(hide yes)
 			(show_name no)
@@ -15531,6 +15613,17 @@
 			)
 		)
 		(property "Mouser" "CRCW060310K0FKEA"
+			(at 266.7 233.68 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C844918"
 			(at 266.7 233.68 90)
 			(hide yes)
 			(show_name no)
@@ -15791,7 +15884,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:C_0402"
 			(at 341.3252 350.52 0)
 			(hide yes)
 			(show_name no)
@@ -16201,140 +16294,6 @@
 			(project "temphum_node"
 				(path "/358a1866-d11c-4a88-8391-435a3f8bdd5e"
 					(reference "#PWR07")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "SmartSwitch:L")
-		(at 83.82 22.86 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "56ee3c2f-d58a-4fdc-8ca9-c91491891c77")
-		(property "Reference" "L8"
-			(at 83.82 17.78 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "BLM18HE152SN1D"
-			(at 83.82 20.32 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "SmartHome:BLM18SP221SN1B"
-			(at 83.82 22.86 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 83.82 22.86 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" ""
-			(at 83.82 22.86 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Mouser" "BLM18HE152SN1D"
-			(at 83.82 22.86 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "MPN" "BLM18HE152SN1D"
-			(at 83.82 20.32 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Manufacturer" ""
-			(at 83.82 20.32 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Type" "Extended"
-			(at 83.82 20.32 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C82155"
-			(at 83.82 20.32 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "59c87c94-1731-4fe1-b207-296499282b60")
-		)
-		(pin "2"
-			(uuid "92a2386c-8393-4d28-8559-568ee6cdc781")
-		)
-		(instances
-			(project "temphum_node"
-				(path "/358a1866-d11c-4a88-8391-435a3f8bdd5e"
-					(reference "L8")
 					(unit 1)
 				)
 			)
@@ -17428,6 +17387,119 @@
 		)
 	)
 	(symbol
+		(lib_id "SmartHome:BLM18HE152SN1D")
+		(at 82.55 22.86 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "71b99c81-45f6-4de5-bbf1-a09ace89cbeb")
+		(property "Reference" "L8"
+			(at 82.5194 16.51 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "BLM18HE152SN1D"
+			(at 82.5194 19.05 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "SmartHome:L0603"
+			(at 82.55 30.48 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://lcsc.com/product-detail/Ferrite-Beads-And-Chips_muRata_BLM18HE152SN1D_1-5KR-25-at100MHz_C82155.html"
+			(at 82.55 33.02 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 82.55 22.86 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Manufacturer" "muRata(村田)"
+			(at 82.55 35.56 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MPN" "BLM18HE152SN1D"
+			(at 82.55 38.1 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC Part" "C82155"
+			(at 82.55 40.64 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "2"
+			(uuid "fc97912c-2b6c-4183-8bc7-569cb7cb9d24")
+		)
+		(pin "1"
+			(uuid "2e9808e7-444a-4755-ba48-a4b071fc2685")
+		)
+		(instances
+			(project "temphum_node"
+				(path "/358a1866-d11c-4a88-8391-435a3f8bdd5e"
+					(reference "L8")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:GND")
 		(at 299.72 322.58 0)
 		(unit 1)
@@ -17611,7 +17683,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:R_0603"
 			(at 326.39 371.348 90)
 			(hide yes)
 			(show_name no)
@@ -18023,7 +18095,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:C_0603"
 			(at 378.1552 264.16 0)
 			(hide yes)
 			(show_name no)
@@ -18046,6 +18118,17 @@
 			)
 		)
 		(property "Description" "Unpolarized capacitor"
+			(at 377.19 260.35 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C86295"
 			(at 377.19 260.35 0)
 			(hide yes)
 			(show_name no)
@@ -18102,7 +18185,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:R_0603"
 			(at 308.61 321.818 90)
 			(hide yes)
 			(show_name no)
@@ -18472,7 +18555,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:LED0603-RD_RED"
 			(at 335.28 369.57 0)
 			(hide yes)
 			(show_name no)
@@ -18506,6 +18589,17 @@
 			)
 		)
 		(property "Sim.Pins" "1=K 2=A"
+			(at 335.28 369.57 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C965799"
 			(at 335.28 369.57 0)
 			(hide yes)
 			(show_name no)
@@ -19253,7 +19347,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:R_0603"
 			(at 271.78 177.038 90)
 			(hide yes)
 			(show_name no)
@@ -19781,7 +19875,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:C_0402"
 			(at 432.7652 191.77 0)
 			(hide yes)
 			(show_name no)
@@ -20091,7 +20185,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:R_0603"
 			(at 386.08 366.268 90)
 			(hide yes)
 			(show_name no)
@@ -20380,7 +20474,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:R_0603"
 			(at 344.17 244.602 90)
 			(hide yes)
 			(show_name no)
@@ -20536,7 +20630,7 @@
 				)
 			)
 		)
-		(property "Footprint" "CRCW060310K0FKEA:RESC1608X50N"
+		(property "Footprint" "SmartHome:R_0603"
 			(at 213.36 235.712 90)
 			(hide yes)
 			(show_name no)
@@ -20560,6 +20654,17 @@
 		)
 		(property "Description" ""
 			(at 213.36 237.49 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C844918"
+			(at 213.36 237.49 90)
+			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -20614,7 +20719,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:R_0603"
 			(at 331.47 363.728 90)
 			(hide yes)
 			(show_name no)
@@ -20965,7 +21070,7 @@
 				)
 			)
 		)
-		(property "Footprint" "CRCW060310K0FKEA:RESC1608X50N"
+		(property "Footprint" "SmartHome:R_0603"
 			(at 266.7 246.888 90)
 			(hide yes)
 			(show_name no)
@@ -20998,6 +21103,17 @@
 			)
 		)
 		(property "Mouser" "CRCW060310K0FKEA"
+			(at 266.7 245.11 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C844918"
 			(at 266.7 245.11 90)
 			(hide yes)
 			(show_name no)
@@ -21057,7 +21173,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:C_0603"
 			(at 404.8252 246.38 0)
 			(hide yes)
 			(show_name no)
@@ -21394,6 +21510,119 @@
 		)
 	)
 	(symbol
+		(lib_id "SmartHome:MLZ2012N6R8LT000")
+		(at 204.47 22.86 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "bd5589f6-cf00-4371-a65d-2b70ce232e94")
+		(property "Reference" "L11"
+			(at 204.44 16.51 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "MLZ2012N6R8LT000"
+			(at 204.44 19.05 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "SmartHome:IND-SMD_L2.0-W1.3"
+			(at 204.47 30.48 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://lcsc.com/product-detail/Inductors-SMD_TDK_MLZ2012N6R8LT000_6-8uH-20_C82157.html"
+			(at 204.47 33.02 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 204.47 22.86 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Manufacturer" "TDK"
+			(at 204.47 35.56 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MPN" "MLZ2012N6R8LT000"
+			(at 204.47 38.1 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC Part" "C82157"
+			(at 204.47 40.64 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "2"
+			(uuid "96daf476-7922-4942-9f72-373044d118f8")
+		)
+		(pin "1"
+			(uuid "be1e2bd7-8c67-49e5-85e8-1c770ea6f505")
+		)
+		(instances
+			(project "temphum_node"
+				(path "/358a1866-d11c-4a88-8391-435a3f8bdd5e"
+					(reference "L11")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:GND")
 		(at 237.49 265.43 0)
 		(unit 1)
@@ -21713,7 +21942,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:C_0402"
 			(at 328.6252 166.37 0)
 			(hide yes)
 			(show_name no)
@@ -22002,7 +22231,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:R_0603"
 			(at 308.61 306.578 90)
 			(hide yes)
 			(show_name no)
@@ -22775,7 +23004,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "CC0603KRX7R9BB104:CAPC1608X90N"
+		(property "Footprint" "SmartHome:C_0603"
 			(at 262.5852 259.08 0)
 			(hide yes)
 			(show_name no)
@@ -22818,7 +23047,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14663"
+		(property "LCSC" "C1591"
 			(at 261.62 255.27 0)
 			(hide yes)
 			(show_name no)
@@ -23167,7 +23396,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C105226"
+		(property "LCSC" "C86295"
 			(at 136.8552 31.75 0)
 			(hide yes)
 			(show_name no)
@@ -23952,7 +24181,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:C_0603"
 			(at 200.3552 335.28 0)
 			(hide yes)
 			(show_name no)
@@ -24340,7 +24569,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:C_0603"
 			(at 397.2052 363.22 0)
 			(hide yes)
 			(show_name no)
@@ -24421,7 +24650,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "SmartHome:C_0603"
 			(at 329.8952 350.52 0)
 			(hide yes)
 			(show_name no)

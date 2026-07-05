@@ -1,0 +1,157 @@
+(footprint "IND-SMD_L2.0-W1.3"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(property "Reference" "L11"
+		(at 0 -4 0)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "88fec86c-5c8f-484d-b693-c53a9201676e")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "MLZ2012N6R8LT000"
+		(at 0 4 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "d7e639cc-0c11-4837-a549-e713d7e08390")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://lcsc.com/product-detail/Inductors-SMD_TDK_MLZ2012N6R8LT000_6-8uH-20_C82157.html"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "25395877-29db-4a29-85ed-b6017c644fc0")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "6ffb742a-e3fd-4158-825e-eff797d310c9")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "LCSC Part" "C82157"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "a9707e92-72e6-435f-9339-e36e8d7e96b6")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Manufacturer" "TDK"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "f9113228-c80e-4291-bbc2-2b6f0583d78a")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "MPN" "MLZ2012N6R8LT000"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "2688ca36-8a5a-43f3-a3fd-5b70fd5e66ba")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(sheetname "/")
+	(sheetfile "temphum_node.kicad_sch")
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_line
+		(start -1.82 -0.82)
+		(end 1.83 -0.82)
+		(stroke
+			(width 0.08)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "ff03d921-0631-4e67-b9b3-b1b50b748f70")
+	)
+	(fp_line
+		(start -1.82 0.81)
+		(end -1.82 -0.82)
+		(stroke
+			(width 0.08)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "c75a28c6-5db9-4acc-9adb-2456a8b2176b")
+	)
+	(fp_line
+		(start 1.83 -0.82)
+		(end 1.83 0.81)
+		(stroke
+			(width 0.08)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "d5150d81-8032-4149-8719-f7ca171afb80")
+	)
+	(fp_line
+		(start 1.83 0.81)
+		(end -1.82 0.81)
+		(stroke
+			(width 0.08)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "0d7c30e5-7158-464a-9a4a-61964dee4be6")
+	)
+	(pad "1" smd rect
+		(at -1 0 180)
+		(size 1 1.25)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "19bcf34e-829e-448b-b559-b850312bbf40")
+	)
+	(pad "2" smd rect
+		(at 1 0)
+		(size 1 1.25)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "3cfccd4c-6259-4fb2-bd80-eccc8ec3d871")
+	)
+	(embedded_fonts no)
+	(model "C:/SmartHome/Shared/KiCadLib/3dmodels/C0805-SMD_L2.0-W1.25.wrl"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+)

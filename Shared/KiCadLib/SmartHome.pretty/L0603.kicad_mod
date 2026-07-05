@@ -1,0 +1,157 @@
+(footprint "L0603"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(property "Reference" "L8"
+		(at 0 -4 0)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "c2393ded-2c81-470b-8f1d-00da8dfef98e")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "BLM18HE152SN1D"
+		(at 0 4 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "a4158615-b79c-4876-805d-a2a5a43f2f5d")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://lcsc.com/product-detail/Ferrite-Beads-And-Chips_muRata_BLM18HE152SN1D_1-5KR-25-at100MHz_C82155.html"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "21091723-6f26-4c38-be11-5b18510aa1f5")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "f77d22ae-d1d0-40fb-961b-6e89d9c5a2fa")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "LCSC Part" "C82155"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "add8be7d-bab0-4567-ada5-e59395f31479")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Manufacturer" "muRata(村田)"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "d7dd0c4d-3368-4889-a1fb-95e42daf83db")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "MPN" "BLM18HE152SN1D"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "6534c617-6980-47a8-bc3e-323518d897c2")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(sheetname "/")
+	(sheetfile "temphum_node.kicad_sch")
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_line
+		(start -1.33 -0.67)
+		(end 1.33 -0.67)
+		(stroke
+			(width 0.08)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "8a6387dd-0576-4808-8f35-3cdabf01d223")
+	)
+	(fp_line
+		(start -1.33 0.69)
+		(end -1.33 -0.67)
+		(stroke
+			(width 0.08)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "e26493d5-172a-4074-ab48-1b746a58f3ad")
+	)
+	(fp_line
+		(start 1.33 -0.67)
+		(end 1.33 0.68)
+		(stroke
+			(width 0.08)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "79645fd9-65c5-43a5-a39f-1da20d12eedd")
+	)
+	(fp_line
+		(start 1.33 0.69)
+		(end -1.33 0.69)
+		(stroke
+			(width 0.08)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "a8eaf84b-24e2-43da-a64c-986c1f49f01d")
+	)
+	(pad "1" smd rect
+		(at -0.7 0 180)
+		(size 0.8 0.864)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "e069cb8e-57e3-4c22-8d84-c3532a30b73a")
+	)
+	(pad "2" smd rect
+		(at 0.7 0 180)
+		(size 0.8 0.864)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "99d1d036-e5dd-409c-b036-9b1fadf42d37")
+	)
+	(embedded_fonts no)
+	(model "C:/SmartHome/Shared/KiCadLib/3dmodels/L0603_L1.6-W0.8-H0.5_BEAD.wrl"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 180)
+		)
+	)
+)

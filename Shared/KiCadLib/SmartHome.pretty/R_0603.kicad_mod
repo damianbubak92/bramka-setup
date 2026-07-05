@@ -146,15 +146,15 @@
 		(uuid "0c76d1ad-957d-4749-8e8e-84e5aadd52c9")
 	)
 	(embedded_fonts no)
-	(model "CRCW060347K5FKEA.stp"
+	(model "C:/SmartHome/Shared/KiCadLib/3dmodels/R0603.step"
 		(offset
-			(xyz 0.7799999597 0.4199999806 0)
+			(xyz 0 0 0)
 		)
 		(scale
 			(xyz 1 1 1)
 		)
 		(rotate
-			(xyz -90 0 0)
+			(xyz 0 0 -90)
 		)
 	)
 )

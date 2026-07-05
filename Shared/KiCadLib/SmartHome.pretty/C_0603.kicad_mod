@@ -146,7 +146,7 @@
 		(uuid "f45f9603-aaf5-4a0f-a486-61ba0d5947b2")
 	)
 	(embedded_fonts no)
-	(model "GRM1885C1H222JA01D.stp"
+	(model "C:/SmartHome/Shared/KiCadLib/3dmodels/C0603_L1.6-W0.8-H0.8.step"
 		(offset
 			(xyz 0 0 0)
 		)

@@ -156,7 +156,7 @@
 		(uuid "98e5c3b8-9b5e-4413-9bed-8e5226f63583")
 	)
 	(embedded_fonts no)
-	(model "LQG15HZ27NJ02D.stp"
+	(model "C:/SmartHome/Shared/KiCadLib/3dmodels/L0402_L1.0-W0.5-H0.5_BEAD.step"
 		(offset
 			(xyz 0 0 0)
 		)
