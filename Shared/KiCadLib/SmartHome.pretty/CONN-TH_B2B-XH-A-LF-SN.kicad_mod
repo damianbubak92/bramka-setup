@@ -1,0 +1,161 @@
+(footprint "CONN-TH_B2B-XH-A-LF-SN"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(property "Reference" "CN2"
+		(at 0 -4 180)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "5e9a4696-f5a1-4845-801a-51705a992d19")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "B2B-XH-A"
+		(at 0 4 180)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "5993d887-7a62-42a5-be77-a7860d773111")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://lcsc.com/product-detail/XH-Connectors_JST_B2B-XH-A-LF-SN_XHsocket-1-2P-pitch2-5mm_C158012.html"
+		(at 0 0 180)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "40ae1729-68bd-414a-bd9e-6d75aab48a64")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 180)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "233c00fa-d2cc-433d-bb74-6f1336d1e267")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "LCSC Part" "C158012"
+		(at 0 0 180)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "4aa19c6f-ef9c-4380-9223-9cd8492693c5")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Manufacturer" "JST"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "2b63ee8d-98d7-43ab-8725-873f65dd4678")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "MPN" "B2B-XH-A(LF)(SN)"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "8fd8ecb9-a2e8-4ffe-b560-335050b37aae")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(sheetname "/")
+	(sheetfile "temphum_node.kicad_sch")
+	(attr through_hole)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_line
+		(start -3.7 -3.4)
+		(end 3.7 -3.4)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "088bacaa-2924-4b5c-8a1a-3e2f21c1a317")
+	)
+	(fp_line
+		(start -3.7 2.35)
+		(end -3.7 -3.4)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "0b7e3fa7-9904-4c5e-aac4-ec5d924c0ccf")
+	)
+	(fp_line
+		(start 3.7 -3.4)
+		(end 3.7 2.35)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "5504c507-eb43-48ee-bdb0-40ba6ddc3988")
+	)
+	(fp_line
+		(start 3.7 2.35)
+		(end -3.7 2.35)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "cceaafa6-2437-455e-9e6f-8f0cceec41fe")
+	)
+	(pad "1" thru_hole circle
+		(at 1.25 0 180)
+		(size 1.7 1.7)
+		(drill 0.999998)
+		(layers "*.Mask" "F.Cu" "B.Cu" "In1.Cu" "In2.Cu")
+		(remove_unused_layers no)
+		(uuid "f0f4a7f1-4e47-4dc4-bb90-51688021f5c2")
+	)
+	(pad "2" thru_hole circle
+		(at -1.25 0 180)
+		(size 1.7 1.7)
+		(drill 0.999998)
+		(layers "*.Mask" "F.Cu" "B.Cu" "In1.Cu" "In2.Cu")
+		(remove_unused_layers no)
+		(uuid "67de0fc7-511b-4b78-9756-3f1b827f006c")
+	)
+	(embedded_fonts no)
+	(model "C:/SmartHome/Shared/KiCadLib/3dmodels/XH2.5-2A.wrl"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 180)
+		)
+	)
+)

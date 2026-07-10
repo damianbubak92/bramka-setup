@@ -1,0 +1,4 @@
+(version 1)
+(rule "CC1310 pad-to-pad clearance"
+    (condition "A.Reference == 'IC1' && B.Reference == 'IC1' && A.Type == 'pad' && B.Type == 'pad'")
+    (constraint clearance (min 0.1mm)))
