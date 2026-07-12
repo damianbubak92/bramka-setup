@@ -1,0 +1,9 @@
+[15:19:22] === START ===
+[15:19:22] Laczenie z KiCad...
+[15:19:22] Mam plytke.
+[15:19:22] Folder projektu: C:\SmartHome\Nodes\TempHumNode\Hardware\temphum_node
+[15:19:22] Folder eksportu: C:\SmartHome\Nodes\TempHumNode\Hardware\temphum_node\JLCPCBExport_BOM_CPL
+[15:19:22]   footprintow: 71, BOM: 45, CPL: 66
+[15:19:22] Zapisano BOM: C:\SmartHome\Nodes\TempHumNode\Hardware\temphum_node\JLCPCBExport_BOM_CPL\temphum_node_BOM.csv
+[15:19:22] Zapisano CPL: C:\SmartHome\Nodes\TempHumNode\Hardware\temphum_node\JLCPCBExport_BOM_CPL\temphum_node_CPL.csv
+[15:19:22] === KONIEC OK ===

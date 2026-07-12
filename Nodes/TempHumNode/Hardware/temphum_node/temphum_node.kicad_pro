@@ -76,20 +76,7 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [
-        [
-          "clearance|84720000|105310000|ab4b1a24-fe2f-44c7-a5bd-b16ab2f23bec|5280b518-3922-497a-bd95-09fb04b4d46d",
-          ""
-        ],
-        [
-          "hole_clearance|124017500|102925000|9e5fdab7-39c3-4729-8d31-67f61cc265c8|adf3552a-2e50-4c3a-a382-3fc7d08f83c2",
-          ""
-        ],
-        [
-          "hole_clearance|124017500|97075000|48e9d281-f4e9-4342-b06c-cea902db1b4c|19b05c2d-6118-4c30-a2cc-52b53e1ce301",
-          ""
-        ]
-      ],
+      "drc_exclusions": [],
       "meta": {
         "version": 2
       },
@@ -225,6 +212,7 @@
       "track_widths": [
         0.0,
         0.15,
+        0.24,
         0.25,
         0.3,
         0.35,
@@ -599,7 +587,7 @@
     "last_paths": {
       "idf": "",
       "netlist": "",
-      "plot": "",
+      "plot": "ProductionFiles/",
       "specctra_dsn": "",
       "vrml": ""
     },
@@ -723,7 +711,7 @@
         "uuid": "358a1866-d11c-4a88-8391-435a3f8bdd5e"
       }
     ],
-    "used_designators": "U7,X1,#PWR61,L8,L11,CN1-2",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [
