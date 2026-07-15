@@ -1,0 +1,1394 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Roboto', system-ui, sans-serif; background:#E9E4DC; }
+  a { color: #E1850B; text-decoration: none; }
+  a:hover { color: #B96A05; }
+  .scr::-webkit-scrollbar { width: 0; }
+  .scr { scrollbar-width: none; }
+  @keyframes toastFade { 0% { opacity:0; transform:translateY(6px);} 12% { opacity:1; transform:translateY(0);} 78% { opacity:1;} 100% { opacity:0;} }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes spinjs { to { transform: rotate(360deg); } }
+  .climate-slider { -webkit-appearance:none; appearance:none; height:6px; border-radius:3px; outline:none; }
+  .climate-slider::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:22px; height:22px; border-radius:50%; background:#fff; box-shadow:0 2px 8px rgba(0,0,0,.28); cursor:pointer; }
+  .climate-slider::-moz-range-thumb { width:22px; height:22px; border:none; border-radius:50%; background:#fff; box-shadow:0 2px 8px rgba(0,0,0,.28); cursor:pointer; }
+</style>
+</helmet>
+
+<div style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:48px; background-image:radial-gradient(circle at 1px 1px, rgba(0,0,0,.05) 1px, transparent 0); background-size:26px 26px;">
+
+  <!-- PHONE -->
+  <div style="width:398px; border:11px solid #2A2620; border-radius:48px; background:#2A2620; box-shadow:0 40px 100px rgba(60,45,20,.32);">
+    <div style="border-radius:37px; overflow:hidden; background:#F7F4EF; position:relative; height:812px; display:flex; flex-direction:column;">
+
+      <!-- status bar (shared, light screens) -->
+      <sc-if value="{{ isLightBar }}" hint-placeholder-val="{{ true }}">
+        <div style="flex-shrink:0; display:flex; align-items:center; justify-content:space-between; padding:14px 24px 6px; color:#201B13;">
+          <span style="font:500 15px 'Roboto';">20:34</span>
+          <div style="display:flex; align-items:center; gap:7px;">
+            <svg width="17" height="13" viewBox="0 0 17 13" fill="#201B13"><path d="M8.5 12.5.9 4.9a10.75 10.75 0 0115.2 0L8.5 12.5z"/></svg>
+            <svg width="15" height="13" viewBox="0 0 15 13" fill="#201B13"><path d="M14 12.5V.8L2.3 12.5H14z"/></svg>
+            <span style="font:500 13px 'Roboto';">51%</span>
+            <svg width="24" height="13" viewBox="0 0 24 13"><rect x="1" y="1" width="20" height="11" rx="3" fill="none" stroke="#201B13" stroke-width="1.4"/><rect x="3" y="3" width="9.5" height="7" rx="1.5" fill="#201B13"/><rect x="22" y="4.5" width="1.6" height="4" rx="1" fill="#201B13"/></svg>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- =================== CLIMATE DETAIL =================== -->
+      <sc-if value="{{ showDetail }}">
+        <div data-screen-label="Czujnik klimatu" style="flex:1; min-height:0; display:flex; flex-direction:column; background:#0E7E95; color:#fff;">
+
+          <!-- status bar (white) -->
+          <div style="flex-shrink:0; display:flex; align-items:center; justify-content:space-between; padding:14px 24px 6px; color:#fff;">
+            <span style="font:500 15px 'Roboto';">20:34</span>
+            <div style="display:flex; align-items:center; gap:7px;">
+              <svg width="17" height="13" viewBox="0 0 17 13" fill="#fff"><path d="M8.5 12.5.9 4.9a10.75 10.75 0 0115.2 0L8.5 12.5z"/></svg>
+              <svg width="15" height="13" viewBox="0 0 15 13" fill="#fff"><path d="M14 12.5V.8L2.3 12.5H14z"/></svg>
+              <span style="font:500 13px 'Roboto';">51%</span>
+              <svg width="24" height="13" viewBox="0 0 24 13"><rect x="1" y="1" width="20" height="11" rx="3" fill="none" stroke="#fff" stroke-width="1.4"/><rect x="3" y="3" width="9.5" height="7" rx="1.5" fill="#fff"/><rect x="22" y="4.5" width="1.6" height="4" rx="1" fill="#fff"/></svg>
+            </div>
+          </div>
+
+          <!-- top bar -->
+          <div style="flex-shrink:0; display:flex; align-items:center; gap:4px; padding:2px 14px 12px;">
+            <div onClick="{{ closeDetail }}" style="width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></div>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V5a2 2 0 114 0v8a3.5 3.5 0 11-4 0z"/><path d="M18 3.5c1.7 2.1 2.7 3.6 2.7 5a2.7 2.7 0 11-5.4 0c0-1.4 1-2.9 2.7-5z"/></svg>
+            <span style="font:500 20px 'Roboto'; margin-left:6px;">Czujnik klimatu</span>
+          </div>
+
+          <div class="scr" style="flex:1; min-height:0; overflow:auto;">
+
+            <!-- current readings -->
+            <div style="padding:6px 24px 18px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
+                <span style="font:400 13px 'Roboto'; opacity:.8;">Aktualny pomiar</span>
+                <span style="display:flex; align-items:center; gap:6px; font:500 12px 'Roboto'; background:rgba(255,255,255,.18); padding:4px 10px; border-radius:20px;"><svg width="20" height="11" viewBox="0 0 26 14"><rect x="1" y="1" width="21" height="12" rx="2.5" fill="none" stroke="#fff" stroke-width="1.6"/><rect x="3" y="3" width="15" height="8" rx="1" fill="#fff"/><rect x="23" y="4.5" width="2" height="5" rx="1" fill="#fff"/></svg>87%</span>
+              </div>
+              <div style="display:flex; gap:40px;">
+                <div><div style="font:200 46px 'Roboto'; line-height:1;">21,8<span style="font-size:20px; font-weight:400;">°C</span></div><div style="font:400 13px 'Roboto'; opacity:.8; margin-top:6px;">Temperatura</div></div>
+                <div><div style="font:200 46px 'Roboto'; line-height:1;">48<span style="font-size:20px; font-weight:400;">%</span></div><div style="font:400 13px 'Roboto'; opacity:.8; margin-top:6px;">Wilgotność</div></div>
+              </div>
+              <div style="display:flex; align-items:center; gap:7px; margin-top:14px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                <span style="font:400 12px 'Roboto'; opacity:.85;">Pomiar 2 min temu · interwał {{ interval }} min</span>
+              </div>
+            </div>
+
+            <div style="height:1px; background:rgba(255,255,255,.2); margin:0 24px;"></div>
+
+            <!-- charts -->
+            <div style="padding:18px 24px;">
+              <div style="font:400 13px 'Roboto'; opacity:.8; margin-bottom:14px;">Dane historyczne</div>
+              <div style="display:flex; gap:4px; background:rgba(255,255,255,.14); border-radius:16px; padding:4px;">
+                <div onClick="{{ setMetricTemp }}" style="{{ metricTempStyle }}">Temperatura</div>
+                <div onClick="{{ setMetricHum }}" style="{{ metricHumStyle }}">Wilgotność</div>
+              </div>
+              <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap;">
+                <div onClick="{{ setR24 }}" style="{{ r24Style }}">24 h</div>
+                <div onClick="{{ setR7 }}" style="{{ r7Style }}">7 dni</div>
+                <div onClick="{{ setRM }}" style="{{ rMStyle }}">Miesiąc</div>
+                <div onClick="{{ setRY }}" style="{{ rYStyle }}">Rok</div>
+              </div>
+              <div style="margin-top:20px;">{{ chartSvg }}</div>
+            </div>
+
+            <div style="height:1px; background:rgba(255,255,255,.2); margin:0 24px;"></div>
+
+            <!-- interval -->
+            <div style="padding:18px 24px 30px;">
+              <div style="font:400 13px 'Roboto'; opacity:.8;">Interwał pomiaru</div>
+              <div style="font:400 12px 'Roboto'; opacity:.65; margin-top:3px;">Ustaw jak często dokonywać pomiaru</div>
+              <div style="display:flex; align-items:baseline; gap:6px; margin-top:14px;">
+                <span style="font:200 44px 'Roboto'; line-height:1;">{{ interval }}</span>
+                <span style="font:400 16px 'Roboto'; opacity:.85;">min</span>
+              </div>
+              <input type="range" min="1" max="5" step="1" value="{{ interval }}" onInput="{{ onInterval }}" class="climate-slider" style="{{ sliderStyle }}">
+              <div style="display:flex; justify-content:space-between; font:400 12px 'Roboto'; opacity:.75; padding:0 2px;">
+                <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+              </div>
+              <div style="margin-top:20px; min-height:54px;">
+                <sc-if value="{{ canSave }}">
+                  <div onClick="{{ saveInterval }}" style="text-align:center; background:#fff; color:#0E7E95; font:500 15px 'Roboto'; padding:15px; border-radius:16px; cursor:pointer;">Zapisz interwał</div>
+                </sc-if>
+                <sc-if value="{{ showToast }}">
+                  <div style="display:flex; align-items:center; justify-content:center; gap:8px; padding:15px; border-radius:16px; background:rgba(255,255,255,.18); animation:toastFade 2.6s ease forwards;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    <span style="font:500 15px 'Roboto'; color:#fff;">Zapisano</span>
+                  </div>
+                </sc-if>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- =================== SOLAR DETAIL =================== -->
+      <sc-if value="{{ showSolar }}">
+        <div data-screen-label="System solarny" style="flex:1; min-height:0; display:flex; flex-direction:column; background:#E1850B; color:#fff;">
+
+          <!-- status bar (white) -->
+          <div style="flex-shrink:0; display:flex; align-items:center; justify-content:space-between; padding:14px 24px 6px; color:#fff;">
+            <span style="font:500 15px 'Roboto';">20:34</span>
+            <div style="display:flex; align-items:center; gap:7px;">
+              <svg width="17" height="13" viewBox="0 0 17 13" fill="#fff"><path d="M8.5 12.5.9 4.9a10.75 10.75 0 0115.2 0L8.5 12.5z"/></svg>
+              <svg width="15" height="13" viewBox="0 0 15 13" fill="#fff"><path d="M14 12.5V.8L2.3 12.5H14z"/></svg>
+              <span style="font:500 13px 'Roboto';">51%</span>
+              <svg width="24" height="13" viewBox="0 0 24 13"><rect x="1" y="1" width="20" height="11" rx="3" fill="none" stroke="#fff" stroke-width="1.4"/><rect x="3" y="3" width="9.5" height="7" rx="1.5" fill="#fff"/><rect x="22" y="4.5" width="1.6" height="4" rx="1" fill="#fff"/></svg>
+            </div>
+          </div>
+
+          <!-- top bar -->
+          <div style="flex-shrink:0; display:flex; align-items:center; gap:4px; padding:2px 14px 12px;">
+            <div onClick="{{ closeSolar }}" style="width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></div>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/></svg>
+            <span style="font:500 20px 'Roboto'; margin-left:6px;">System solarny</span>
+          </div>
+
+          <div class="scr" style="flex:1; min-height:0; overflow:auto;">
+
+            <!-- section 1: moc + schemat -->
+            <div style="padding:6px 24px 14px;">
+              <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
+                <div>
+                  <div style="font:400 13px 'Roboto'; opacity:.8;">Aktualnie generowana moc</div>
+                  <div style="font:200 46px 'Roboto'; line-height:1; margin-top:6px;">2,84<span style="font-size:20px; font-weight:400;"> kW</span></div>
+                </div>
+                <div style="display:flex; flex-direction:column; align-items:flex-end; gap:9px; padding-top:2px;">
+                  <span style="font:400 12px 'Roboto'; opacity:.85; text-align:right;">Pompa dodatkowa</span>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font:600 14px 'Roboto'; opacity:.9; min-width:28px; text-align:right;">{{ sbufStateLabel }}</span>
+                    <div onClick="{{ toggleSbuf }}" style="{{ sbufTrackStyle }}"><span style="{{ sbufKnobStyle }}"></span></div>
+                  </div>
+                </div>
+              </div>
+              <div style="margin-top:-14px;">{{ solarSchema }}</div>
+            </div>
+
+            <div style="height:1px; background:rgba(255,255,255,.2); margin:0 20px;"></div>
+
+            <!-- section 2: wykresy -->
+            <div style="padding:16px 20px 30px;">
+              <div style="font:400 13px 'Roboto'; opacity:.8; margin-bottom:12px;">Uzyski energii</div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:center;">
+                <div onClick="{{ setSolarDay }}" style="{{ sTabDay }}">Dzień</div>
+                <div onClick="{{ setSolarMonth }}" style="{{ sTabMonth }}">Miesiąc</div>
+                <div onClick="{{ setSolarYear }}" style="{{ sTabYear }}">Rok</div>
+                <div onClick="{{ setSolarTotal }}" style="{{ sTabTotal }}">Całkowite</div>
+              </div>
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-top:16px;">
+                <div onClick="{{ solarPrev }}" style="width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; background:rgba(255,255,255,.14);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></div>
+                <span style="font:500 17px 'Roboto';">{{ solarPeriodLabel }}</span>
+                <div onClick="{{ solarNext }}" style="width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; background:rgba(255,255,255,.14);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div>
+              </div>
+              <div style="margin-top:18px;">{{ solarChart }}</div>
+              <div style="display:flex; gap:14px; margin-top:20px; padding-top:16px; border-top:1px solid rgba(255,255,255,.2);">
+                <div style="flex:1;">
+                  <div style="display:flex; align-items:center; gap:6px; font:400 12px 'Roboto'; opacity:.8;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Czas pracy pompy</div>
+                  <div style="font:300 26px 'Roboto'; margin-top:4px;">{{ solarRuntime }}</div>
+                </div>
+                <div style="flex:1; text-align:right;">
+                  <div style="display:flex; align-items:center; justify-content:flex-end; gap:6px; font:400 12px 'Roboto'; opacity:.8;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>Uzysk energii</div>
+                  <div style="font:300 26px 'Roboto'; margin-top:4px;">{{ solarYield }}</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- =================== DASHBOARD =================== -->
+      <sc-if value="{{ isDash }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:1; min-height:0; display:flex; flex-direction:column;">
+          <div class="scr" style="flex:1; min-height:0; overflow:auto;">
+            <!-- header -->
+            <div style="padding:12px 24px 8px; display:flex; align-items:center; justify-content:space-between;">
+              <div>
+                <div style="font:400 14px 'Roboto'; color:#8A857B;">Dzień dobry, Piotr</div>
+                <div style="font:500 26px 'Roboto'; color:#201B13; letter-spacing:-.01em;">Dom · Wszystko OK</div>
+              </div>
+              <div style="width:44px; height:44px; border-radius:50%; background:#EFE7D8; display:flex; align-items:center; justify-content:center;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#201B13" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-3.5 3.6-6 8-6s8 2.5 8 6"/></svg>
+              </div>
+            </div>
+
+            <!-- devices without room -->
+            <div style="padding:16px 24px 0; font:500 13px 'Roboto'; color:#8A857B; text-transform:uppercase; letter-spacing:.04em;">Bez pokoju</div>
+
+            <!-- solar hero -->
+            <div style="padding:12px 24px 4px;">
+              <div onClick="{{ openSolar }}" style="background:linear-gradient(135deg,#F6A21E,#E1850B); border-radius:26px; padding:18px 20px; color:#fff; box-shadow:0 14px 30px rgba(225,133,11,.32); cursor:pointer;">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                  <div style="display:flex; align-items:center; gap:10px;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/></svg><span style="font:500 17px 'Roboto';">System solarny</span></div>
+                  <span style="display:flex; align-items:center; gap:5px; font:500 11px 'Roboto'; background:rgba(255,255,255,.2); padding:4px 9px; border-radius:20px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6"/><path d="M6 8h12v2a6 6 0 01-6 6 6 6 0 01-6-6z"/><path d="M12 16v6"/></svg>Sieć</span>
+                </div>
+                <div style="display:flex; align-items:flex-end; gap:20px; margin-top:16px;">
+                  <div><div style="font:300 40px 'Roboto'; line-height:1;">23,7<span style="font-size:18px; font-weight:400;"> kWh</span></div><div style="font:400 13px 'Roboto'; opacity:.85; margin-top:4px;">Uzysk dzienny</div></div>
+                  <div style="flex:1; display:flex; align-items:flex-end; gap:3px; height:52px;">
+                    <div style="flex:1; height:24%; background:rgba(255,255,255,.55); border-radius:3px;"></div>
+                    <div style="flex:1; height:48%; background:rgba(255,255,255,.55); border-radius:3px;"></div>
+                    <div style="flex:1; height:70%; background:rgba(255,255,255,.7); border-radius:3px;"></div>
+                    <div style="flex:1; height:92%; background:#fff; border-radius:3px;"></div>
+                    <div style="flex:1; height:80%; background:rgba(255,255,255,.7); border-radius:3px;"></div>
+                    <div style="flex:1; height:88%; background:#fff; border-radius:3px;"></div>
+                    <div style="flex:1; height:60%; background:rgba(255,255,255,.55); border-radius:3px;"></div>
+                    <div style="flex:1; height:34%; background:rgba(255,255,255,.4); border-radius:3px;"></div>
+                  </div>
+                </div>
+                <div style="display:flex; gap:22px; margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,.25);">
+                  <div><div style="font:500 16px 'Roboto Mono';">71,2°C</div><div style="font:400 11px 'Roboto'; opacity:.8;">Kolektor</div></div>
+                  <div><div style="font:500 16px 'Roboto Mono';">73,2°C</div><div style="font:400 11px 'Roboto'; opacity:.8;">Zbiornik główny</div></div>
+                  <div><div style="font:500 16px 'Roboto Mono';">62,3°C</div><div style="font:400 11px 'Roboto'; opacity:.8;">Zbiornik dodatkowy</div></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- temp/humidity sensor -->
+            <div style="padding:12px 24px 4px;">
+              <div onClick="{{ openDetail }}" style="background:linear-gradient(135deg,#22B0C6,#0E7E95); border-radius:26px; padding:18px 20px; color:#fff; box-shadow:0 14px 30px rgba(14,126,149,.30); cursor:pointer;">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                  <div style="display:flex; align-items:center; gap:12px;">
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V5a2 2 0 114 0v8a3.5 3.5 0 11-4 0z"/><path d="M18 3.5c1.7 2.1 2.7 3.6 2.7 5a2.7 2.7 0 11-5.4 0c0-1.4 1-2.9 2.7-5z"/></svg>
+                    <span style="font:500 17px 'Roboto';">Czujnik klimatu</span>
+                  </div>
+                  <span style="display:flex; align-items:center; gap:6px; font:500 12px 'Roboto'; background:rgba(255,255,255,.2); padding:4px 10px; border-radius:20px;"><svg width="20" height="11" viewBox="0 0 26 14"><rect x="1" y="1" width="21" height="12" rx="2.5" fill="none" stroke="#fff" stroke-width="1.6"/><rect x="3" y="3" width="15" height="8" rx="1" fill="#fff"/><rect x="23" y="4.5" width="2" height="5" rx="1" fill="#fff"/></svg>87%</span>
+                </div>
+                <div style="display:flex; align-items:flex-end; gap:32px; margin-top:16px;">
+                  <div><div style="font:300 40px 'Roboto'; line-height:1;">21,8<span style="font-size:18px; font-weight:400;">°C</span></div><div style="font:400 13px 'Roboto'; opacity:.85; margin-top:4px;">Temperatura</div></div>
+                  <div><div style="font:300 40px 'Roboto'; line-height:1;">48<span style="font-size:18px; font-weight:400;">%</span></div><div style="font:400 13px 'Roboto'; opacity:.85; margin-top:4px;">Wilgotność</div></div>
+                </div>
+                <div style="display:flex; align-items:center; gap:7px; margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,.25);">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                  <span style="font:400 12px 'Roboto'; opacity:.9;">Pomiar 2 min temu · interwał 5 min</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- PV card (bez pokoju, 3rd) -->
+            <div style="padding:12px 24px 4px;">
+              <div style="background:linear-gradient(135deg,#E8664F,#C0392B); border-radius:26px; padding:18px 20px; color:#fff; box-shadow:0 14px 30px rgba(192,57,43,.28);">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                  <div style="display:flex; align-items:center; gap:12px;">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>
+                    <span style="font:500 17px 'Roboto';">Fotowoltaika</span>
+                  </div>
+                  <span style="font:400 12px 'Roboto'; background:rgba(255,255,255,.2); padding:4px 10px; border-radius:20px;">z 6,0 kWp</span>
+                </div>
+                <div style="display:flex; align-items:flex-end; gap:32px; margin-top:16px;">
+                  <div><div style="font:300 40px 'Roboto'; line-height:1;">2,84<span style="font-size:18px; font-weight:400;"> kW</span></div><div style="font:400 13px 'Roboto'; opacity:.85; margin-top:4px;">Produkcja teraz</div></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- rooms -->
+            <div style="padding:14px 24px 4px; display:flex; align-items:center; justify-content:space-between;">
+              <span style="font:500 16px 'Roboto'; color:#201B13;">Pokoje</span>
+              <span style="font:500 13px 'Roboto'; color:#201B13;">Wszystkie</span>
+            </div>
+            <div style="padding:0 24px; display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+              <div style="background:#fff; border-radius:20px; padding:14px; box-shadow:0 2px 10px rgba(80,60,20,.05);">
+                <div style="display:flex; align-items:center; justify-content:space-between;"><span style="font:500 14px 'Roboto'; color:#201B13;">Salon</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D9542B" stroke-width="2" stroke-linecap="round"><path d="M14 14.8V5a2 2 0 00-4 0v9.8a4 4 0 104 0z"/></svg></div>
+                <div style="font:300 26px 'Roboto'; color:#201B13; margin-top:6px;">22,4°</div><div style="font:400 12px 'Roboto'; color:#8A857B;">Grzeje · 3 światła</div>
+              </div>
+              <div style="background:#fff; border-radius:20px; padding:14px; box-shadow:0 2px 10px rgba(80,60,20,.05);">
+                <div style="display:flex; align-items:center; justify-content:space-between;"><span style="font:500 14px 'Roboto'; color:#201B13;">Sypialnia</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D9542B" stroke-width="2" stroke-linecap="round"><path d="M14 14.8V5a2 2 0 00-4 0v9.8a4 4 0 104 0z"/></svg></div>
+                <div style="font:300 26px 'Roboto'; color:#201B13; margin-top:6px;">19,8°</div><div style="font:400 12px 'Roboto'; color:#8A857B;">Eco · rolety zam.</div>
+              </div>
+            </div>
+
+            <!-- PV strip -->
+          </div>
+
+          <!-- nav: dash active -->
+          <div style="flex-shrink:0; display:flex; padding:8px 12px 6px; background:#fff; border-top:1px solid #ECE6DA;">
+            <div onClick="{{ goDash }}" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer;"><div style="padding:6px 18px; border-radius:16px; background:#FDECCB; box-shadow:0 2px 9px rgba(225,133,11,.18);"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#201B13" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg></div><span style="font:600 12px 'Roboto'; color:#201B13;">Dashboard</span></div>
+            <div onClick="{{ goAuto }}" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer;"><div style="padding:5px 20px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8A857B" stroke-width="2" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></div><span style="font:400 11px 'Roboto'; color:#8A857B;">Automatyzacje</span></div>
+            <div onClick="{{ goDev }}" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer;"><div style="padding:5px 20px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8A857B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div><span style="font:400 11px 'Roboto'; color:#8A857B;">Urządzenia</span></div>
+          </div>
+          <div style="flex-shrink:0; display:flex; justify-content:center; padding:4px 0 10px; background:#fff;"><div style="width:120px; height:5px; border-radius:3px; background:#201B13; opacity:.25;"></div></div>
+        </div>
+      </sc-if>
+
+      <!-- =================== AUTOMATYZACJE (LIST) =================== -->
+      <sc-if value="{{ isAuto }}">
+        <div data-screen-label="Automatyzacje" style="flex:1; min-height:0; display:flex; flex-direction:column; position:relative;">
+          <div class="scr" style="flex:1; min-height:0; overflow:auto;">
+            <!-- header -->
+            <div style="padding:12px 24px 6px;">
+              <div style="font:500 28px 'Roboto'; color:#201B13; letter-spacing:-.01em;">Automatyzacje</div>
+              <div onClick="{{ toggleOnline }}" style="display:flex; align-items:center; gap:7px; margin-top:6px; cursor:pointer;"><span style="{{ autoDotStyle }}"></span><span style="font:400 13px 'Roboto'; color:#8A857B;">{{ autoSyncText }}</span></div>
+            </div>
+
+
+            <div style="padding:12px 20px 110px; display:flex; flex-direction:column; gap:12px;">
+              <sc-if value="{{ autoEmpty }}">
+                <div style="display:flex; flex-direction:column; align-items:center; text-align:center; padding:48px 30px 30px;">
+                  <div style="width:76px; height:76px; border-radius:24px; background:#FDF0D0; display:flex; align-items:center; justify-content:center; margin-bottom:18px;"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#E1850B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></div>
+                  <div style="font:500 19px 'Roboto'; color:#201B13;">Brak automatyzacji</div>
+                  <div style="font:400 14px 'Roboto'; color:#8A857B; margin-top:8px; line-height:1.5; max-width:270px;">Twórz reguły, które automatycznie sterują urządzeniami — np. włącz pompę, gdy kolektor jest cieplejszy od bufora.</div>
+                  <div onClick="{{ newRule }}" style="display:flex; align-items:center; gap:9px; margin-top:22px; background:#2A2620; padding:13px 22px; border-radius:18px; cursor:pointer;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span style="font:500 15px 'Roboto'; color:#fff;">Nowa automatyzacja</span></div>
+                </div>
+              </sc-if>
+              <sc-for list="{{ autoRules }}" as="r" hint-placeholder-count="3">
+                <div style="{{ r.cardStyle }}">
+                  <div style="display:flex; align-items:flex-start; gap:12px;">
+                    <div style="width:42px; height:42px; border-radius:14px; background:{{ r.iconBg }}; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="{{ r.iconColor }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></div>
+                    <div style="flex:1; min-width:0;">
+                      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;"><span style="font:500 16px 'Roboto'; color:#201B13;">{{ r.name }}</span><div onClick="{{ r.onToggle }}" style="{{ r.toggleStyle }}"><span style="{{ r.knobStyle }}"></span></div></div>
+                      <div style="display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:9px;">
+                        <span style="font:700 11px 'Roboto'; color:#8A857B; letter-spacing:.04em;">JEŚLI</span>
+                        <sc-for list="{{ r.condPills }}" as="p" hint-placeholder-count="2">
+                          <sc-if value="{{ p.showAnd }}"><span style="font:700 11px 'Roboto'; color:#B7B0A3;">ORAZ</span></sc-if>
+                          <span style="{{ p.pillStyle }}">{{ p.text }}</span>
+                        </sc-for>
+                      </div>
+                      <div style="display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:8px;">
+                        <span style="font:700 11px 'Roboto'; color:#8A857B; letter-spacing:.04em;">TO</span>
+                        <div style="{{ r.chipStyle }}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{{ r.chipStroke }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>{{ r.actionText }}</div>
+                      </div>
+                      <sc-if value="{{ r.syncing }}">
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:10px;"><span style="width:14px; height:14px; border:2px solid #E0DACE; border-top-color:#4A423A; border-radius:50%; display:inline-block; animation:spinjs .7s linear infinite;"></span><span style="font:400 12px 'Roboto'; color:#8A857B;">Zapisywanie do bramki…</span></div>
+                      </sc-if>
+                      <sc-if value="{{ r.syncError }}">
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:10px;"><span style="width:8px; height:8px; border-radius:50%; background:#C0492B;"></span><span style="font:400 12px 'Roboto'; color:#C0492B;">Niezsynchronizowana</span><span onClick="{{ r.onRetry }}" style="font:600 12px 'Roboto'; color:#C0492B; cursor:pointer; text-decoration:underline;">Ponów</span></div>
+                      </sc-if>
+                    </div>
+                  </div>
+                  <div style="height:1px; background:#F2EDE3; margin:14px 0 0;"></div>
+                  <div style="display:flex; justify-content:flex-end; gap:6px; margin-top:8px;">
+                    <div onClick="{{ r.onEdit }}" style="display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:12px; cursor:pointer; font:500 13px 'Roboto'; color:#6B675E;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6B675E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>Edytuj</div>
+                    <div onClick="{{ r.onDelete }}" style="display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:12px; cursor:pointer; font:500 13px 'Roboto'; color:#C0492B;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C0492B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>Usuń</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <!-- FAB -->
+          <div onClick="{{ newRule }}" style="position:absolute; right:20px; bottom:96px; display:flex; align-items:center; gap:10px; background:#2A2620; padding:14px 20px; border-radius:20px; box-shadow:0 10px 26px rgba(42,38,32,.3); cursor:pointer;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span style="font:500 15px 'Roboto'; color:#fff;">Nowa</span></div>
+
+          <!-- toast -->
+          <sc-if value="{{ showAutoToast }}">
+            <div style="position:absolute; left:0; right:0; bottom:104px; display:flex; justify-content:center; pointer-events:none;">
+              <div style="display:flex; align-items:center; gap:8px; background:#201B13; color:#fff; padding:11px 18px; border-radius:22px; animation:toastFade 2.6s ease forwards;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7CD8A6" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span style="font:500 14px 'Roboto';">{{ autoToast }}</span></div>
+            </div>
+          </sc-if>
+
+          <!-- nav: auto active -->
+          <div style="flex-shrink:0; display:flex; padding:8px 12px 6px; background:#fff; border-top:1px solid #ECE6DA;">
+            <div onClick="{{ goDash }}" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer;"><div style="padding:5px 20px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8A857B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg></div><span style="font:400 11px 'Roboto'; color:#8A857B;">Dashboard</span></div>
+            <div onClick="{{ goAuto }}" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer;"><div style="padding:6px 18px; border-radius:16px; background:#FDECCB; box-shadow:0 2px 9px rgba(225,133,11,.18);"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#201B13" stroke-width="2" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></div><span style="font:600 12px 'Roboto'; color:#201B13;">Automatyzacje</span></div>
+            <div onClick="{{ goDev }}" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer;"><div style="padding:5px 20px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8A857B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div><span style="font:400 11px 'Roboto'; color:#8A857B;">Urządzenia</span></div>
+          </div>
+          <div style="flex-shrink:0; display:flex; justify-content:center; padding:4px 0 10px; background:#fff;"><div style="width:120px; height:5px; border-radius:3px; background:#201B13; opacity:.25;"></div></div>
+        </div>
+      </sc-if>
+
+      <!-- =================== AUTOMATYZACJA — EDYTOR =================== -->
+      <sc-if value="{{ showEditor }}">
+        <div data-screen-label="Edytor automatyzacji" style="flex:1; min-height:0; display:flex; flex-direction:column; background:#F7F4EF; position:relative;">
+          <!-- top bar -->
+          <div style="flex-shrink:0; display:flex; align-items:center; gap:4px; padding:2px 14px 10px;">
+            <div onClick="{{ cancelEditor }}" style="width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#201B13" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></div>
+            <span style="font:500 20px 'Roboto'; color:#201B13; margin-left:6px;">{{ editorTitle }}</span>
+          </div>
+
+          <div class="scr" style="flex:1; min-height:0; overflow:auto; padding:4px 20px 20px;">
+            <!-- name -->
+            <div style="margin-top:4px;">
+              <div style="font:400 11px 'Roboto'; color:#8A857B; margin:0 0 5px 2px;">Nazwa</div>
+              <input type="text" value="{{ editorName }}" onInput="{{ onName }}" placeholder="np. Pompa ON" style="width:100%; box-sizing:border-box; border:1px solid #E7E1D6; border-radius:14px; padding:13px 14px; font:400 16px 'Roboto'; color:#201B13; background:#fff; outline:none;">
+            </div>
+
+            <!-- conditions -->
+            <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 2px 10px;">
+              <span style="font:500 16px 'Roboto'; color:#201B13;">Warunki</span>
+              <span style="font:400 12px 'Roboto'; color:#8A857B;">wszystkie muszą być spełnione</span>
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:12px;">
+              <sc-for list="{{ editorConds }}" as="c" hint-placeholder-count="2">
+                <div style="{{ c.condCardStyle }}">
+                  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                    <span style="font:500 13px 'Roboto'; color:#8A857B; text-transform:uppercase; letter-spacing:.04em;">Warunek {{ c.num }}</span>
+                    <sc-if value="{{ c.canRemove }}">
+                      <div onClick="{{ c.onRemove }}" style="cursor:pointer; display:flex; align-items:center; justify-content:center; width:28px; height:28px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C0492B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg></div>
+                    </sc-if>
+                  </div>
+
+                  <!-- type segmented -->
+                  <div style="display:flex; gap:4px; background:#E8E1D4; border-radius:14px; padding:4px;">
+                    <div onClick="{{ c.setTime }}" style="{{ c.tTimeStyle }}">Czas</div>
+                    <div onClick="{{ c.setParam }}" style="{{ c.tParamStyle }}">Parametr</div>
+                    <div onClick="{{ c.setDelta }}" style="{{ c.tDeltaStyle }}">Delta</div>
+                  </div>
+
+                  <!-- TIME -->
+                  <sc-if value="{{ c.isTime }}">
+                    <div style="display:flex; gap:10px; margin-top:12px;">
+                      <div style="flex:1;"><div style="font:400 11px 'Roboto'; color:#8A857B; margin:0 0 5px 2px;">Od</div><input type="time" value="{{ c.start }}" onChange="{{ c.onStart }}" style="width:100%; box-sizing:border-box; border:1px solid #E7E1D6; border-radius:14px; padding:11px 12px; font:400 16px 'Roboto'; color:#201B13; background:#fff; outline:none;"></div>
+                      <div style="flex:1;"><div style="font:400 11px 'Roboto'; color:#8A857B; margin:0 0 5px 2px;">Do</div><input type="time" value="{{ c.end }}" onChange="{{ c.onEnd }}" style="width:100%; box-sizing:border-box; border:1px solid #E7E1D6; border-radius:14px; padding:11px 12px; font:400 16px 'Roboto'; color:#201B13; background:#fff; outline:none;"></div>
+                    </div>
+                  </sc-if>
+
+                  <!-- PARAM -->
+                  <sc-if value="{{ c.isParam }}">
+                    <div style="display:flex; flex-direction:column; gap:10px; margin-top:12px;">
+                      <div onClick="{{ c.onDevice }}" style="border:1px solid #E7E1D6; border-radius:14px; padding:9px 14px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; background:#fff;">
+                    <div><div style="font:400 11px 'Roboto'; color:#8A857B;">Urządzenie</div><div style="font:400 15px 'Roboto'; color:#201B13; margin-top:1px;">{{ c.deviceName }}</div></div>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B7B0A3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+                      <div onClick="{{ c.onParam }}" style="border:1px solid #E7E1D6; border-radius:14px; padding:9px 14px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; background:#fff;">
+                    <div><div style="font:400 11px 'Roboto'; color:#8A857B;">Parametr</div><div style="font:400 15px 'Roboto'; color:#201B13; margin-top:1px;">{{ c.paramName }}</div></div>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B7B0A3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+                      <div style="display:flex; gap:4px; background:#E8E1D4; border-radius:14px; padding:4px;">
+                        <div onClick="{{ c.setGt }}" style="{{ c.opGtStyle }}">Większe niż</div>
+                        <div onClick="{{ c.setLt }}" style="{{ c.opLtStyle }}">Mniejsze niż</div>
+                      </div>
+                      <div><div style="font:400 11px 'Roboto'; color:#8A857B; margin:0 0 5px 2px;">Wartość progowa</div><input type="number" step="0.1" value="{{ c.value }}" onInput="{{ c.onValue }}" style="width:100%; box-sizing:border-box; border:1px solid #E7E1D6; border-radius:14px; padding:11px 14px; font:400 16px 'Roboto'; color:#201B13; background:#fff; outline:none;"></div>
+                    </div>
+                  </sc-if>
+
+                  <!-- DELTA -->
+                  <sc-if value="{{ c.isDelta }}">
+                    <div style="display:flex; flex-direction:column; gap:10px; margin-top:12px;">
+                      <div style="display:flex; gap:10px;">
+                        <div style="flex:1;"><div onClick="{{ c.onDevice1 }}" style="border:1px solid #E7E1D6; border-radius:14px; padding:9px 14px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; background:#fff;">
+                    <div><div style="font:400 11px 'Roboto'; color:#8A857B;">Urządzenie 1</div><div style="font:400 15px 'Roboto'; color:#201B13; margin-top:1px;">{{ c.device1Name }}</div></div>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B7B0A3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </div></div>
+                        <div style="flex:1;"><div onClick="{{ c.onParam1 }}" style="border:1px solid #E7E1D6; border-radius:14px; padding:9px 14px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; background:#fff;">
+                    <div><div style="font:400 11px 'Roboto'; color:#8A857B;">Parametr 1</div><div style="font:400 15px 'Roboto'; color:#201B13; margin-top:1px;">{{ c.param1Name }}</div></div>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B7B0A3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </div></div>
+                      </div>
+                      <div style="display:flex; gap:10px;">
+                        <div style="flex:1;"><div onClick="{{ c.onDevice2 }}" style="border:1px solid #E7E1D6; border-radius:14px; padding:9px 14px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; background:#fff;">
+                    <div><div style="font:400 11px 'Roboto'; color:#8A857B;">Urządzenie 2</div><div style="font:400 15px 'Roboto'; color:#201B13; margin-top:1px;">{{ c.device2Name }}</div></div>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B7B0A3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </div></div>
+                        <div style="flex:1;"><div onClick="{{ c.onParam2 }}" style="border:1px solid #E7E1D6; border-radius:14px; padding:9px 14px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; background:#fff;">
+                    <div><div style="font:400 11px 'Roboto'; color:#8A857B;">Parametr 2</div><div style="font:400 15px 'Roboto'; color:#201B13; margin-top:1px;">{{ c.param2Name }}</div></div>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B7B0A3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </div></div>
+                      </div>
+                      <div style="display:flex; gap:4px; background:#E8E1D4; border-radius:14px; padding:4px;">
+                        <div onClick="{{ c.setGt }}" style="{{ c.opGtStyle }}">Większe niż</div>
+                        <div onClick="{{ c.setLt }}" style="{{ c.opLtStyle }}">Mniejsze niż</div>
+                      </div>
+                      <div><div style="font:400 11px 'Roboto'; color:#8A857B; margin:0 0 5px 2px;">Minimalna różnica</div><input type="number" step="0.1" value="{{ c.min }}" onInput="{{ c.onMin }}" style="width:100%; box-sizing:border-box; border:1px solid #E7E1D6; border-radius:14px; padding:11px 14px; font:400 16px 'Roboto'; color:#201B13; background:#fff; outline:none;"></div>
+                    </div>
+                  </sc-if>
+
+                  <sc-if value="{{ c.hasError }}">
+                    <div style="display:flex; align-items:center; gap:7px; margin-top:12px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C0492B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg><span style="font:400 12px 'Roboto'; color:#C0492B;">{{ c.errorText }}</span></div>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+
+            <div onClick="{{ addCondition }}" style="display:flex; align-items:center; justify-content:center; gap:8px; margin-top:12px; padding:13px; border:1.5px dashed #CFC7B8; border-radius:16px; cursor:pointer;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#201B13" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span style="font:500 14px 'Roboto'; color:#201B13;">Dodaj warunek</span></div>
+
+            <!-- action -->
+            <div style="font:500 16px 'Roboto'; color:#201B13; margin:24px 2px 10px;">Akcja</div>
+            <div style="background:#fff; border-radius:20px; padding:14px; box-shadow:0 2px 10px rgba(80,60,20,.05); display:flex; flex-direction:column; gap:10px;">
+              <div onClick="{{ openTargetPicker }}" style="border:1px solid #E7E1D6; border-radius:14px; padding:9px 14px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; background:#fff;">
+                    <div><div style="font:400 11px 'Roboto'; color:#8A857B;">Urządzenie docelowe</div><div style="font:400 15px 'Roboto'; color:#201B13; margin-top:1px;">{{ editorTargetName }}</div></div>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B7B0A3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+              <div style="border:1px solid #E7E1D6; border-radius:14px; padding:9px 14px; background:#F7F4EF;"><div style="font:400 11px 'Roboto'; color:#8A857B;">Typ akcji</div><div style="font:400 15px 'Roboto'; color:#201B13; margin-top:1px;">Ustaw przekaźnik</div></div>
+              <div>
+                <div style="font:400 11px 'Roboto'; color:#8A857B; margin:0 0 6px 2px;">Stan przekaźnika</div>
+                <div style="display:flex; gap:4px; background:#E8E1D4; border-radius:14px; padding:4px;">
+                  <div onClick="{{ setActOn }}" style="{{ actOnStyle }}">Włącz (ON)</div>
+                  <div onClick="{{ setActOff }}" style="{{ actOffStyle }}">Wyłącz (OFF)</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- live preview -->
+            <div style="margin-top:22px; background:#fff; border:1px solid #ECE6DA; border-radius:20px; padding:16px 18px; box-shadow:0 2px 10px rgba(80,60,20,.05);">
+              <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#E1850B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg><span style="font:600 11px 'Roboto'; color:#8A857B; text-transform:uppercase; letter-spacing:.06em;">Podgląd reguły</span></div>
+              <div style="display:flex; gap:12px;">
+                <div style="display:flex; flex-direction:column; align-items:center; padding-top:2px;">
+                  <span style="width:9px; height:9px; border-radius:50%; background:#E1850B;"></span>
+                  <span style="flex:1; width:2px; background:#EAE3D6; margin:3px 0;"></span>
+                  <span style="width:9px; height:9px; border-radius:50%; background:#2E9E6B;"></span>
+                </div>
+                <div style="flex:1; min-width:0;">
+                  <div style="font:700 12px 'Roboto'; color:#E1850B; letter-spacing:.04em;">JEŚLI</div>
+                  <div style="display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:6px 0 16px;">
+                    <sc-for list="{{ previewConds }}" as="p" hint-placeholder-count="1">
+                      <sc-if value="{{ p.showAnd }}"><span style="font:700 11px 'Roboto'; color:#B7B0A3;">ORAZ</span></sc-if>
+                      <span style="{{ p.pillStyle }}">{{ p.text }}</span>
+                    </sc-for>
+                  </div>
+                  <div style="font:700 12px 'Roboto'; color:#2E9E6B; letter-spacing:.04em;">TO</div>
+                  <div style="display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:8px;">
+                    <div style="{{ previewThenStyle }}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{{ previewThenStroke }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>{{ previewThenText }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- footer -->
+          <div style="flex-shrink:0; display:flex; gap:12px; padding:12px 20px 18px; background:#F7F4EF; border-top:1px solid #ECE6DA;">
+            <div onClick="{{ cancelEditor }}" style="flex:1; text-align:center; border:1.5px solid #D9D3C7; border-radius:16px; padding:14px; cursor:pointer; font:500 15px 'Roboto'; color:#6B675E;">Anuluj</div>
+            <div onClick="{{ saveEditor }}" style="{{ saveBtnStyle }}">Zapisz</div>
+          </div>
+
+          <!-- PICKER overlay -->
+          <sc-if value="{{ pickerOpen }}">
+            <div onClick="{{ closePicker }}" style="position:absolute; inset:0; background:rgba(32,27,19,.4); display:flex; flex-direction:column; justify-content:flex-end;">
+              <div style="background:#fff; border-radius:26px 26px 0 0; padding:10px 12px 20px; max-height:70%; overflow:auto;">
+                <div style="display:flex; justify-content:center; padding:6px 0 8px;"><div style="width:40px; height:5px; border-radius:3px; background:#E0DACE;"></div></div>
+                <div style="font:500 15px 'Roboto'; color:#201B13; padding:4px 12px 10px;">{{ pickerTitle }}</div>
+                <sc-for list="{{ pickerOptions }}" as="o" hint-placeholder-count="4">
+                  <div onClick="{{ o.onPick }}" style="display:flex; align-items:center; justify-content:space-between; padding:14px 12px; border-radius:14px; cursor:pointer;">
+                    <span style="font:400 16px 'Roboto'; color:#201B13;">{{ o.label }}</span>
+                    <sc-if value="{{ o.selected }}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#201B13" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></sc-if>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <!-- =================== URZĄDZENIA (LIST) =================== -->
+      <sc-if value="{{ isDev }}">
+        <div style="flex:1; min-height:0; display:flex; flex-direction:column; position:relative;">
+          <div class="scr" style="flex:1; min-height:0; overflow:auto;">
+            <div style="padding:12px 24px 6px;">
+              <div style="font:500 28px 'Roboto'; color:#201B13; letter-spacing:-.01em;">Urządzenia</div>
+              <div style="font:400 13px 'Roboto'; color:#8A857B; margin-top:4px;">{{ devCountText }}</div>
+              <div onClick="{{ joinDevice }}" style="display:inline-flex; align-items:center; gap:8px; margin-top:12px; border:1.5px dashed #CFC7B8; border-radius:14px; padding:9px 14px; cursor:pointer;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#201B13" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 100 18M12 3a9 9 0 010 18M12 8v8M8 12h8"/></svg><span style="font:500 13px 'Roboto'; color:#201B13;">Symuluj urządzenie w trybie parowania (JOIN)</span></div>
+            </div>
+            <div class="scr" style="padding:12px 24px 4px; display:flex; gap:8px; overflow-x:auto;">
+              <sc-for list="{{ devChips }}" as="ch" hint-placeholder-count="4">
+                <span onClick="{{ ch.onPick }}" style="{{ ch.style }}">{{ ch.label }}</span>
+              </sc-for>
+            </div>
+            <div style="padding:12px 20px 100px; display:flex; flex-direction:column; gap:18px;">
+              <sc-if value="{{ devEmpty }}">
+                <div style="display:flex; flex-direction:column; align-items:center; text-align:center; padding:48px 30px 30px;">
+                  <div style="width:76px; height:76px; border-radius:24px; background:#EDE8DE; display:flex; align-items:center; justify-content:center; margin-bottom:18px;"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#6B675E" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+                  <div style="font:500 19px 'Roboto'; color:#201B13;">Brak urządzeń</div>
+                  <div style="font:400 14px 'Roboto'; color:#8A857B; margin-top:8px; line-height:1.5; max-width:270px;">Aby dodać urządzenie, wciśnij na nim przycisk JOIN — pojawi się tutaj automatycznie do skonfigurowania.</div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ devFilterEmpty }}">
+                <div style="display:flex; flex-direction:column; align-items:center; text-align:center; padding:44px 30px 24px;">
+                  <div style="font:500 17px 'Roboto'; color:#201B13;">Brak urządzeń w tym pokoju</div>
+                  <div style="font:400 14px 'Roboto'; color:#8A857B; margin-top:6px;">„{{ devFilterName }}" nie ma jeszcze przypisanych urządzeń.</div>
+                  <div onClick="{{ clearDevFilter }}" style="margin-top:18px; border:1.5px solid #D9D3C7; border-radius:14px; padding:10px 18px; cursor:pointer; font:500 14px 'Roboto'; color:#201B13;">Pokaż wszystkie</div>
+                </div>
+              </sc-if>
+              <sc-for list="{{ devGroups }}" as="g" hint-placeholder-count="2">
+                <div>
+                  <div style="font:500 13px 'Roboto'; color:#8A857B; padding:0 4px 8px; text-transform:uppercase; letter-spacing:.04em;">{{ g.room }}</div>
+                  <div style="background:#fff; border-radius:22px; box-shadow:0 2px 10px rgba(80,60,20,.06); overflow:hidden;">
+                    <sc-for list="{{ g.items }}" as="d" hint-placeholder-count="2">
+                      <div onClick="{{ d.onOpen }}" style="display:flex; align-items:center; gap:14px; padding:14px 16px; cursor:pointer;">
+                        <div style="{{ d.iconWrapStyle }}">{{ d.icon }}</div>
+                        <div style="flex:1; min-width:0;">
+                          <div style="font:500 15px 'Roboto'; color:#201B13;">{{ d.name }}</div>
+                          <div style="font:400 12px 'Roboto'; color:#8A857B;">{{ d.sub }}</div>
+                          <sc-if value="{{ d.syncing }}"><div style="display:flex; align-items:center; gap:7px; margin-top:6px;"><span style="width:12px; height:12px; border:2px solid #E0DACE; border-top-color:#4A423A; border-radius:50%; display:inline-block; animation:spinjs .7s linear infinite;"></span><span style="font:400 11px 'Roboto'; color:#8A857B;">Zapisywanie…</span></div></sc-if>
+                          <sc-if value="{{ d.syncError }}"><div style="display:flex; align-items:center; gap:7px; margin-top:6px;"><span style="width:7px; height:7px; border-radius:50%; background:#C0492B;"></span><span style="font:400 11px 'Roboto'; color:#C0492B;">Niezsynchronizowane</span><span onClick="{{ d.onRetry }}" style="font:600 11px 'Roboto'; color:#C0492B; cursor:pointer; text-decoration:underline;">Ponów</span></div></sc-if>
+                        </div>
+                        <span style="{{ d.dotStyle }}"></span>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B7B0A3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <!-- nav: dev active -->
+          <div style="flex-shrink:0; display:flex; padding:8px 12px 6px; background:#fff; border-top:1px solid #ECE6DA;">
+            <div onClick="{{ goDash }}" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer;"><div style="padding:5px 20px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8A857B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg></div><span style="font:400 11px 'Roboto'; color:#8A857B;">Dashboard</span></div>
+            <div onClick="{{ goAuto }}" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer;"><div style="padding:5px 20px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8A857B" stroke-width="2" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></div><span style="font:400 11px 'Roboto'; color:#8A857B;">Automatyzacje</span></div>
+            <div onClick="{{ goDev }}" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer;"><div style="padding:6px 18px; border-radius:16px; background:#FDECCB; box-shadow:0 2px 9px rgba(225,133,11,.18);"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#201B13" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div><span style="font:600 12px 'Roboto'; color:#201B13;">Urządzenia</span></div>
+          </div>
+          <div style="flex-shrink:0; display:flex; justify-content:center; padding:4px 0 10px; background:#fff;"><div style="width:120px; height:5px; border-radius:3px; background:#201B13; opacity:.25;"></div></div>
+        </div>
+      </sc-if>
+
+      <!-- =================== URZĄDZENIE — EDYTOR =================== -->
+      <sc-if value="{{ showDevEditor }}">
+        <div data-screen-label="Edytor urządzenia" style="flex:1; min-height:0; display:flex; flex-direction:column; background:#F7F4EF; position:relative;">
+          <div style="flex-shrink:0; display:flex; align-items:center; gap:4px; padding:2px 14px 10px;">
+            <div onClick="{{ cancelDevEditor }}" style="width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#201B13" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></div>
+            <div style="margin-left:6px;"><div style="font:500 20px 'Roboto'; color:#201B13;">{{ devEditorTitle }}</div><sc-if value="{{ devJoining }}"><div style="display:flex; align-items:center; gap:6px; font:400 12px 'Roboto'; color:#2E9E6B; margin-top:1px;"><span style="width:7px; height:7px; border-radius:50%; background:#2E9E6B;"></span>Wykryto przez bramkę</div></sc-if></div>
+          </div>
+          <div class="scr" style="flex:1; min-height:0; overflow:auto; padding:4px 20px 20px;">
+            <div style="display:flex; justify-content:center; padding:8px 0 20px;"><div style="{{ devIconWrap }}">{{ devIconEl }}</div></div>
+            <div><div style="font:400 11px 'Roboto'; color:#8A857B; margin:0 0 5px 2px;">Nazwa</div>
+              <input type="text" value="{{ devName }}" onInput="{{ onDevName }}" placeholder="np. Lampa salon" style="width:100%; box-sizing:border-box; border:1px solid #E7E1D6; border-radius:14px; padding:13px 14px; font:400 16px 'Roboto'; color:#201B13; background:#fff; outline:none;"></div>
+            <div style="margin-top:14px;"><div style="border:1px solid #ECE6DA; border-radius:14px; padding:11px 14px; display:flex; align-items:center; justify-content:space-between; background:#F2EDE3;"><div><div style="font:400 11px 'Roboto'; color:#8A857B;">Typ urządzenia · wykryty automatycznie</div><div style="font:400 16px 'Roboto'; color:#201B13; margin-top:1px;">{{ devTypeName }}</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8A857B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg></div></div>
+            <div style="margin-top:12px;"><div onClick="{{ openDevRoomPicker }}" style="border:1px solid #E7E1D6; border-radius:14px; padding:11px 14px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; background:#fff;"><div><div style="font:400 11px 'Roboto'; color:#8A857B;">Pokój</div><div style="font:400 16px 'Roboto'; color:#201B13; margin-top:1px;">{{ devRoomName }}</div></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B7B0A3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div></div>
+            <sc-if value="{{ devIsExisting }}">
+              <div onClick="{{ deleteDeviceCur }}" style="display:flex; align-items:center; justify-content:center; gap:8px; margin-top:24px; padding:13px; border:1.5px solid #E7C7BF; border-radius:16px; cursor:pointer;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#C0492B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg><span style="font:500 14px 'Roboto'; color:#C0492B;">Usuń urządzenie</span></div>
+            </sc-if>
+          </div>
+          <div style="flex-shrink:0; display:flex; gap:12px; padding:12px 20px 18px; background:#F7F4EF; border-top:1px solid #ECE6DA;">
+            <div onClick="{{ cancelDevEditor }}" style="flex:1; text-align:center; border:1.5px solid #D9D3C7; border-radius:16px; padding:14px; cursor:pointer; font:500 15px 'Roboto'; color:#6B675E;">{{ devCancelLabel }}</div>
+            <div onClick="{{ saveDevice }}" style="flex:1.4; text-align:center; background:#2A2620; border-radius:16px; padding:14px; cursor:pointer; font:500 15px 'Roboto'; color:#fff; box-shadow:0 8px 20px rgba(42,38,32,.26);">Zapisz</div>
+          </div>
+          <sc-if value="{{ pickerOpen }}">
+            <div onClick="{{ closePicker }}" style="position:absolute; inset:0; background:rgba(32,27,19,.4); display:flex; flex-direction:column; justify-content:flex-end;">
+              <div onClick="{{ stopSheet }}" style="background:#fff; border-radius:26px 26px 0 0; padding:10px 12px 20px; max-height:78%; overflow:auto;">
+                <div style="display:flex; justify-content:center; padding:6px 0 8px;"><div style="width:40px; height:5px; border-radius:3px; background:#E0DACE;"></div></div>
+                <div style="font:500 15px 'Roboto'; color:#201B13; padding:4px 12px 10px;">{{ pickerTitle }}</div>
+                <sc-for list="{{ pickerOptions }}" as="o" hint-placeholder-count="4">
+                  <div style="display:flex; align-items:center; gap:10px; padding:14px 12px; border-radius:14px;">
+                    <span onClick="{{ o.onPick }}" style="flex:1; font:400 16px 'Roboto'; color:#201B13; cursor:pointer;">{{ o.label }}</span>
+                    <sc-if value="{{ o.selected }}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#201B13" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></sc-if>
+                    <sc-if value="{{ o.removable }}"><div onClick="{{ o.onRemove }}" style="cursor:pointer; padding:2px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#C0492B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg></div></sc-if>
+                  </div>
+                </sc-for>
+                <sc-if value="{{ pickerManageRooms }}">
+                  <div style="display:flex; gap:8px; padding:12px 12px 2px; border-top:1px solid #F2EDE3; margin-top:6px;">
+                    <input type="text" value="{{ newRoomName }}" onInput="{{ onNewRoomInput }}" placeholder="Nazwa nowego pokoju" style="flex:1; box-sizing:border-box; border:1px solid #E7E1D6; border-radius:12px; padding:11px 12px; font:400 15px 'Roboto'; color:#201B13; outline:none;">
+                    <div onClick="{{ addRoom }}" style="display:flex; align-items:center; padding:0 18px; border-radius:12px; background:#E1850B; color:#fff; font:500 14px 'Roboto'; cursor:pointer;">Dodaj</div>
+                  </div>
+                </sc-if>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <!-- =================== CONFIRM DIALOG (shared) =================== -->
+      <sc-if value="{{ confirmOpen }}">
+        <div onClick="{{ closeConfirm }}" style="position:absolute; inset:0; z-index:50; background:rgba(32,27,19,.45); display:flex; align-items:center; justify-content:center; padding:28px;">
+          <div onClick="{{ stopConfirm }}" style="background:#fff; border-radius:24px; padding:24px 22px 18px; width:100%; max-width:320px; box-shadow:0 20px 50px rgba(32,27,19,.3);">
+            <div style="width:52px; height:52px; border-radius:16px; background:#F7DDD9; display:flex; align-items:center; justify-content:center; margin-bottom:16px;"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#C0392B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg></div>
+            <div style="font:500 19px 'Roboto'; color:#201B13;">{{ confirmTitle }}</div>
+            <div style="font:400 14px 'Roboto'; color:#6B675E; margin-top:8px; line-height:1.5;">{{ confirmMsg }}</div>
+            <div style="display:flex; gap:12px; margin-top:22px;">
+              <div onClick="{{ closeConfirm }}" style="flex:1; text-align:center; border:1.5px solid #D9D3C7; border-radius:15px; padding:13px; cursor:pointer; font:500 15px 'Roboto'; color:#6B675E;">Anuluj</div>
+              <div onClick="{{ confirmOk }}" style="flex:1; text-align:center; background:#C0392B; border-radius:15px; padding:13px; cursor:pointer; font:500 15px 'Roboto'; color:#fff;">{{ confirmLabel }}</div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const CH_DATA = {
+  temp: {
+    '24h': [19.2,19,18.8,18.6,18.5,18.7,19.3,20.1,21,21.8,22.4,22.9,23.4,23.8,24,23.9,23.5,22.8,22,21.3,20.7,20.2,19.8,19.5],
+    '7d': [20.4,21.1,22,21.6,20.8,19.9,21.3],
+    'month': [18.5,19,19.4,20,20.6,21,21.3,21,20.5,20,19.6,20.2,21,21.8,22.4,22.8,22.5,21.9,21.2,20.6,20,19.5,19.9,20.7,21.5,22.2,22.6,22,21.4,20.8],
+    'year': [3.2,4.1,7.5,12.3,16.8,20.4,22.6,22.1,17.5,12.1,7,3.8]
+  },
+  hum: {
+    '24h': [58,59,60,61,61,60,58,55,52,50,48,46,45,44,43,44,46,49,52,54,55,56,57,58],
+    '7d': [52,49,47,50,54,57,51],
+    'month': [55,54,52,50,49,51,53,55,57,56,54,52,50,48,47,49,51,53,55,54,52,50,48,50,52,54,56,55,53,51],
+    'year': [72,70,65,60,55,52,50,53,60,66,71,74]
+  }
+};
+const CH_TICKS = {
+  '24h': [{f:0,l:'0:00'},{f:0.125,l:'3:00'},{f:0.25,l:'6:00'},{f:0.375,l:'9:00'},{f:0.5,l:'12:00'},{f:0.625,l:'15:00'},{f:0.75,l:'18:00'},{f:0.875,l:'21:00'},{f:1,l:'24:00'}],
+  '7d': [{f:0,l:'Pn'},{f:1/6,l:'Wt'},{f:2/6,l:'\u015ar'},{f:3/6,l:'Cz'},{f:4/6,l:'Pt'},{f:5/6,l:'So'},{f:1,l:'Nd'}],
+  'month': [{f:0,l:'1'},{f:0.16,l:'5'},{f:0.33,l:'10'},{f:0.5,l:'15'},{f:0.66,l:'20'},{f:0.83,l:'25'},{f:1,l:'30'}],
+  'year': [{f:0,l:'Sty'},{f:0.27,l:'Kwi'},{f:0.55,l:'Lip'},{f:0.82,l:'Pa\u017a'},{f:1,l:'Gru'}]
+};
+
+const SOLAR = {
+  day: {
+    unit: 'kWh',
+    ticks: [{f:0,l:'6'},{f:0.2,l:'9'},{f:0.4,l:'12'},{f:0.6,l:'15'},{f:0.8,l:'18'},{f:1,l:'21'}],
+    periods: [
+      { label:'10 lip 2026', bars:[0,0.1,0.7,1.4,2.3,2.5,2.6,2.4,2.5,2.6,2.1,1.6,1.2,0.4,0,0], run:'9 h 58 min', yield:'21,4 kWh' },
+      { label:'11 lip 2026', bars:[0,0.2,0.9,1.6,2.7,2.6,2.6,2.5,2.4,2.7,2.3,1.7,1.6,0.6,0,0], run:'10 h 34 min', yield:'23,7 kWh' },
+      { label:'12 lip 2026', bars:[0,0,0.5,1.1,1.8,2.2,2.0,1.6,2.1,1.9,1.4,0.9,0.5,0.1,0,0], run:'8 h 12 min', yield:'18,9 kWh' }
+    ]
+  },
+  month: {
+    unit: 'kWh',
+    ticks: [{f:0,l:'1'},{f:0.33,l:'10'},{f:0.66,l:'20'},{f:1,l:'30'}],
+    periods: [
+      { label:'cze 2026', bars:[14,16,19,22,25,21,18,12,9,15,20,24,26,23,19,16,21,25,27,24,20,17,13,18,22,26,28,25,21,19], run:'295 h', yield:'612 kWh' },
+      { label:'lip 2026', bars:[18,20,23,26,28,24,20,15,12,18,23,27,29,26,22,19,24,28,30,27,23,20,16,21,25,29,31,28,24,22], run:'324 h', yield:'678 kWh' }
+    ]
+  },
+  year: {
+    unit: 'kWh',
+    ticks: [{f:0,l:'Sty'},{f:0.27,l:'Kwi'},{f:0.55,l:'Lip'},{f:0.82,l:'Pa\u017a'},{f:1,l:'Gru'}],
+    periods: [
+      { label:'2025', bars:[110,170,320,500,660,730,790,760,540,350,175,105], run:'2 610 h', yield:'5 015 kWh' },
+      { label:'2026', bars:[120,180,340,520,690,760,820,780,560,360,180,110], run:'2 720 h', yield:'5 210 kWh' }
+    ]
+  },
+  total: {
+    unit: 'kWh',
+    periods: [
+      { label:'2019 \u2013 2026', bars:[4100,4520,4780,4990,5120,5080,5260,3200], run:'18 240 h', yield:'32 410 kWh',
+        ticks:[{f:0,l:'19'},{f:0.14,l:'20'},{f:0.28,l:'21'},{f:0.42,l:'22'},{f:0.57,l:'23'},{f:0.71,l:'24'},{f:0.85,l:'25'},{f:1,l:'26'}] }
+    ]
+  }
+};
+
+const A_DEVICES = [
+  { id:'solar',   name:'Sterownik solarny' },
+  { id:'buffer',  name:'Sterownik bufora' },
+  { id:'pv',      name:'Falownik PV' },
+  { id:'climate', name:'Czujnik klimatu' }
+];
+const A_PARAMS = {
+  solar:   ['T1','T2','T3','T4','Tcol'],
+  buffer:  ['sBuforTemp','buforTemp'],
+  pv:      ['moc','uzysk'],
+  climate: ['temperatura','wilgotnosc']
+};
+// per-device-type accent color (semantic). Base app chrome stays graphite/neutral.
+const A_COLORS = {
+  solar:   { c:'#E1850B', bg:'#FDF0D0', chipC:'#8A5A00', chipBg:'#FBEBCB' },
+  buffer:  { c:'#A15C2B', bg:'#EFE1D3', chipC:'#7A4A1E', chipBg:'#EEDFCF' },
+  pv:      { c:'#C0392B', bg:'#F7DDD9', chipC:'#8E2A20', chipBg:'#F5DAD5' },
+  climate: { c:'#0E7E95', bg:'#D8ECF1', chipC:'#0A5A6B', chipBg:'#D6EBF0' },
+  light:   { c:'#C99400', bg:'#FBEFC7', chipC:'#7A5F00', chipBg:'#FBEFC7' },
+  blind:   { c:'#2F8F83', bg:'#D8ECE8', chipC:'#0E4A3E', chipBg:'#D8ECE8' },
+  heating: { c:'#D9542B', bg:'#FBE0D5', chipC:'#8A3A16', chipBg:'#FBE0D5' },
+  hub:     { c:'#2E9E6B', bg:'#DDEBE4', chipC:'#0A5A3A', chipBg:'#DDEBE4' }
+};
+const DEV_TYPES = [
+  { id:'solar', name:'Sterownik solarny' }, { id:'buffer', name:'Sterownik bufora' },
+  { id:'pv', name:'Falownik PV' }, { id:'climate', name:'Czujnik klimatu' },
+  { id:'light', name:'O\u015bwietlenie' }, { id:'blind', name:'Roleta' },
+  { id:'heating', name:'Ogrzewanie' }, { id:'hub', name:'Bramka / Hub' }
+];
+const ROOMS = ['Salon','Sypialnia','\u0141azienka','Kuchnia','Technika','Bez pokoju'];
+const A_DEVLIST = [
+  { id:11, name:'Lampa sufitowa', type:'light', room:'Salon', online:true },
+  { id:12, name:'Roleta okno', type:'blind', room:'Salon', online:true },
+  { id:13, name:'Termostat', type:'heating', room:'Salon', online:true },
+  { id:14, name:'Sterownik solarny', type:'solar', room:'Technika', online:true },
+  { id:15, name:'Falownik PV', type:'pv', room:'Technika', online:true },
+  { id:16, name:'Sterownik bufora', type:'buffer', room:'Technika', online:true },
+  { id:17, name:'Bramka Home', type:'hub', room:'Technika', online:true },
+  { id:18, name:'Czujnik klimatu', type:'climate', room:'Bez pokoju', online:true }
+];
+const A_RULES = [
+  { id:1, name:'Pompa ON', enabled:true,
+    conditions:[
+      { type:'time', start:'14:00', end:'23:55' },
+      { type:'delta', device1:'solar', param1:'T3', device2:'buffer', param2:'sBuforTemp', op:'gt', min:16 }
+    ],
+    action:{ target:'solar', value:1 } },
+  { id:2, name:'Pompa OFF', enabled:true,
+    conditions:[
+      { type:'delta', device1:'solar', param1:'T3', device2:'buffer', param2:'sBuforTemp', op:'lt', min:8 }
+    ],
+    action:{ target:'solar', value:0 } },
+  { id:3, name:'Nocne chłodzenie', enabled:false,
+    conditions:[
+      { type:'time', start:'22:00', end:'05:00' },
+      { type:'param', device:'solar', param:'T4', op:'gt', value:70 }
+    ],
+    action:{ target:'buffer', value:1 } }
+];
+
+class Component extends DCLogic {
+  state = { tab:'dash', detail:false, metric:'temp', range:'24h', interval:5, savedInterval:5, showToast:false, solarDetail:false, solarTab:'day', solarIdx:1, sbufOn:true,
+    autoView:'list', editing:null, picker:null, autoToast:'', online:true, rules: JSON.parse(JSON.stringify(A_RULES)),
+    devView:'list', devEditing:null, devFilter:'Wszystkie', devices: JSON.parse(JSON.stringify(A_DEVLIST)), rooms: ROOMS.slice(), newRoomName:'' };
+
+  componentDidMount() {
+    try {
+      const v = parseInt(localStorage.getItem('climateInterval'), 10);
+      if (v >= 1 && v <= 5) this.setState({ interval:v, savedInterval:v });
+    } catch (e) {}
+  }
+  componentWillUnmount() { clearTimeout(this._toastT); clearTimeout(this._aToastT); if (this._syncT) Object.keys(this._syncT).forEach(k => clearTimeout(this._syncT[k])); }
+
+  setSync(id, val) { this.setState({ rules: this.state.rules.map(r => r.id === id ? Object.assign({}, r, { _sync: val }) : r) }); }
+  scheduleSync(id) { this._syncT = this._syncT || {}; clearTimeout(this._syncT[id]); this._syncT[id] = setTimeout(() => this.setSync(id, this.state.online ? 'ok' : 'error'), 1300); }
+  markSyncing(id) { this.setSync(id, 'syncing'); this.scheduleSync(id); }
+  toggleOnline() {
+    const online = !this.state.online;
+    if (!online) {
+      this.setState({ online,
+        rules: this.state.rules.map(r => r._sync === 'syncing' ? Object.assign({}, r, { _sync:'error' }) : r),
+        devices: this.state.devices.map(d => d._sync === 'syncing' ? Object.assign({}, d, { _sync:'error' }) : d) });
+    } else {
+      this.setState({ online });
+      this.state.rules.forEach(r => { if (r._sync === 'error') this.markSyncing(r.id); });
+      this.state.devices.forEach(d => { if (d._sync === 'error') this.markDevSyncing(d.id); });
+    }
+  }
+
+  devTypeName(t) { const d = DEV_TYPES.find(x => x.id === t); return d ? d.name : t; }
+  iconEl(type, stroke, size) {
+    const h = React.createElement;
+    const s = { width:size, height:size, viewBox:'0 0 24 24', fill:'none', stroke, strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round' };
+    const M = {
+      solar:   ['M0', h('circle',{key:1,cx:12,cy:12,r:4.5}), h('path',{key:2,d:'M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19'})],
+      pv:      ['M0', h('path',{key:1,d:'M13 2 4 14h7l-1 8 9-12h-7z'})],
+      climate: ['M0', h('path',{key:1,d:'M8 13V5a2 2 0 114 0v8a3.5 3.5 0 11-4 0z'}), h('path',{key:2,d:'M18 3.5c1.7 2.1 2.7 3.6 2.7 5a2.7 2.7 0 11-5.4 0c0-1.4 1-2.9 2.7-5z'})],
+      light:   ['M0', h('path',{key:1,d:'M9 18h6M10 21h4'}), h('path',{key:2,d:'M12 3a6 6 0 00-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0012 3z'})],
+      blind:   ['M0', h('rect',{key:1,x:4,y:4,width:16,height:16,rx:1}), h('path',{key:2,d:'M4 9h16M4 13h16M4 17h16'})],
+      heating: ['M0', h('path',{key:1,d:'M14 14.8V5a2 2 0 00-4 0v9.8a4 4 0 104 0z'})],
+      buffer:  ['M0', h('rect',{key:1,x:7,y:3,width:10,height:18,rx:4}), h('path',{key:2,d:'M7 9h10M7 15h10'})],
+      hub:     ['M0', h('rect',{key:1,x:3,y:4,width:18,height:13,rx:2}), h('path',{key:2,d:'M8 21h8M12 17v4'})]
+    };
+    const arr = (M[type] || M.hub).slice(1);
+    return h('svg', s, arr);
+  }
+  cloneDevEditing() { return JSON.parse(JSON.stringify(this.state.devEditing)); }
+  joinDevice() {
+    const pool = ['light','blind','heating','climate','pv','buffer'];
+    const type = pool[Math.floor(Math.random() * pool.length)];
+    this.setState({ devEditing:{ id:null, name:'', type, room:'Bez pokoju', online:true, _joining:true }, devView:'editor', picker:null });
+  }
+  openDevice(id) { const d = this.state.devices.find(x => x.id === id); this.setState({ devEditing: JSON.parse(JSON.stringify(d)), devView:'editor', picker:null }); }
+  cancelDevEditor() { this.setState({ devEditing:null, devView:'list', picker:null }); }
+  setDevName(v) { const e = this.cloneDevEditing(); e.name = v; this.setState({ devEditing:e }); }
+  saveDevice() {
+    const e = this.cloneDevEditing();
+    if (!e.name || !e.name.trim()) e.name = 'Nowe urz\u0105dzenie';
+    e._sync = 'syncing';
+    let devices = this.state.devices.slice();
+    if (e.id == null) { e.id = Date.now(); devices.push(e); }
+    else { devices = devices.map(d => d.id === e.id ? e : d); }
+    this.setState({ devices, devEditing:null, devView:'list', picker:null });
+    this.scheduleDevSync(e.id);
+  }
+  deleteDevice(id) { this.setState({ devices: this.state.devices.filter(d => d.id !== id), devEditing:null, devView:'list', picker:null }); }
+  setDevSync(id, val) { this.setState({ devices: this.state.devices.map(d => d.id === id ? Object.assign({}, d, { _sync: val }) : d) }); }
+  scheduleDevSync(id) { this._syncT = this._syncT || {}; clearTimeout(this._syncT['d'+id]); this._syncT['d'+id] = setTimeout(() => this.setDevSync(id, this.state.online ? 'ok' : 'error'), 1300); }
+  markDevSyncing(id) { this.setDevSync(id, 'syncing'); this.scheduleDevSync(id); }
+
+  devVM(d) {
+    const col = A_COLORS[d.type] || A_COLORS.hub;
+    return {
+      id:d.id, name:d.name,
+      sub: this.devTypeName(d.type) + ' \u00b7 ' + (d.online ? 'online' : 'offline'),
+      icon: this.iconEl(d.type, col.c, 22),
+      iconWrapStyle: { width:'42px', height:'42px', borderRadius:'14px', background:col.bg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 },
+      dotStyle: { width:'8px', height:'8px', borderRadius:'50%', background: d.online ? '#2E9E6B' : '#C0492B', flexShrink:0 },
+      syncing: d._sync === 'syncing', syncError: d._sync === 'error',
+      onOpen: () => this.openDevice(d.id),
+      onRetry: () => this.markDevSyncing(d.id)
+    };
+  }
+  buildDevices() {
+    const s = this.state, filter = s.devFilter;
+    const groups = [];
+    s.rooms.forEach(rm => {
+      const items = s.devices.filter(d => d.room === rm && (filter === 'Wszystkie' || d.room === filter));
+      if (items.length) groups.push({ room: rm, items: items.map(d => this.devVM(d)) });
+    });
+    const rooms = ['Wszystkie'].concat(s.rooms.filter(rm => s.devices.some(d => d.room === rm)));
+    const chips = rooms.map(rm => ({
+      label: rm,
+      style: Object.assign({ font:"500 13px 'Roboto'", padding:'8px 16px', borderRadius:'20px', whiteSpace:'nowrap', cursor:'pointer' },
+        rm === filter ? { background:'#201B13', color:'#fff' } : { background:'#EDE8DE', color:'#201B13' }),
+      onPick: () => this.setState({ devFilter: rm })
+    }));
+    const online = s.devices.filter(d => d.online).length;
+    const out = {
+      devGroups: groups,
+      devChips: chips,
+      devEmpty: s.devices.length === 0,
+      devFilterEmpty: s.devices.length > 0 && groups.length === 0,
+      devFilterName: filter,
+      devCountText: s.devices.length + ' urz\u0105dze\u0144 \u00b7 ' + online + ' online',
+      joinDevice: () => this.joinDevice(),
+      clearDevFilter: () => this.setState({ devFilter:'Wszystkie' })
+    };
+    const e = s.devEditing;
+    if (e) {
+      const col = A_COLORS[e.type] || A_COLORS.hub;
+      out.devJoining = !!e._joining;
+      out.devEditorTitle = e.id == null ? 'Nowe urz\u0105dzenie' : 'Edytuj urz\u0105dzenie';
+      out.devCancelLabel = e._joining ? 'Odrzu\u0107' : 'Anuluj';
+      out.devName = e.name;
+      out.devTypeName = this.devTypeName(e.type);
+      out.devRoomName = e.room;
+      out.devIsExisting = e.id != null;
+      out.devIconEl = this.iconEl(e.type, col.c, 30);
+      out.devIconWrap = { width:'64px', height:'64px', borderRadius:'20px', background:col.bg, display:'flex', alignItems:'center', justifyContent:'center' };
+      out.onDevName = (ev) => this.setDevName(ev.target.value);
+      out.openDevRoomPicker = () => this.openPicker('Pok\u00f3j', s.rooms.map(r => ({ value:r, label:r })), e.room,
+        (v) => { const e2 = this.cloneDevEditing(); e2.room = v; this.setState({ devEditing:e2, picker:null }); }, 'rooms');
+      out.saveDevice = () => this.saveDevice();
+      out.cancelDevEditor = () => this.cancelDevEditor();
+      out.deleteDeviceCur = () => this.askDeleteDevice(e.id);
+    }
+    return out;
+  }
+
+  deviceName(id) { const d = A_DEVICES.find(x => x.id === id); return d ? d.name : '\u2014'; }
+  opSym(op) { return op === 'gt' ? '>' : '<'; }
+  fmtNum(v) { return String(v).replace('.', ','); }
+  condSummary(c) {
+    if (c.type === 'time') return 'Czas ' + c.start + '\u2013' + c.end;
+    if (c.type === 'param') return this.deviceName(c.device) + ' \u00b7 ' + c.param + ' ' + this.opSym(c.op) + ' ' + this.fmtNum(c.value);
+    return c.param1 + ' \u2212 ' + c.param2 + ' ' + this.opSym(c.op) + ' ' + this.fmtNum(c.min);
+  }
+  isNum(v) { return v !== '' && v != null && !isNaN(parseFloat(v)) && isFinite(v); }
+  condError(c) {
+    if (c.type === 'time') { return (c.start === c.end) ? 'godziny „od" i „do" s\u0105 takie same' : ''; }
+    if (c.type === 'param') { if (!this.isNum(c.value)) return 'brak poprawnej warto\u015bci progowej'; return ''; }
+    if (!this.isNum(c.min)) return 'brak poprawnej warto\u015bci r\u00f3\u017cnicy';
+    if (parseFloat(c.min) < 0) return 'r\u00f3\u017cnica nie mo\u017ce by\u0107 ujemna';
+    if (c.device1 === c.device2 && c.param1 === c.param2) return 'oba parametry s\u0105 identyczne';
+    return '';
+  }
+  condPhrase(c) {
+    if (c.type === 'time') return 'jest mi\u0119dzy ' + c.start + ' a ' + c.end;
+    if (c.type === 'param') return this.deviceName(c.device) + ' ' + c.param + ' ' + (c.op === 'gt' ? 'przekroczy' : 'spadnie poni\u017cej') + ' ' + this.fmtNum(c.value);
+    return 'r\u00f3\u017cnica ' + c.param1 + ' \u2212 ' + c.param2 + ' ' + (c.op === 'gt' ? 'przekroczy' : 'b\u0119dzie mniejsza ni\u017c') + ' ' + this.fmtNum(c.min);
+  }
+  cloneEditing() { return JSON.parse(JSON.stringify(this.state.editing)); }
+  newCond(t) {
+    if (t === 'time') return { type:'time', start:'06:00', end:'22:00' };
+    if (t === 'param') return { type:'param', device:'solar', param:'T3', op:'gt', value:60 };
+    return { type:'delta', device1:'solar', param1:'T3', device2:'buffer', param2:'sBuforTemp', op:'gt', min:8 };
+  }
+  newRuleTemplate() { return { id:null, name:'', enabled:true, conditions:[ this.newCond('time') ], action:{ target:'solar', value:1 } }; }
+
+  openEditor(id) { const r = this.state.rules.find(x => x.id === id); this.setState({ editing: JSON.parse(JSON.stringify(r)), autoView:'editor', picker:null }); }
+  newRule() { this.setState({ editing: this.newRuleTemplate(), autoView:'editor', picker:null }); }
+  cancelEditor() { this.setState({ editing:null, autoView:'list', picker:null }); }
+  saveEditor() {
+    const e = this.cloneEditing();
+    if (e.conditions.some(c => this.condError(c))) { this.setState({ editing: Object.assign({}, e, { _showErrors:true }) }); return; }
+    if (!e.name || !e.name.trim()) e.name = 'Bez nazwy';
+    let rules = this.state.rules.slice();
+    e._sync = 'syncing';
+    if (e.id == null) { e.id = Date.now(); rules.push(e); }
+    else { rules = rules.map(r => r.id === e.id ? e : r); }
+    this.setState({ rules, editing:null, autoView:'list', picker:null });
+    this.scheduleSync(e.id);
+  }
+  deleteRule(id) { this.setState({ rules: this.state.rules.filter(r => r.id !== id) }); }
+  askDeleteRule(id) {
+    const r = this.state.rules.find(x => x.id === id);
+    this.setState({ confirm: { title:'Usun\u0105\u0107 automatyzacj\u0119?', msg:'Regu\u0142a \u201e' + (r ? r.name : '') + '\u201d zostanie trwale usuni\u0119ta z bramki.', label:'Usu\u0144', onOk: () => { this.deleteRule(id); this.setState({ confirm:null }); } } });
+  }
+  askDeleteDevice(id) {
+    const d = this.state.devices.find(x => x.id === id);
+    this.setState({ confirm: { title:'Usun\u0105\u0107 urz\u0105dzenie?', msg:'\u201e' + (d ? d.name : '') + '\u201d zostanie usuni\u0119te z systemu. Powi\u0105zane automatyzacje mog\u0105 przesta\u0107 dzia\u0142a\u0107.', label:'Usu\u0144', onOk: () => { this.deleteDevice(id); this.setState({ confirm:null }); } } });
+  }
+  closeConfirm() { this.setState({ confirm:null }); }
+  toggleRule(id) { this.setState({ rules: this.state.rules.map(r => r.id === id ? Object.assign({}, r, { enabled: !r.enabled }) : r) }); this.markSyncing(id); }
+  setName(v) { const e = this.cloneEditing(); e.name = v; this.setState({ editing:e }); }
+  setActionValue(v) { const e = this.cloneEditing(); e.action.value = v; this.setState({ editing:e }); }
+  addCondition() { const e = this.cloneEditing(); e.conditions.push(this.newCond('param')); this.setState({ editing:e }); }
+  removeCondition(i) { const e = this.cloneEditing(); e.conditions.splice(i, 1); this.setState({ editing:e }); }
+  setCondType(i, t) { const e = this.cloneEditing(); e.conditions[i] = this.newCond(t); this.setState({ editing:e }); }
+  patchCond(i, patch, close) { const e = this.cloneEditing(); Object.assign(e.conditions[i], patch); this.setState({ editing:e, picker: close ? null : this.state.picker }); }
+  openPicker(title, options, current, apply, manage) { this.setState({ picker:{ title, options, current, apply, manage: manage || null } }); }
+  closePicker() { this.setState({ picker:null }); }
+  refreshRoomPicker() {
+    const p = this.state.picker;
+    if (p && p.manage === 'rooms') {
+      const cur = this.state.devEditing ? this.state.devEditing.room : p.current;
+      this.setState({ picker: Object.assign({}, p, { options: this.state.rooms.map(r => ({ value:r, label:r })), current: cur }) });
+    }
+  }
+  addRoomFromInput() {
+    const name = (this.state.newRoomName || '').trim();
+    if (!name || this.state.rooms.indexOf(name) >= 0) { this.setState({ newRoomName:'' }); return; }
+    const rooms = this.state.rooms.slice();
+    const bpi = rooms.indexOf('Bez pokoju');
+    if (bpi >= 0) rooms.splice(bpi, 0, name); else rooms.push(name);
+    this.setState({ rooms, newRoomName:'' }, () => this.refreshRoomPicker());
+  }
+  removeRoom(name) {
+    if (name === 'Bez pokoju') return;
+    const rooms = this.state.rooms.filter(r => r !== name);
+    const devices = this.state.devices.map(d => d.room === name ? Object.assign({}, d, { room:'Bez pokoju' }) : d);
+    let devEditing = this.state.devEditing;
+    if (devEditing && devEditing.room === name) devEditing = Object.assign({}, devEditing, { room:'Bez pokoju' });
+    const devFilter = this.state.devFilter === name ? 'Wszystkie' : this.state.devFilter;
+    this.setState({ rooms, devices, devEditing, devFilter }, () => this.refreshRoomPicker());
+  }
+  fireToast(msg) { clearTimeout(this._aToastT); this.setState({ autoToast: msg }); this._aToastT = setTimeout(() => this.setState({ autoToast:'' }), 2600); }
+
+  lseg(active, color) {
+    return { flex:1, boxSizing:'border-box', textAlign:'center', padding:'9px 6px', borderRadius:'9px', font: active ? "600 12px 'Roboto'" : "500 12px 'Roboto'", cursor:'pointer', whiteSpace:'nowrap',
+      background: active ? '#fff' : 'transparent', border: active ? '1px solid rgba(0,0,0,.04)' : '1px solid transparent',
+      boxShadow: active ? '0 1px 2px rgba(80,60,20,.10), 0 4px 10px rgba(80,60,20,.16)' : 'none',
+      color: active ? '#201B13' : '#8A857B', transition:'all .15s' };
+  }
+
+  buildAuto() {
+    const s = this.state;
+    const rules = s.rules.map(r => {
+      const col = A_COLORS[r.action.target] || A_COLORS.solar;
+      const on = r.enabled;
+      const chipC = on ? col.chipC : '#8A857B';
+      const chipBg = on ? col.chipBg : '#EDEAE3';
+      const pill = (dev) => {
+        if (!on) return { background:'#EDEAE3', color:'#8A857B' };
+        if (!dev) return { background:'#EDE8DE', color:'#201B13' };
+        const cc = A_COLORS[dev] || A_COLORS.hub;
+        return { background:cc.chipBg, color:cc.chipC };
+      };
+      const condPills = r.conditions.map((c, i) => {
+        const dev = c.type === 'time' ? null : (c.type === 'param' ? c.device : c.device1);
+        return {
+          showAnd: i > 0,
+          text: this.condSummary(c),
+          pillStyle: Object.assign({ display:'inline-flex', alignItems:'center', font:"500 12px 'Roboto'", padding:'4px 10px', borderRadius:'20px', whiteSpace:'nowrap' }, pill(dev))
+        };
+      });
+      return {
+        id: r.id, name: r.name, enabled: r.enabled,
+        condPills: condPills,
+        actionText: this.deviceName(r.action.target) + ' \u00b7 Przeka\u017anik ' + (r.action.value ? 'ON' : 'OFF'),
+        cardStyle: { background:'#fff', borderRadius:'22px', padding:'16px', boxShadow:'0 2px 10px rgba(80,60,20,.06)', opacity: on ? 1 : .62 },
+        iconBg: on ? col.bg : '#EDEAE3',
+        iconColor: on ? col.c : '#8A857B',
+        chipStroke: chipC,
+        chipStyle: { display:'inline-flex', alignItems:'center', gap:'6px', font:"500 12px 'Roboto'", color:chipC, background:chipBg, padding:'5px 11px', borderRadius:'20px' },
+        toggleStyle: { width:'40px', height:'24px', borderRadius:'12px', background: on ? '#2E9E6B' : '#D9D3C7', position:'relative', cursor:'pointer', flexShrink:0, transition:'background .2s' },
+        knobStyle: { position:'absolute', top:'2px', left: on ? '18px' : '2px', width:'20px', height:'20px', borderRadius:'50%', background:'#fff', transition:'left .2s' },
+        syncing: r._sync === 'syncing',
+        syncError: r._sync === 'error',
+        onToggle: () => this.toggleRule(r.id),
+        onEdit: () => this.openEditor(r.id),
+        onDelete: () => this.askDeleteRule(r.id),
+        onRetry: () => this.markSyncing(r.id)
+      };
+    });
+    const enabled = s.rules.filter(r => r.enabled).length;
+    const out = {
+      autoRules: rules,
+      autoEmpty: s.rules.length === 0,
+      autoSyncText: s.online ? ('Po\u0142\u0105czono na \u017cywo \u00b7 ' + s.rules.length + ' regu\u0142, ' + enabled + ' aktywne') : 'Brak po\u0142\u0105czenia z bramk\u0105 \u00b7 dotknij, aby wznowi\u0107',
+      autoDotStyle: { width:'8px', height:'8px', borderRadius:'50%', background: s.online ? '#2E9E6B' : '#C0492B', flexShrink:0 },
+      toggleOnline: () => this.toggleOnline(),
+      autoToast: s.autoToast,
+      showAutoToast: !!s.autoToast,
+      newRule: () => this.newRule(),
+      fetchRules: () => this.fireToast('Pobrano regu\u0142y z bramki'),
+      sendRules: () => this.fireToast('Wys\u0142ano regu\u0142y do bramki'),
+      cancelEditor: () => this.cancelEditor(),
+      saveEditor: () => this.saveEditor(),
+      addCondition: () => this.addCondition(),
+      onName: (ev) => this.setName(ev.target.value),
+      setActOn: () => this.setActionValue(1),
+      setActOff: () => this.setActionValue(0)
+    };
+
+    const e = s.editing;
+    if (e) {
+      out.editorName = e.name;
+      out.editorTitle = e.id == null ? 'Nowa automatyzacja' : 'Edytuj automatyzacj\u0119';
+      const condErrs = e.conditions.map(c => this.condError(c));
+      const anyErr = condErrs.some(x => x);
+      out.editorValid = !anyErr;
+      out.saveBtnStyle = { flex:1.4, textAlign:'center', borderRadius:'16px', padding:'14px', cursor:'pointer', font:"500 15px 'Roboto'",
+        background: anyErr ? '#D9D3C7' : '#2A2620', color: anyErr ? '#8A857B' : '#fff',
+        boxShadow: anyErr ? 'none' : '0 8px 20px rgba(42,38,32,.26)' };
+      const tcol = A_COLORS[e.action.target] || A_COLORS.solar;
+      out.previewConds = e.conditions.map((c, i) => {
+        const dev = c.type === 'time' ? null : (c.type === 'param' ? c.device : c.device1);
+        const cc = dev ? (A_COLORS[dev] || A_COLORS.hub) : null;
+        return {
+          showAnd: i > 0,
+          text: this.condSummary(c),
+          pillStyle: { display:'inline-flex', alignItems:'center', font:"500 12px 'Roboto'", padding:'4px 10px', borderRadius:'20px', whiteSpace:'nowrap',
+            background: cc ? cc.chipBg : '#EDE8DE', color: cc ? cc.chipC : '#201B13' }
+        };
+      });
+      out.previewThenText = this.deviceName(e.action.target) + ' \u00b7 Przeka\u017anik ' + (e.action.value ? 'ON' : 'OFF');
+      out.previewThenStyle = { display:'inline-flex', alignItems:'center', gap:'6px', font:"500 12px 'Roboto'", color:tcol.chipC, background:tcol.chipBg, padding:'5px 11px', borderRadius:'20px' };
+      out.previewThenStroke = tcol.chipC;
+      out.actOnStyle = this.lseg(e.action.value === 1, '#E1850B');
+      out.actOffStyle = this.lseg(e.action.value === 0, '#E1850B');
+      out.editorTargetName = this.deviceName(e.action.target);
+      out.openTargetPicker = () => this.openPicker('Urz\u0105dzenie docelowe', A_DEVICES.map(d => ({ value:d.id, label:d.name })), e.action.target,
+        (v) => { const e2 = this.cloneEditing(); e2.action.target = v; this.setState({ editing:e2, picker:null }); });
+      out.editorConds = e.conditions.map((c, i) => {
+        const err = condErrs[i];
+        const vm = {
+          num: i + 1,
+          hasError: !!err, errorText: err,
+          condCardStyle: { background:'#fff', borderRadius:'20px', padding:'14px', boxShadow:'0 2px 10px rgba(80,60,20,.05)', border: err ? '1.5px solid #E7B4A8' : '1.5px solid transparent' },
+          isTime: c.type === 'time', isParam: c.type === 'param', isDelta: c.type === 'delta',
+          canRemove: e.conditions.length > 1,
+          onRemove: () => this.removeCondition(i),
+          tTimeStyle:  this.lseg(c.type === 'time'),
+          tParamStyle: this.lseg(c.type === 'param'),
+          tDeltaStyle: this.lseg(c.type === 'delta'),
+          setTime:  () => this.setCondType(i, 'time'),
+          setParam: () => this.setCondType(i, 'param'),
+          setDelta: () => this.setCondType(i, 'delta'),
+          opGtStyle: this.lseg(c.op === 'gt'),
+          opLtStyle: this.lseg(c.op === 'lt'),
+          setGt: () => this.patchCond(i, { op:'gt' }),
+          setLt: () => this.patchCond(i, { op:'lt' })
+        };
+        if (c.type === 'time') {
+          vm.start = c.start; vm.end = c.end;
+          vm.onStart = (ev) => this.patchCond(i, { start: ev.target.value });
+          vm.onEnd = (ev) => this.patchCond(i, { end: ev.target.value });
+        } else if (c.type === 'param') {
+          vm.deviceName = this.deviceName(c.device);
+          vm.paramName = c.param;
+          vm.value = String(c.value);
+          vm.onValue = (ev) => this.patchCond(i, { value: ev.target.value });
+          vm.onDevice = () => this.openPicker('Urz\u0105dzenie', A_DEVICES.map(d => ({ value:d.id, label:d.name })), c.device,
+            (v) => this.patchCond(i, { device:v, param: A_PARAMS[v][0] }, true));
+          vm.onParam = () => this.openPicker('Parametr', A_PARAMS[c.device].map(p => ({ value:p, label:p })), c.param,
+            (v) => this.patchCond(i, { param:v }, true));
+        } else {
+          vm.device1Name = this.deviceName(c.device1);
+          vm.param1Name = c.param1;
+          vm.device2Name = this.deviceName(c.device2);
+          vm.param2Name = c.param2;
+          vm.min = String(c.min);
+          vm.onMin = (ev) => this.patchCond(i, { min: ev.target.value });
+          vm.onDevice1 = () => this.openPicker('Urz\u0105dzenie 1', A_DEVICES.map(d => ({ value:d.id, label:d.name })), c.device1,
+            (v) => this.patchCond(i, { device1:v, param1: A_PARAMS[v][0] }, true));
+          vm.onParam1 = () => this.openPicker('Parametr 1', A_PARAMS[c.device1].map(p => ({ value:p, label:p })), c.param1,
+            (v) => this.patchCond(i, { param1:v }, true));
+          vm.onDevice2 = () => this.openPicker('Urz\u0105dzenie 2', A_DEVICES.map(d => ({ value:d.id, label:d.name })), c.device2,
+            (v) => this.patchCond(i, { device2:v, param2: A_PARAMS[v][0] }, true));
+          vm.onParam2 = () => this.openPicker('Parametr 2', A_PARAMS[c.device2].map(p => ({ value:p, label:p })), c.param2,
+            (v) => this.patchCond(i, { param2:v }, true));
+        }
+        return vm;
+      });
+    }
+
+    const p = s.picker;
+    out.pickerOpen = !!p;
+    out.pickerTitle = p ? p.title : '';
+    out.pickerManageRooms = !!(p && p.manage === 'rooms');
+    out.pickerOptions = p ? p.options.map(o => ({
+      label:o.label, selected:o.value === p.current,
+      removable: !!(p.manage === 'rooms' && o.value !== 'Bez pokoju'),
+      onPick: () => p.apply(o.value),
+      onRemove: () => this.removeRoom(o.value)
+    })) : [];
+    out.newRoomName = s.newRoomName || '';
+    out.onNewRoomInput = (ev) => this.setState({ newRoomName: ev.target.value });
+    out.addRoom = () => this.addRoomFromInput();
+    out.closePicker = () => this.closePicker();
+    out.stopSheet = (ev) => ev.stopPropagation();
+    return out;
+  }
+
+  buildBar(bars, ticks, unit) {
+    const h = React.createElement;
+    const X0 = 32, X1 = 312, Y0 = 14, Y1 = 120, n = bars.length;
+    const max = Math.max.apply(null, bars) || 1, hi = max * 1.15;
+    const yFor = v => Y1 - (v / hi) * (Y1 - Y0);
+    const slot = (X1 - X0) / n, barW = Math.max(slot * 0.6, 2);
+    const kids = [];
+    [Y0, (Y0 + Y1) / 2, Y1].forEach((y, i) => kids.push(h('line', { key:'g'+i, x1:X0, y1:y, x2:X1, y2:y, stroke:'rgba(255,255,255,.16)', strokeWidth:1 })));
+    [[Y0+3, Math.round(hi)], [(Y0+Y1)/2+3, Math.round(hi/2)], [Y1+3, 0]].forEach((p, i) =>
+      kids.push(h('text', { key:'y'+i, x:28, y:p[0], textAnchor:'end', fontSize:9, fill:'rgba(255,255,255,.7)', fontFamily:'Roboto' }, String(p[1]))));
+    bars.forEach((v, i) => {
+      const cx = X0 + slot * (i + 0.5), y = yFor(v), hgt = Math.max(Y1 - y, 0);
+      kids.push(h('rect', { key:'b'+i, x:cx - barW/2, y:y, width:barW, height:hgt, rx:Math.min(barW/2, 3), fill: v >= max*0.999 ? '#fff' : 'rgba(255,255,255,.72)' }));
+    });
+    ticks.forEach((t, i) => {
+      const x = X0 + t.f * (X1 - X0);
+      kids.push(h('text', { key:'x'+i, x:x, y:141, textAnchor:'middle', fontSize:8, fill:'rgba(255,255,255,.7)', fontFamily:'Roboto' }, t.l));
+    });
+    kids.push(h('text', { key:'u', x:X1, y:12, textAnchor:'end', fontSize:9, fill:'rgba(255,255,255,.6)', fontFamily:'Roboto' }, unit));
+    return h('svg', { width:'100%', viewBox:'0 0 322 150', style:{ display:'block', overflow:'visible' } }, kids);
+  }
+
+  buildSolarSchema() {
+    const h = React.createElement;
+    const W = 'rgba(255,255,255,';
+    const F = 'Roboto, sans-serif';
+    const kids = [];
+    kids.push(h('defs', { key:'defs' },
+      h('linearGradient', { id:'tankGrad', x1:'0', y1:'0', x2:'0', y2:'1' },
+        h('stop', { offset:'0%', stopColor:'rgba(255,255,255,.30)' }),
+        h('stop', { offset:'100%', stopColor:'rgba(255,255,255,.05)' })
+      )
+    ));
+    // two pipes each (supply + return), drawn behind. Collector pipes exit the top manifold.
+    const pipe = (x1, y1, x2, y2, key) => h('path', { key:key, d:'M'+x1+','+y1+' L'+x2+','+y2, fill:'none', stroke:W+'.4)', strokeWidth:5, strokeLinecap:'round' });
+    kids.push(pipe(88, 98, 138, 98, 'c1'));    // hot out (upper, axis = manifold)
+    kids.push(pipe(212, 98, 262, 98, 'd1'));   // hot (upper, has pump)
+    kids.push(pipe(88, 188, 138, 188, 'c2'));  // cold return (lower, axis = bottom rail)
+    kids.push(pipe(212, 188, 262, 188, 'd2')); // cold return (lower)
+
+    // collector (heat-pipe): top manifold (collector zbiorczy) + vacuum tubes, height ~ small buffer
+    kids.push(h('text', { key:'ctv', x:58, y:86, textAnchor:'middle', fontSize:15, fontWeight:600, fill:'#fff', fontFamily:F }, '71,2\u00b0C'));
+    kids.push(h('rect', { key:'ch', x:23, y:92, width:68, height:12, rx:3, fill:'rgba(255,255,255,.30)', stroke:W+'.6)', strokeWidth:1.2 }));
+    for (let i = 0; i < 10; i++) { const x = 27 + i * 6.4; kids.push(h('rect', { key:'ct'+i, x:x, y:102, width:3.4, height:87, rx:1.7, fill:W+'.5)' })); }
+    kids.push(h('rect', { key:'crail', x:23, y:186, width:68, height:5, rx:2.5, fill:'rgba(255,255,255,.24)', stroke:W+'.5)', strokeWidth:1 }));
+    kids.push(h('text', { key:'cll', x:58, y:212, textAnchor:'middle', fontSize:10, fill:W+'.75)', fontFamily:F }, 'Kolektor'));
+
+    // big buffer (center) - values only, no labels
+    kids.push(h('rect', { key:'bb', x:138, y:52, width:74, height:144, rx:13, fill:'url(#tankGrad)', stroke:W+'.6)', strokeWidth:1.5 }));
+    [['73,2', 80], ['64,1', 112], ['58,1', 144], ['51,5', 176]].forEach((t, i) => {
+      kids.push(h('text', { key:'bt'+i, x:175, y:t[1], textAnchor:'middle', fontSize:12.5, fontWeight:500, fill:'#fff', fontFamily:F }, t[0] + '\u00b0C'));
+    });
+    kids.push(h('text', { key:'bbl', x:175, y:212, textAnchor:'middle', fontSize:10, fill:W+'.75)', fontFamily:F }, 'Zbiornik g\u0142\u00f3wny'));
+
+    // small buffer (right)
+    kids.push(h('rect', { key:'sb', x:262, y:86, width:62, height:110, rx:12, fill:'url(#tankGrad)', stroke:W+'.6)', strokeWidth:1.5 }));
+    kids.push(h('text', { key:'sbv', x:293, y:145, textAnchor:'middle', fontSize:15, fontWeight:600, fill:'#fff', fontFamily:F }, '62,3\u00b0C'));
+    kids.push(h('text', { key:'sbl', x:293, y:212, textAnchor:'middle', fontSize:10, fill:W+'.75)', fontFamily:F }, 'Zbiornik dodatkowy'));
+
+    // pumps: triangle-in-circle, triangle spins about its centroid when running
+    const pump = (cx, cy, running, label) => {
+      const tri = h('path', { key:'t', d:'M9,0 L-4.5,7.79 L-4.5,-7.79 Z', fill: running ? '#E1850B' : '#C77D3A' });
+      const rot = h('g', { key:'r', style: running ? { animation:'spin 1.15s linear infinite', transformBox:'fill-box', transformOrigin:'33.33% 50%' } : {} }, tri);
+      return h('g', { key:'pm'+cx+'-'+cy }, [
+        h('text', { key:'l', x:cx, y:cy - 19, textAnchor:'middle', fontSize:11, fontWeight:600, fill:'#fff', fontFamily:F }, label),
+        h('circle', { key:'c', cx:cx, cy:cy, r:10.5, fill:'#fff', stroke:W+'.5)', strokeWidth:1 }),
+        h('g', { key:'g', transform:'translate('+cx+','+cy+')' }, rot)
+      ]);
+    };
+    kids.push(pump(113, 98, true, '78%'));
+    const sbufOn = this.state.sbufOn;
+    kids.push(pump(237, 98, sbufOn, ''));
+
+    return h('svg', { width:'100%', viewBox:'0 0 344 224', style:{ display:'block', overflow:'visible' } }, kids);
+  }
+
+  buildSolar() {
+    const tab = this.state.solarTab, cfg = SOLAR[tab];
+    const per = cfg.periods[Math.min(this.state.solarIdx, cfg.periods.length - 1)];
+    return {
+      solarSchema: this.buildSolarSchema(),
+      solarChart: this.buildBar(per.bars, per.ticks || cfg.ticks, cfg.unit),
+      solarPeriodLabel: per.label,
+      solarRuntime: per.run,
+      solarYield: per.yield,
+    };
+  }
+
+  buildChart() {
+    const metric = this.state.metric, range = this.state.range;
+    const arr = CH_DATA[metric][range];
+    let min = Math.min.apply(null, arr), max = Math.max.apply(null, arr);
+    if (metric === 'temp') { min = Math.min(min, 22); max = Math.max(max, 22); }
+    const pad = Math.max((max - min) * 0.15, 1);
+    const lo = min - pad, hi = max + pad;
+    const X0 = 30, X1 = 300, Y0 = 16, Y1 = 120, n = arr.length;
+    const xFor = i => n === 1 ? X0 : X0 + (i / (n - 1)) * (X1 - X0);
+    const yFor = v => Y1 - (v - lo) / (hi - lo) * (Y1 - Y0);
+    const pts = arr.map((v, i) => xFor(i).toFixed(1) + ',' + yFor(v).toFixed(1)).join(' ');
+    const unit = metric === 'temp' ? '\u00b0C' : '%';
+    const isTemp = metric === 'temp';
+    const h = React.createElement;
+    const kids = [];
+    [16, 68, 120].forEach((y, i) => kids.push(h('line', { key: 'g' + i, x1: 30, y1: y, x2: 300, y2: y, stroke: 'rgba(255,255,255,.16)', strokeWidth: 1 })));
+    [[19, Math.round(hi)], [71, Math.round((hi + lo) / 2)], [123, Math.round(lo)]].forEach((p, i) =>
+      kids.push(h('text', { key: 'y' + i, x: 26, y: p[0], textAnchor: 'end', fontSize: 9, fill: 'rgba(255,255,255,.7)', fontFamily: 'Roboto' }, p[1] + unit)));
+    if (isTemp) {
+      const sy = yFor(22);
+      kids.push(h('line', { key: 'sl', x1: 30, y1: sy, x2: 300, y2: sy, stroke: 'rgba(255,255,255,.55)', strokeWidth: 1.5, strokeDasharray: '5 4' }));
+      kids.push(h('text', { key: 'st', x: 300, y: sy, dy: -4, textAnchor: 'end', fontSize: 9, fill: 'rgba(255,255,255,.85)', fontFamily: 'Roboto' }, 'zadana 22\u00b0C'));
+    }
+    kids.push(h('polygon', { key: 'area', points: X0 + ',' + Y1 + ' ' + pts + ' ' + X1 + ',' + Y1, fill: 'rgba(255,255,255,.14)' }));
+    kids.push(h('polyline', { key: 'line', points: pts, fill: 'none', stroke: '#fff', strokeWidth: 2.5, strokeLinejoin: 'round', strokeLinecap: 'round' }));
+    CH_TICKS[range].forEach((t, i) => {
+      const x = X0 + t.f * (X1 - X0);
+      kids.push(h('text', { key: 'x' + i, x: x, y: 141, textAnchor: 'middle', fontSize: 8, fill: 'rgba(255,255,255,.7)', fontFamily: 'Roboto' }, t.l));
+    });
+    return { chartSvg: h('svg', { width: '100%', viewBox: '0 0 320 150', style: { display: 'block', overflow: 'visible' } }, kids) };
+  }
+
+  renderVals() {
+    const s = this.state, d = s.detail, sd = s.solarDetail, any = d || sd;
+    const seg = (active, big, color) => Object.assign(
+      { textAlign:'center', padding: big ? '9px 0' : '7px 15px', borderRadius: big ? '13px' : '18px',
+        font: "500 " + (big ? '14' : '13') + "px 'Roboto'", cursor:'pointer', whiteSpace:'nowrap', flex: big ? 1 : 'none' },
+      active ? { background:'#fff', color:color } : { color:'rgba(255,255,255,.75)' }
+    );
+    return Object.assign({
+      isLightBar: !any,
+      isDash: s.tab === 'dash' && !any,
+      isAuto: s.tab === 'auto' && s.autoView === 'list' && !any,
+      showEditor: s.tab === 'auto' && s.autoView === 'editor' && !any,
+      isDev: s.tab === 'dev' && s.devView === 'list' && !any,
+      showDevEditor: s.tab === 'dev' && s.devView === 'editor' && !any,
+      showDetail: d,
+      showSolar: sd,
+      interval: s.interval,
+      canSave: s.interval !== s.savedInterval,
+      showToast: s.showToast,
+      sliderStyle: { width:'100%', marginTop:'16px', background: 'linear-gradient(to right,#fff ' + ((s.interval - 1) / 4 * 100) + '%, rgba(255,255,255,.28) ' + ((s.interval - 1) / 4 * 100) + '%)' },
+      metricTempStyle: seg(s.metric === 'temp', true, '#0E7E95'),
+      metricHumStyle: seg(s.metric === 'hum', true, '#0E7E95'),
+      r24Style: seg(s.range === '24h', false, '#0E7E95'),
+      r7Style: seg(s.range === '7d', false, '#0E7E95'),
+      rMStyle: seg(s.range === 'month', false, '#0E7E95'),
+      rYStyle: seg(s.range === 'year', false, '#0E7E95'),
+      sTabDay: seg(s.solarTab === 'day', false, '#E1850B'),
+      sTabMonth: seg(s.solarTab === 'month', false, '#E1850B'),
+      sTabYear: seg(s.solarTab === 'year', false, '#E1850B'),
+      sTabTotal: seg(s.solarTab === 'total', false, '#E1850B'),
+      openDetail: () => this.setState({ detail:true }),
+      closeDetail: () => this.setState({ detail:false }),
+      openSolar: () => this.setState({ solarDetail:true, solarTab:'day', solarIdx: SOLAR.day.periods.length - 1 }),
+      closeSolar: () => this.setState({ solarDetail:false }),
+      toggleSbuf: () => this.setState(st => ({ sbufOn: !st.sbufOn })),
+      sbufTrackStyle: { width:'64px', height:'36px', borderRadius:'18px', background: s.sbufOn ? '#fff' : 'rgba(255,255,255,.30)', position:'relative', cursor:'pointer', display:'inline-block', transition:'background .2s' },
+      sbufKnobStyle: { position:'absolute', top:'4px', left: s.sbufOn ? '32px' : '4px', width:'28px', height:'28px', borderRadius:'50%', background: s.sbufOn ? '#E1850B' : '#fff', transition:'left .2s' },
+      sbufStateLabel: s.sbufOn ? 'ON' : 'OFF',
+      setSolarDay: () => this.setState({ solarTab:'day', solarIdx: SOLAR.day.periods.length - 1 }),
+      setSolarMonth: () => this.setState({ solarTab:'month', solarIdx: SOLAR.month.periods.length - 1 }),
+      setSolarYear: () => this.setState({ solarTab:'year', solarIdx: SOLAR.year.periods.length - 1 }),
+      setSolarTotal: () => this.setState({ solarTab:'total', solarIdx: SOLAR.total.periods.length - 1 }),
+      solarPrev: () => this.setState(st => ({ solarIdx: Math.max(0, st.solarIdx - 1) })),
+      solarNext: () => this.setState(st => ({ solarIdx: Math.min(SOLAR[st.solarTab].periods.length - 1, st.solarIdx + 1) })),
+      setMetricTemp: () => this.setState({ metric:'temp' }),
+      setMetricHum: () => this.setState({ metric:'hum' }),
+      setR24: () => this.setState({ range:'24h' }),
+      setR7: () => this.setState({ range:'7d' }),
+      setRM: () => this.setState({ range:'month' }),
+      setRY: () => this.setState({ range:'year' }),
+      onInterval: (e) => this.setState({ interval: parseInt(e.target.value, 10), showToast:false }),
+      saveInterval: () => {
+        try { localStorage.setItem('climateInterval', String(this.state.interval)); } catch (e) {}
+        clearTimeout(this._toastT);
+        this.setState({ savedInterval: this.state.interval, showToast:true });
+        this._toastT = setTimeout(() => this.setState({ showToast:false }), 2600);
+      },
+      goDash: () => this.setState({ tab:'dash', detail:false, solarDetail:false }),
+      goAuto: () => this.setState({ tab:'auto', detail:false, solarDetail:false, autoView:'list', picker:null }),
+      goDev: () => this.setState({ tab:'dev', detail:false, solarDetail:false, devView:'list', picker:null }),
+      confirmOpen: !!s.confirm,
+      confirmTitle: s.confirm ? s.confirm.title : '',
+      confirmMsg: s.confirm ? s.confirm.msg : '',
+      confirmLabel: s.confirm ? s.confirm.label : '',
+      confirmOk: () => { if (this.state.confirm) this.state.confirm.onOk(); },
+      closeConfirm: () => this.closeConfirm(),
+      stopConfirm: (ev) => ev.stopPropagation(),
+    }, this.buildChart(), this.buildSolar(), this.buildAuto(), this.buildDevices());
+  }
+}
+</script>
+</body>
+</html>
