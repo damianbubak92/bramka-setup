@@ -92,6 +92,11 @@ class GatewayClient(
 
     suspend fun removeNode(address: Int): String = command("removenode&address=$address")
 
+    /** Zmiana etykiet noda: nazwa + pokój (tylko baza — node o nich nie wie). */
+    suspend fun updateNode(address: Int, name: String, room: String): Boolean =
+        command("updatenode&address=$address&name=${name.urlEncode()}&room=${room.urlEncode()}")
+            .trim().equals("OK", ignoreCase = true)
+
     /** Surowy JSON reguł (schemat apki) — parsowanie w warstwie wyżej. */
     suspend fun getRulesJson(): String = command("getrules")
 

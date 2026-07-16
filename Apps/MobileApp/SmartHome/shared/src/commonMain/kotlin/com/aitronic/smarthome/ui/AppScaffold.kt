@@ -65,7 +65,7 @@ fun AppScaffold(store: GatewayStore? = null, repo: SmartHomeRepository = SampleR
                         onOpenClimate = { detail = Detail.Climate },
                     )
                     Tab.Automations -> AutomationsRoot(repo, store)
-                    Tab.Devices -> DevicesRoot(repo)
+                    Tab.Devices -> DevicesRoot(repo, store)
                 }
             }
         }

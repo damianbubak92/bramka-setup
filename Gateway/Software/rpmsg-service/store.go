@@ -162,6 +162,12 @@ func initNodeSchema(db *sql.DB) error {
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return err
 	}
+	// migrate: node.room - user-facing grouping for the phone's device manager.
+	// Purely a label (the node knows nothing about rooms); NULL/empty = "Bez pokoju".
+	if _, err := db.Exec(`ALTER TABLE node ADD COLUMN room TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
 	return seedParamDefs(db)
 }
 
@@ -272,6 +278,14 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) 
 
 // NodeStatus returns a node's lifecycle state + identity (for the telemetry-path
 // state machine). status is 'active' for pre-migration rows (NULL).
+// UpdateNode sets the user-facing label and room of an already registered node.
+// Both are pure labels - the node knows nothing about either. The phone's device
+// editor saves them together, so this is one call (and one round trip).
+func (s *Store) UpdateNode(address uint8, name, room string) error {
+	_, err := s.db.Exec(`UPDATE node SET name = ?, room = ? WHERE node_id = ?`, name, room, address)
+	return err
+}
+
 func (s *Store) NodeStatus(address uint8) (status, factoryID string, nodeType uint8, exists bool, err error) {
 	var st, fid sql.NullString
 	var nt int
@@ -311,6 +325,7 @@ type NodeInfo struct {
 	Status        string `json:"status"`       // pending_join | active | pending_remove
 	LastSeen      int64  `json:"lastSeen"`     // unix s of last telemetry (0 = never)
 	ProvisionedAt int64  `json:"provisionedAt"` // unix s
+	Room          string `json:"room"`         // user grouping ("" = Bez pokoju)
 }
 
 // NodeState is the LAST KNOWN telemetry of one node, as stored in node_param.
@@ -406,7 +421,8 @@ func (s *Store) ListState() ([]NodeState, error) {
 func (s *Store) ListNodes() ([]NodeInfo, error) {
 	rows, err := s.db.Query(
 		`SELECT node_id, node_type, COALESCE(name,''), COALESCE(factory_id,''),
-		        COALESCE(status,'active'), COALESCE(last_seen,0), COALESCE(provisioned_at,0)
+		        COALESCE(status,'active'), COALESCE(last_seen,0), COALESCE(provisioned_at,0),
+		        COALESCE(room,'')
 		 FROM node
 		 WHERE factory_id IS NOT NULL AND COALESCE(status,'active') <> 'pending_remove'
 		 ORDER BY node_id`)
@@ -418,7 +434,7 @@ func (s *Store) ListNodes() ([]NodeInfo, error) {
 	for rows.Next() {
 		var n NodeInfo
 		if err := rows.Scan(&n.Address, &n.Type, &n.Name, &n.FactoryID,
-			&n.Status, &n.LastSeen, &n.ProvisionedAt); err != nil {
+			&n.Status, &n.LastSeen, &n.ProvisionedAt, &n.Room); err != nil {
 			return nil, err
 		}
 		out = append(out, n)

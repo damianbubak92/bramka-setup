@@ -22,16 +22,22 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.SmartHomeRepository
+import com.aitronic.smarthome.data.net.NodeTypes
 import com.aitronic.smarthome.domain.model.Device
 import com.aitronic.smarthome.ui.components.*
 import com.aitronic.smarthome.ui.icons.ShIcons
 import com.aitronic.smarthome.ui.theme.Sh
 import com.aitronic.smarthome.ui.theme.deviceColor
+import kotlinx.coroutines.launch
 
 @Composable private fun noRipple() = remember { MutableInteractionSource() }
 
 private const val NO_ROOM = "Bez pokoju"
+
+/** Node uznajemy za online, jeśli odezwał się w tym oknie (telemetria leci co ~2 min). */
+private const val ONLINE_WINDOW_S = 360L
 
 private fun deviceIcon(type: String): ImageVector = when (type) {
     "solar" -> ShIcons.Sun
@@ -47,12 +53,35 @@ private fun deviceIcon(type: String): ImageVector = when (type) {
 private data class DevDraft(val id: Long?, val name: String, val type: String, val room: String, val joining: Boolean)
 private data class ConfirmReq(val title: String, val msg: String, val onOk: () -> Unit)
 
+/**
+ * Urządzenia = **nody zarejestrowane w bramce** (`command=listnodes` → tabela `node`).
+ * Nazwa i pokój są trwałe w bazie (`command=updatenode`); online liczymy z `last_seen`
+ * (node żyje, jeśli odezwał się w ciągu [ONLINE_WINDOW_S] — telemetria leci co ~2 min).
+ */
 @Composable
-fun DevicesRoot(repo: SmartHomeRepository) {
-    val devices = remember { mutableStateListOf<Device>().apply { addAll(repo.devices()) } }
-    val rooms = remember { mutableStateListOf<String>().apply { addAll(repo.rooms()) } }
+fun DevicesRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
+    val scope = rememberCoroutineScope()
+    val gw = store?.state?.collectAsState()?.value
     val typeNames = remember { repo.deviceTypes().associate { it.id to it.name } }
-    val joinTypes = remember { listOf("light", "climate", "blind", "heating") }
+
+    val devices: List<Device> = if (gw == null) remember { repo.devices() } else {
+        val nowS = gw.telemetry.values.maxOfOrNull { it.ts } ?: 0L
+        gw.nodes.map { n ->
+            Device(
+                id = n.address.toLong(),
+                name = n.name.ifBlank { NodeTypes.label(n.type) },
+                type = NodeTypes.toUiType(n.type),
+                room = n.room.ifBlank { NO_ROOM },
+                online = n.lastSeen > 0 && (nowS - n.lastSeen) <= ONLINE_WINDOW_S,
+            )
+        }
+    }
+
+    // Lista pokoi: katalog bazowy + te faktycznie używane przez nody (z bazy).
+    val rooms = remember { mutableStateListOf<String>().apply { addAll(repo.rooms()) } }
+    val allRooms = remember(devices, rooms.toList()) {
+        (rooms + devices.map { it.room }).distinct().sortedBy { it == NO_ROOM } // "Bez pokoju" na końcu
+    }
 
     var filter by remember { mutableStateOf("Wszystkie") }
     var editing by remember { mutableStateOf<DevDraft?>(null) }
@@ -63,11 +92,13 @@ fun DevicesRoot(repo: SmartHomeRepository) {
     Box(Modifier.fillMaxSize().background(Sh.bg)) {
         if (editing == null) {
             DevList(
-                devices = devices, rooms = rooms, typeNames = typeNames, filter = filter,
+                devices = devices, rooms = allRooms, typeNames = typeNames, filter = filter,
                 onFilter = { filter = it },
+                pending = gw?.joins?.size ?: 0,
                 onJoin = {
-                    val t = joinTypes[devices.size % joinTypes.size]
-                    editing = DevDraft(null, "", t, NO_ROOM, joining = true)
+                    // Prawdziwy JOIN: node zgłasza się sam (bramka wypycha join_pending po WS).
+                    // Tu tylko odświeżamy listę oczekujących.
+                    scope.launch { store?.refresh() }
                 },
                 onOpen = { d -> editing = DevDraft(d.id, d.name, d.type, d.room, joining = false) },
             )
@@ -80,14 +111,17 @@ fun DevicesRoot(repo: SmartHomeRepository) {
                 onDelete = {
                     val d = editing!!
                     confirm = ConfirmReq("Usunąć urządzenie?", "„${d.name.ifBlank { "urządzenie" }}\" zostanie usunięte. Powiązane automatyzacje mogą przestać działać.") {
-                        devices.removeAll { it.id == d.id }; confirm = null; editing = null
+                        // Graceful remove w bramce: wiersz znika dopiero gdy node potwierdzi.
+                        d.id?.let { id -> scope.launch { store?.removeNode(id.toInt()) } }
+                        confirm = null; editing = null
                     }
                 },
                 onSave = {
                     val d = editing!!
-                    val saved = Device(d.id ?: (devices.maxOfOrNull { it.id }?.plus(1) ?: 1L), d.name.ifBlank { typeNames[d.type] ?: "Urządzenie" }, d.type, d.room, online = true)
-                    val i = devices.indexOfFirst { it.id == saved.id }
-                    if (i >= 0) devices[i] = saved else devices.add(saved)
+                    d.id?.let { id ->
+                        val room = if (d.room == NO_ROOM) "" else d.room
+                        scope.launch { store?.updateNode(id.toInt(), d.name.ifBlank { typeNames[d.type] ?: "Urządzenie" }, room) }
+                    }
                     editing = null
                 },
             )
@@ -97,10 +131,14 @@ fun DevicesRoot(repo: SmartHomeRepository) {
             val cur = editing?.room ?: NO_ROOM
             SheetPicker(
                 title = "Pokój",
-                options = rooms.map { r ->
+                options = allRooms.map { r ->
                     PickerOption(r, r == cur, { editing = editing?.copy(room = r); roomPicker = false }, removable = r != NO_ROOM, onRemove = {
-                        // przenieś urządzenia do "Bez pokoju", usuń pokój
-                        for (j in devices.indices) if (devices[j].room == r) devices[j] = devices[j].copy(room = NO_ROOM)
+                        // przypisania żyją w bazie -> przenieś tam nody z tego pokoju
+                        scope.launch {
+                            devices.filter { it.room == r }.forEach { d ->
+                                d.id?.let { store?.updateNode(it.toInt(), d.name, "") }
+                            }
+                        }
                         if (editing?.room == r) editing = editing?.copy(room = NO_ROOM)
                         rooms.remove(r)
                     })
@@ -138,6 +176,7 @@ fun DevicesRoot(repo: SmartHomeRepository) {
 @Composable
 private fun DevList(
     devices: List<Device>, rooms: List<String>, typeNames: Map<String, String>, filter: String,
+    pending: Int,
     onFilter: (String) -> Unit, onJoin: () -> Unit, onOpen: (Device) -> Unit,
 ) {
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
@@ -145,6 +184,8 @@ private fun DevList(
             Text("Urządzenia", color = Sh.textPrimary, fontSize = 28.sp, fontWeight = FontWeight.W500, letterSpacing = (-0.2).sp)
             val onlineCount = devices.count { it.online }
             Text("${devices.size} urządzeń · $onlineCount online", color = Sh.textMuted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+            // JOIN jest realny: node zgłasza się sam po wciśnięciu przycisku, a bramka
+            // wypycha zdarzenie po WS. Tu pokazujemy oczekujących + ręczne odświeżenie.
             Row(
                 Modifier.padding(top = 12.dp).clip(RoundedCornerShape(14.dp)).border(1.5.dp, Sh.dashed, RoundedCornerShape(14.dp))
                     .clickable(noRipple(), null) { onJoin() }.padding(horizontal = 14.dp, vertical = 9.dp),
@@ -152,7 +193,10 @@ private fun DevList(
             ) {
                 Icon(ShIcons.JoinRing, null, tint = Sh.textPrimary, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Symuluj urządzenie w trybie parowania (JOIN)", color = Sh.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.W500)
+                Text(
+                    if (pending > 0) "Oczekujące na dodanie: $pending" else "Wciśnij JOIN na urządzeniu, aby je dodać",
+                    color = Sh.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.W500,
+                )
             }
         }
 

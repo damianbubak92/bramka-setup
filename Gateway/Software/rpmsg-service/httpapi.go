@@ -96,6 +96,9 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, c
 	case strings.Contains(req, "command=approvejoin"):
 		handleApproveJoin(p, store, joins, hub, req, w, r)
 
+	case strings.Contains(req, "command=updatenode"):
+		handleUpdateNode(store, req, w, r)
+
 	case strings.Contains(req, "command=removenode"):
 		handleRemoveNode(p, store, hub, req, w, r)
 
@@ -272,6 +275,34 @@ func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, hub *WSHu
 // Request: "command=removenode&address=<dec>". Best-effort to the node (if it's
 // unreachable the row is still removed; monotonic allocation prevents the freed
 // address from being reused under a returning stale node).
+// handleUpdateNode answers "command=updatenode&address=<dec>&name=<enc>&room=<enc>".
+// Labels only: no node traffic - the node knows nothing about its name or room.
+// An empty room is legal and means "Bez pokoju".
+func handleUpdateNode(store *Store, req string, w http.ResponseWriter, r *http.Request) {
+	vals, _ := url.ParseQuery(req)
+	addr64, err := strconv.ParseUint(strings.TrimSpace(vals.Get("address")), 10, 8)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "bad address\n")
+		return
+	}
+	name := strings.TrimSpace(vals.Get("name"))
+	if name == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "empty name\n")
+		return
+	}
+	room := strings.TrimSpace(vals.Get("room"))
+	if err := store.UpdateNode(uint8(addr64), name, room); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "DB error\n")
+		log.Printf("[HTTP] updatenode 0x%02X failed: %v", uint8(addr64), err)
+		return
+	}
+	io.WriteString(w, "OK")
+	log.Printf("[HTTP] updatenode 0x%02X -> name=%q room=%q", uint8(addr64), name, room)
+}
+
 func handleRemoveNode(p *Protocol, store *Store, hub *WSHub, req string, w http.ResponseWriter, r *http.Request) {
 	vals, _ := url.ParseQuery(req)
 	addr64, err := strconv.ParseUint(strings.TrimSpace(vals.Get("address")), 10, 8)

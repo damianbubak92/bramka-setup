@@ -149,6 +149,11 @@ class GatewayStore(
         refresh()
     }
 
+    suspend fun updateNode(address: Int, name: String, room: String): Result<Unit> = runCatching {
+        if (!client.updateNode(address, name, room)) error("Bramka odrzuciła zmianę")
+        refresh()
+    }
+
     suspend fun rulesJson(): Result<String> = runCatching { client.getRulesJson() }
 
     suspend fun saveRulesJson(json: String): Result<Unit> = runCatching {

@@ -18,6 +18,8 @@ data class NodeInfoDto(
     val status: String = "active", // pending_join | active | pending_remove
     val lastSeen: Long = 0,
     val provisionedAt: Long = 0,
+    /** Grupowanie w apce; "" = Bez pokoju. Etykieta — node o pokoju nic nie wie. */
+    val room: String = "",
 )
 
 /** command=listjoins → [{factory,type,firstSeen,lastSeen,count}] */
