@@ -40,8 +40,13 @@ SmartHome/
 │   │   ├── Firmware/  → projekt CCS temphum_node   # CC1310+SHT35 (+BQ35100 rev1)        [było cc1310-th-hw-firmware/]
 │   │   └── Hardware/                            # KiCad rev2 (TODO)
 │   ├── LightSwitchNode/, SolarControllerNode/   # szkielety (przyszłe nody)
-├── Apps/MobileApp/AndroidApp/SmartHomeV2/       # Android Studio (com.example.smarthomev2)   [było android-app/]
-│   └── (iOS/, WebApp/ — TODO)
+├── Apps/MobileApp/
+│   ├── SmartHome/                            # ⭐ AKTUALNA apka: KMP + Compose Multiplatform
+│   │   │                                     #   com.aitronic.smarthome; :shared (commonMain UI+logika
+│   │   │                                     #   / androidMain / iosMain) + :androidApp + :iosApp
+│   │   └── (iOS: target jest, build wymaga Maca)   [[smarthome-app-kmp]]
+│   ├── design_handoff_smart_home/            # źródło prawdy designu (prototyp HTML + tokeny)
+│   └── AndroidApp/SmartHomeV2/               # STARA apka (com.example.smarthomev2) — tylko referencja
 ├── Shared/
 │   ├── Protocol/                                # node_protocol.h, protocol.h, spi_frame.h, automation.h — SINGLE SOURCE   [było shared/]
 │   └── KiCadLib/                                # wspólne symbole/footprinty (TODO)
@@ -181,60 +186,72 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **panic_on_oops=1 (16.06.2026, zweryfikowane)**: `modules/06-kernel-panic.sh` — oops → pełny panic → łapie Warstwa D. Domknięta luka „oops bez panic".
 - **Boot accounting (16.06.2026, zweryfikowane)**: `modules/07-boot-accounting.sh` — licznik bootów + atrybucja + alarm reboot-storm (`/etc/bramka/boot-accounting.conf`, default >3/24h). Podgląd: `bramka-reboots`. Klasyfikacja na **trwałym markerze** `/var/lib/bramka/clean_shutdown` (NIE na journalu): breadcrumb→`CONTROLLED go`, marker→`CONTROLLED clean shutdown`, brak→`UNEXPECTED hard reset`. Zweryfikowane: go-peer-dead ✓, clean shutdown ✓. Persistent journal (diagnostyka) jako best-effort oneshot bind — działa (`journalctl -b -1` po reboocie).
 - **Non-root hardening (16.06.2026, ZWERYFIKOWANE NA ŻYWO)**: `modules/08-hardening.sh` + przerobiony `rpmsg-service.service`. Serwis jako user `bramka` (nie root), zero capabilities. Device przez udev (grupa `bramka`), reboot przez wzorzec path-unit (`/run/bramka/reboot-request` → `bramka-reboot.path` → `bramka-reboot.service` robi czysty `systemctl reboot`; serwis nie ma roota ani CAP_SYS_BOOT). Binarka przeniesiona `/root/bramka-services` → `/opt/bramka` (Deploy-Go cel zmieniony). `StartLimit*` przeniesione do `[Unit]` (były ignorowane w `[Service]`). Go `recoverByReboot` pisze trigger (fallback systemctl/syscall dla root). **Weryfikacja**: `User=bramka` + proces uid `bramka` + `/dev/rpmsg0` grupa `bramka`; krok 7: `echo stop` → non-root serwis → trigger → path-unit → czysty reboot → `boot#1 CONTROLLED go-peer-dead`, serwis wraca jako `bramka`.
+- **Faza 3 / telemetria → DB (21-23.06, zweryfikowane)**: telemetria nodów → SQLite (`node_param` stan bieżący +
+  `solar_history` z dzienną akumulacją + VIEW `solar_state`), provisioning (JOIN/approve/remove) i **kanał WebSocket** (`/ws`).
+- **HW: node T&H rev2 (12.07)**: schemat + PCB 4-warstwowe **wysłane do JLCPCB** (3 zmontowane prototypy, DHL DDP).
+  Footprinty scalaków przepisane wg datasheetów (CC1310: pady 0.24 + roundrect 0.05 + windowpane pasty omijający via array;
+  NPTH w USB). Pliki produkcyjne w repo. Protoypy w drodze → bring-up + kalibracja LUT SoC. [[rev2-th-node-protos-ordered]]
+- **Apka `SmartHome` — pełne UI (16.07)**: KMP + Compose Multiplatform (`com.aitronic.smarthome`), 6 ekranów 1:1 z designu
+  (Dashboard, Klimat, Solar ze schematem instalacji i animowanymi pompami, Automatyzacje + edytor, Urządzenia).
+  Architektura warstwowa (`data`/`domain`/`ui`), ikony jako `ImageVector` z realnych ścieżek SVG, wykresy na `Canvas`.
+  iOS: target gotowy (build wymaga Maca). [[smarthome-app-kmp]]
+- **Apka ŻYJE z bramką — Stage 2 (16-17.07, ZWERYFIKOWANE NA ŻYWO)**: Ktor + pinning (`expect/actual`), kaskada LAN→zdalnie,
+  WS z reconnectem, `GatewayStore` (zasiew z bazy + live, zero pollingu). **Solar live**, **sterowanie pompą z potwierdzeniem
+  z noda**, **reguły z/do bramki**, **urządzenia z `listnodes`** (nazwa+pokój trwałe). Nowe komendy Go: `state`, `updatenode`;
+  migracja `node.room`.
+- **Sniff gen1 (17.07, pomysł usera)**: gen2 zbiera telemetrię nodów adresowanych do gen1 (`0xF0`) **bez ACK-owania** —
+  solar/bufor działają w apce **bez ruszania firmware nodów**, gen1 niezakłócona. Rozwiązanie tymczasowe do czasu reflashu.
 
 ### 🔜 NASTĘPNA SESJA — zacznij tu
 
-**STAN (19.06): pełny remote access telefon↔node DZIAŁA E2E** (stara bramka off). Z apki Android: **ręczne ON/OFF pompy** + **CRUD reguł** (SQLite = źródło prawdy, persystencja) + **harmonogram czasowy sterujący pompą CO DO MINUTY** (strefa Europe/Warsaw). Pętla: telefon → Go HTTPS :9443 (pinning+token) → RPMsg → M4F (engine FreeRTOS) → SPI → CC1310 → RF → node, i z powrotem telemetria/stan. Serwis: tryb `-test serve`. Projekt CCS M4F: `C:\Users\damia\workspace_ccstheia\ipc_rpmsg_echo_..._freertos_ti-arm-clang` ([[ccs-project-separate-from-repo]]). Kontrakt apki + ścieżki: [[remote-access-contract]].
+**STAN (17.07): apka `SmartHome` (KMP + Compose Multiplatform) STERUJE REALNĄ INSTALACJĄ.**
+Pętla live domknięta w obie strony: `node → RF → CC1310 → SPI → M4F → RPMsg → Go → SQLite → WS → apka`
+oraz `apka → HTTPS :9443 → Go → M4F → SPI → CC1310 → RF → node` (z potwierdzeniem z noda).
+Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · design: `Apps/MobileApp/design_handoff_smart_home/`.
 
-**👉 remote access Faza 3: dane z nodów do DB + provisioning.** **STAN 23.06: provisioning Faza 1 + remove + apka + WebSocket live DONE I ZWERYFIKOWANE E2E.** JOIN uplink → approve → JOIN_ACCEPT → node przełącza adres + NVS → telemetria; **graceful remove** (potwierdzenie noda → 0xFF → zwolnienie/reużycie adresu); bramka 0x00 (izolacja gen1/gen2). Apka „Zarządzaj urządzeniami": **event-driven po WebSocket** (`/ws` na :9443, pinning+token) — JOIN noda → **okienko dodawania само wyskakuje**, statusy live (online/dodawanie), usuwanie znika od razu; zero pollingu/przycisków. **Apka w repo jako mirror: `android-app/`.** **NASTĘPNE: WS Faza B** (komendy przez WS z `reqId` = async wyniki, live dashboard telemetrii) + później FCM (alerty w tle). [[app-push-events-todo]].
+**Co realnie DZIAŁA (zweryfikowane na żywo):**
+- **Sniff gen1 (tymczasowy, pomysł usera)** — `radio_task.c`: gen2 zbiera ramki adresowane do gen1 (`0xF0`)
+  i **NIGDY ich nie ACK-uje** (`GEN1_CONCENTRATOR_ADDRESS`). Dzięki temu mamy telemetrię solar (241) i bufor (242)
+  **bez ruszania firmware nodów**; gen1 działa niezakłócona. **Gen1 MUSI zostać włączona** — to jej ACK-i trzymają nody.
+  Docelowo: reflash nodów na gen2 (`0x00`) + provisioning → sniff wypada.
+- **Solar live**: temperatury, `flowRate` (pompa obiegowa read-only, kręci się gdy >0), uzysk, **moc od razu po otwarciu**
+  (z VIEW `solar_state`, nie po 2 min).
+- **Pompa dodatkowa**: toggle → realne `PUMP_ON/OFF`; **trójkąt rusza dopiero po potwierdzeniu z noda** (`pumpState`),
+  spinner w zarezerwowanym miejscu, timeout 6s → powrót toggle. Zero pollingu (WS).
+- **Reguły**: `getrules`/`setrules` z bramki; katalog **przycięty do możliwości silnika** (warunki: solar `T1-T4` + bufor
+  `sBuforTemp`; akcja: **tylko solar → przekaźnik ON/OFF** = pompa dodatkowa). Design apki był robiony na przyszłość —
+  `pv`/`climate`/`Tcol`/`moc` wrócą, gdy rozszerzymy protokół.
+- **Urządzenia**: lista z `listnodes` (tabela `node`), online z `last_seen`, **nazwa+pokój trwałe** (`updatenode`),
+  usuwanie przez `removenode` (graceful). JOIN jest realny (node zgłasza się sam → `join_pending` po WS).
 
-> **✅ STAN 21.06 — krok #1 + rdzeń #2 ZROBIONE I ZWERYFIKOWANE NA ŻYWO (gen1 off).** Telemetria nodów → SQLite działa E2E. Schemat (decyzja z userem): **stan bieżący generyczny + dedykowana tabela per typ dla nodów z obróbką**. NIE ma generycznego `sample` (zrezygnowany — user: jedna tabela stanów + dedykowane historie per typ). Pliki: `telemetry.go` (NOWY, dekoder cgo unii→`[]NodeParam`), `store.go` (schemat + akumulacja solar), `main.go` (drain `MsgNodeTelemetry`→`RecordTelemetry`, `loc` do store). **Tabele:** `node`(rejestr) / `param_def`(katalog per typ, apka renderuje) / `node_param`(stan bieżący wszystkich typów, UPSERT) / `solar_history`(append-only, **dzienna akumulacja** `energy_gain`+`pump_runtime`, reset o północy Europe/Warsaw) / VIEW `solar_state`(ostatni rekord + `generated_power_kw=30*energy_gain_delta/10000`). Per-typ wiedza TYLKO w dekoderze cgo → DB type-agnostyczna. Solar semantyka + 2 pompy: [[solar-node-data-model]]. **Zweryfikowane:** `energy_gain` 322→644→969 (akumuluje), `pump_runtime` 2→4→6 (flow>0 → +2min), `generated_power_kw` 0.975 = 30*325/10000, odczyty równo co 120s.
-> **Duplikaty = gen1 obok** (potwierdzone: gen1 off → seq noda 40,41,42,43 bez powtórek, zero dup). **Zero dedup w Go** (decyzja: to robota CC1310). **sqlite3 CLI** skompilowany z amalgamacji sqlite.org (`opkg` TI-feed martwy) → `/usr/local/bin/sqlite3` + symlink `/usr/bin/sqlite3` (3.46.1).
+**Nowe komendy HTTP dodane 16-17.07:** `state` (ostatnia telemetria z `node_param` + `powerKw` z VIEW),
+`updatenode` (nazwa+pokój). Reszta kontraktu bez zmian.
 
-**Co zostało w Fazie 3 (KOLEJNOŚĆ na następną sesję — ustalona z userem 23.06):**
-1. **Provisioning ↔ tabele telemetrii (PIERWSZE).** Przy dodaniu noda: utworzyć struktury per typ (`param_def` + dla typów „z obróbką" dedykowana tabela history jak `solar_history`); telemetria leci do tabeli **stanu** (`node_param`) ORAZ do history. Przy **usuwaniu** noda: zdecydować co z danymi — wiersz `node` znika (już), ale **co z `node_param` i history tego noda?** (zostawić jako archiwum? kasować? oznaczać?). Tu wraca guard `sBuforTemp` gdy bufor raportuje ([[engine-eval-cadence]]). To domyka provisioning E2E z bazą.
-2. **Live dashboard + agregacje solar.** Dashboard po WS (telemetria live). Z `solar_history`: **Energy Gain** (dzienny/mies./roczny) + **Pump Runtime**; retencja/rollup (raw → dzienne agregaty → kasowanie starych raw), batch insert (wear flash). Rdzeń (akumulacja+VIEW) już jest.
-3. **WS Faza B** — komendy przez WS z `reqId` (async wyniki, zero pollingu) [[app-push-events-todo]].
-4. **Sprzątanie.** `serve` jako prawdziwy unit systemd (zamiast `-test serve`) + `chown bramka:bramka /var/lib/bramka/bramka.db*` + `systemctl reset-failed rpmsg-service`. Stara martwa tabela `sample` (jeśli jest) `DROP`.
-5. **FCM** (alerty w tle) — dużo później.
+**👉 PLAN NA NASTĘPNĄ SESJĘ (ustalony z userem 17.07):**
+1. **Tabele historyczne per node** (dla typów, które tego potrzebują) + **prawdziwe wykresy zamiast atrap**
+   (Klimat 24h/7d/mies/rok, Solar dzień/mies/rok/total). Wymaga **endpointów historii w Go** — dziś NIE MA żadnego.
+2. **Dopracowanie automatyzacji.**
+3. **Cykl życia nodów**: dodawanie nowych, usuwanie starych, **wymiana zepsutego noda na nowy**
+   (dziś tożsamość = `factory_id`; wymiana chipa = inny `factory_id` → trzeba przepiąć adres).
 
-**FIRMWARE TODO (osobno, po bazach — user: „crashami zajmiemy się później"):**
-- **M4F crashuje pod ruchem RF** (21.06: 2× peer-dead + 1× hard reset w ~2h). Recovery działa za każdym razem, ale root-cause nieznany. **Handler hardfaultu to czarna skrzynka** (`ipc_rpmsg_echo.c:61` — tylko `cpsid i`+SOC reset, zero zrzutu). Plan: dodać zrzut fault-registrów (PC/LR/CFSR) do retained-RAM + log-on-next-boot. Peer-dead łapie się `m4f-watch` na żywo (M4F żyje ~9s przed rebootem).
-- **Dedup CC1310 zepsuty/brakuje** — dowód (gen1 on): ten sam seq RF przechodził 2×. Siedzi w `radio_task.c` (CCS, poza repo). W produkcji gen1 off → nieblokujące, ale do naprawy.
-- SPI scenario-A RX-routing edge-case + `pending`/drenaż serii + wyciszenie logów SPI.
+**⚠️ Do posprzątania w bazie ZANIM zrobimy wykresy (znalezione 17.07 — pełny audyt w Session Log):**
+- **Duplikaty `reading_time`** w `solar_history` (np. 4 rekordy o 00:32:16) → przy `energy_gain = prev + delta`
+  **zawyżają uzysk dzienny**. Rozważyć `UNIQUE(node_id, reading_time)` lub dedup przy zapisie.
+- **Sieroty 17/18/19** w `node_param` bez wiersza w `node` (to one udawały „solar" przez `COALESCE(...,0)`).
+- **Martwa tabela `sample`** (511 rek. + indeks) → `DROP`.
+- **Brak historii dla typu 6** (T&H ma `archive=0`) i **brak rollupów** (tylko surowe 2-min rekordy).
 
-**Drobne TODO (z drogi):** apka gen2 (`sendRawPost` przez pickUrl pod LAN setrules); systemowy `date` na bramce → `git pull && (cd Gateway/Setup && sudo ./setup.sh)` (moduł 09).
-
-**TODO — mirror build-config firmware do repo (odtwarzalność „flash from scratch"):** dziś mirrorujemy tylko ŹRÓDŁA firmware (zweryfikowane 23.06: wszystkie SYNC z CCS, repo kompletne). Pliki KONFIGURACJI BUDOWY żyją tylko w projektach CCS i NIE są w repo: M4F `linker.cmd` (sekcja `g_rules`→`M4F_DDR`), `*.syscfg`, board config; CC1310 `CC1310_LAUNCHXL.c` (region NVS), `*.syscfg`, linker `.cmd`, `smartrf_settings/` (PHY RF). Kluczowe zmiany są opisane w CLAUDE.md, ale dla pełnej odtwarzalności od zera warto dorzucić te pliki do repo (zdecydować zakres: całe projekty CCS vs tylko zmienione configi). Ścieżki CCS: [[cc1310-ccs-project-paths]], [[ccs-project-separate-from-repo]].
-
-**ZROBIONE 19.06 (szczegóły niżej w Session Log):**
-- **✅ Remote access Faza 2 — CRUD reguł + SQLite (19.06, ZWERYFIKOWANE NA ŻYWO)**: `getrules`/`setrules` ↔ JSON apki ↔ model `Rule` ↔ **SQLite** (`mattn/go-sqlite3`, cgo) ↔ `PushRules`. Z telefonu dodano regułę → zapis do `/var/lib/bramka/bramka.db` → push na M4F (`crc32` OK) → `getrules` zwraca → restart serve → `pushed 1 from DB` (persystencja). Pliki: `rulesjson.go` (parse/marshal app JSON, ordinale 1:1), `store.go` (WAL+synchronous=NORMAL, tabela `config`), `httpapi.go` (`handleSetRules`/`extractRulesField`), `main.go` (flaga `-db`, push z bazy na connect). Build: `go get mattn/go-sqlite3` w `/opt/bramka/rpmsg-service`; pierwszy build ~15 min (kompilacja `sqlite3.c` na A53), potem cache. Szczegóły: [[remote-access-contract]].
-- **✅ Reguły czasowe + strefa (19.06, ZWERYFIKOWANE NA ŻYWO)**: harmonogram z apki (ON/OFF pompy) trafia CO DO MINUTY. Strefa `Europe/Warsaw` w silniku przez wbudowaną tzdata Go (`import _ "time/tzdata"` + flaga `-tz`, niezależne od systemu, DST auto); systemowa strefa przy setupie (moduł `09-timezone.sh` wyciąga zoneinfo z tzdata Go). Guard solarny `sBuforTemp<0` zdjęty (notka gen1, wraca przy telemetrii bufora). Fix minuty-spóźnienia: `wall_now_rounded()` snap ±4s (czas w pełnych minutach). Szczegóły: [[engine-eval-cadence]], [[remote-access-contract]].
-- **✅ Remote access Faza 1 — pompa telefon→node (19.06, ZWERYFIKOWANE NA ŻYWO)**: pełny E2E **telefon (apka) → Go HTTPS :9443 → `MSG_NODE_CMD` → M4F → SPI → CC1310 → RF → node → pompa fizycznie ON/OFF**, node odsyła stan (`SOLAR/SEND_PUMP_STATUS`). Go: `httpapi.go` (serwer TLS, pinning ten sam cert, token), `nodecmd.go` (`SendPump` — tłumaczenie jak gen1: `SOLAR_CONTROLLER/TURN_PUMP_ON_OFF/pumpState`, NIE surowy `SMARTPHONE` tekst!), tryb `-test serve` (HELLO→time-sync NTP→push reguł na connect→drain eventów→HTTP). Cert/klucz: `/etc/bramka/tls/`. Apka gen2: osobny `applicationId`, IP→`.170`, TCP-probe. Kontrakt+lekcje: [[remote-access-contract]], Session Log 19.06 (remote).
-- **✅ M4F „won't stop" NAPRAWIONE (19.06, ZWERYFIKOWANE — 2× reload czysto)**: trace pokazał, że stary `doShutdown` wisiał w `Drivers_close()/System_deinit()`, a `SHUTDOWN_ACK` leciał DOPIERO PO nich → nigdy nie docierał → remoteproc stop timeout = „won't stop". To była **kolejność**, nie sam teardown IRQ. Fix (`doShutdown` w `ipc_rpmsg_echo.c`): `spi_master_shutdown(1000)` (zatrzymuje task SPI + teardown IRQ: bank-intr disable + `HwiP_destruct` + `spi_irq_route_release`, z timeoutem) → **wyślij ACK** → WFI; `Drivers_close/System_deinit` POMINIĘTE (zbędne — rdzeń resetowany przy następnym load; na AM62 z trasą introutera potrafiły wisieć). `spi_master.{c,h}`: `gSpiStopped` + `spi_master_shutdown()`. **Clean rebuild w CCS konieczny** (stale-build maskował fix). Deploy-M4F/m4f-reload znów bezbolesny.
-
-(poniżej: stan sprzed Fazy 1)
-- **✅ Prawdziwe GPIO-IRQ na SLAVE_READY (19.06, ZWERYFIKOWANE NA ŻYWO)** — `mode = IRQ, OUTP=4`, FALL-edge bank ISR, E2E noda edge-driven. **Wcześniejszy wniosek „RM-denied" był BŁĘDNY**: board config Linuksa przyznaje hostowi M4_0 cały `WKUP_MCU_GPIOMUX_INTROUTER0` OUTP **4–7** (sweep `Sciclient_rmIrqSetRaw` → r=0 dla wszystkich). `r=-1` z 19.06 wynikał ze złego `src_index` (bank 0 zamiast bank 1 — SLAVE_READY = MCU_GPIO0 pin 16 = bank 1 → src_index 31). `spi_master.c`: route OUTP 4–7 + HwiP bank ISR, poll został tylko jako backstop 50ms. Szczegóły: [[am62-mcu-pin-traps]], Session Log 19.06 (IRQ).
-- **✅ Kadencja + bucketing + wyrównany tick + dedup (18.06)** — level-trigger + sprzężenie zwrotne (NIE edge), TIME tick `:00`, dane event-driven. **Fix 19.06: dedup TIME z biasem +2s** (task SPI zmienił fazę budzenia → wybudzenie ~7ms PRZED `:00` floor'owało do minuty N → podwójny fire na 1. granicy; bias mapuje `:59.99`/`:00.01` na tę samą minutę). Szczegóły: [[engine-eval-cadence]], Session Log 18/19.06.
-- **✅ SPI/CC1310 most dwukierunkowy + E2E z nodem RF (19.06)** — M4F master ↔ CC1310 slave, ramka 128B `spi_frame.h`, handshake E5(MASTER_READY)/D4(SLAVE_READY) na wolnych padach MCAN1, SLAVE_READY na **realnym GPIO-IRQ** (FALL-edge, OUTP 4; poll tylko backstop). M4F→node (z ACK noda) i node→M4F→Linux (NODE_TELEMETRY) potwierdzone. Pełne szczegóły + lekcje (A6/B6=UART-bridge!, livelock pollingu, transferCancel, won't-stop): Session Log 19.06, [[am62-mcu-pin-traps]]. STUB `gNodeInQueue` ZASILANY realnymi danymi → `COND_PARAMETER`/`DELTA` odblokowane.
-  - **TODO domknięcia SPI**: scenario-A RX-routing edge-case (slave gubi cmd gdy uzbroił się dla scenario B), `pending`/drenaż serii, wyciszenie logów operacyjnych. CC1310 = `cc1310-firmware/` (repo) → cp do projektu CCS (lustro M4F).
-- **Remote access (następny duży krok)**: odtworzyć kontrakt HTTP API starej bramki (apka telefonu już działa, `httpsServerTask` port 9443+token) w Go → tłumaczy „włącz pompę" na `MSG_NODE_CMD` → M4F → SPI → CC1310 → RF → node (cała ścieżka już DZIAŁA od SPI w dół). Źródło prawdy reguł = SQLite → `PushRules`. Time-sync z NTP Linuxa (zamiast hardcode 12:00). **🎯 docelowy E2E**: telefon → … → node, stara bramka off.
-- **🎯 TEST DOCELOWY (po SPI+remote)**: pełny flow **telefon (włącz pompę) → Go → M4F → CC1310 → RF node**, ze starą bramką wyłączoną, sprawdzić czy node poprawnie zinterpretuje komendę (najmocniejszy test E2E w realu).
-- Szczegóły: `docs/ENGINE-INTEGRATION.md`. Czas produkcyjny: NTP→`SendTimeSync` albo RTC carrier.
-
-**Co JUŻ gotowe (17.06):**
-- `m4f-firmware/engine.{c,h}` — rdzeń RTOS-agnostyczny (ewaluator port 1:1 D6 + guardy solar, NodesData folding, atomic swap + CRC32 IEEE). Lint: TI ARM clang `-Wall -Wextra` czysto.
-- `m4f-firmware/engine_rpmsg.{c,h}` — glue dispatch RULE_*/NODE_CMD + reportery; wynik przez `reply(MSG_ACK|MSG_ERROR, seq)`.
-- `m4f-firmware/ipc_rpmsg_echo.c` — **FreeRTOS 2 taski + kolejki, lock-free** (ENGINE + COMMS; comms = jedyny właściciel send+pending). Recovery/heartbeat nietknięte. NIE zlintowane lokalnie (SDK+FreeRTOS) → build w CCS.
-- `go-services/rpmsg-service/{rules.go,protocol.go,main.go}` — enkoder reguł (cgo, layout C-owned), `PushRules`, `sendReliableTyped`, `MSG_ERROR` korelacja, tryb `-test push-rules`. Build na bramce (cgo).
-- `docs/ENGINE-INTEGRATION.md` — architektura tasków/kolejek + strona Go + plan testów. Rozmiary: AutomationRule=196B, RuleAction=68B, MessageStruct/NodesData=44B.
-- **STUB/TODO**: SPI→CC1310 (`nodeTxSink` loguje, `gNodeInQueue` zasilany tylko sentinelem time-sync — danych nodów brak). Time-sync DZIAŁA (`engine_set_time` z h,m,s).
-- ⚠️ `m4f-firmware/protocol.h` = mirror `shared/protocol.h` (sync przy zmianach).
-
-**Dalej w roadmapie:** 2) remote access (telefon/web CRUD reguł+sterowanie; źródło reguł = SQLite→PushRules), 3) CC1310↔M4F SPI (`spi_master_task`→slave + DATA_READY; SPI task zasila `gNodeInQueue` + drenuje akcje do nodów; odblokowuje firing PARAMETER + telemetrię), 4) bazy (SQLite config + time-series). Patrz [[near-term-roadmap]].
+**Nadal ATRAPY w apce (świadomie):** Klimat (wykresy + interwał), PV, Dashboard poza kaflem solarnym, wykresy solar.
+**Luki bramki blokujące:** brak endpointów historii, brak komendy interwału pomiaru, brak noda/telemetrii PV.
+**Nod T&H (rev2)** — protoypy w drodze; gdy dojdzie: rozszerzenie protokołu o `climate` → wykresy klimatu + interwał.
 
 **Odłożone long-term:**
-- **Warstwa C (DMSC reset)** — teraz „prawdopodobnie tak, później" (M4F trzyma żywe sterowanie → crash Linuxa nie może go zabić na ~70s). Decyzja przy dojrzewaniu enginu. OTA (RAUC A/B). Health monitoring (eMMC wear → wpina się w `bramka-reboots`/alarm). Carrier board.
+- **Warstwa C (DMSC reset)** — „prawdopodobnie tak, później" (M4F trzyma żywe sterowanie → crash Linuxa nie może go
+  zabić na ~70s). OTA (RAUC A/B). Health monitoring (eMMC wear → wpina się w `bramka-reboots`/alarm). Carrier board.
+- **Zewnętrzny hosting** (backup/relay) — architektura ustalona: bramka pushuje, kaskada
+  **LAN → port-forward (dziś) / relay na VPS (docelowo) → mirror MySQL tylko gdy bramka nieosiągalna**; 3 pakiety
+  (economy/standard/premium). Apka ma już abstrakcję (`SmartHomeRepository` + `GatewayClient`).
+- **iOS**: target jest w projekcie, **pinning w `HttpClientFactory.ios.kt` to TODO** — nie wypuszczać bez niego.
 
 **Opcjonalne domknięcie testów boot-accounting** (mechanizm ten sam, nie-zweryfikowane na żywo): klasyfikacja kernel-panic i clean-shutdown (manual reboot), realne odpalenie alarmu >3/24h.
 
@@ -336,6 +353,37 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-07-16/17 — apka SmartHome ŻYJE: Stage 2 (sieć+pinning+live solar+sterowanie) + sniff gen1 ✅
+- **Apka steruje realną instalacją** (commity `52a54a0`, `ee56054`). Stack: Ktor 3.3.1 + kotlinx.serialization +
+  Multiplatform Settings; **pinning przez `expect/actual`** (Android: OkHttp TrustManager = port `CertPin.java`;
+  iOS: TODO). `GatewayClient` (kontrakt 1:1 z `httpapi.go`, kaskada **LAN→zdalnie** z zapamiętanym base, WS z reconnectem),
+  `GatewayStore` (jeden `StateFlow`: nody/joins/telemetria; **zasiew z bazy przy otwarciu**, potem live po WS, zero pollingu).
+- **🔑 SNIFF GEN1 (pomysł usera, kluczowy odblokowywacz)**: gen2 podsłuchuje ramki do `0xF0` i **nie ACK-uje ich**
+  (`GEN1_CONCENTRATOR_ADDRESS` w `radio_task.c`). Filtr RX jest **programowy** (radio i tak odbiera wszystko), więc podsłuch
+  **nic nie kosztuje na antenie**, a gen1 ackuje normalnie → zero kolizji. Efekt: telemetria solar/bufor **bez ruszania
+  firmware nodów**. Tymczasowe — docelowo reflash nodów na `0x00`. Retransmisje (rzadkie) mogą zawyżyć uzysk — świadomie odpuszczone na testy.
+- **Nowe komendy Go**: `state` (ostatnia telemetria z `node_param` + `powerKw` z VIEW `solar_state`), `updatenode` (nazwa+pokój).
+  Migracja `node.room`. Nody 241/242 zarejestrowane ręcznie (**`UPDATE`, nie `INSERT OR REPLACE`** — wiersze już istniały
+  przez `RecordTelemetry`, replace skasowałby `last_seen`).
+- **🔑 LEKCJE (każda kosztowała realny debug):**
+  1. **`engine.c`: `OP_MORE_THAN` czyta `thresholdMin` (`mn`), `OP_LESS_THAN` czyta `thresholdMax` (`mx`)**.
+     Wpisanie wartości w złe pole → reguła się zapisuje, wysyła i **NIGDY nie odpala**. Kodek (`RulesCodec.kt`) to uwzględnia.
+  2. **`node_type 0` TO sterownik solarny** → `COALESCE(node_type, 0)` sprawiał, że **osierocone wiersze `node_param`
+     udawały solar** (w bazie realnie siedzą sieroty 17/18/19!). Teraz `-1` = nieznany.
+  3. **Wybór noda `firstOrNull{type}`** brał pierwszego z mapy (kolejność = rosnące `node_id`) → **stary nod wygrywał
+     z żywym 241**: UI pokazywał zera i **ignorował telemetrię z WS**. Teraz **najświeższy** (`maxByOrNull{ts}`).
+  4. **Telemetria „pump-only"** (`SEND_PUMP_STATUS`) niesie **sam `pumpState`** → podmiana całej mapy parametrów kasowała
+     temperatury. Teraz **scalanie** (`old + new`), a baza delty `energyGain` przesuwa się **tylko przy nowym `energyGain`**
+     (inaczej pump-only zerowałby moc).
+  5. **Fallback na dane przykładowe kłamał**: brak telemetrii → `repo.solar()` miał `pumpOn=true` → **trójkąt kręcił się zawsze**.
+     Zasada: **brak danych = `—` i pompy stoją**, nigdy atrapa (dot. też „0%").
+  6. **Spinner nie może rozpychać layoutu** — status pompy ma zarezerwowaną stałą wysokość.
+- **Pułapka pamięci**: skopiowałem firmware do `workspace_ccstheia` wg pamięci **sprzed migracji monorepo**. Po migracji
+  **projekty CCS są W REPO** (`Gateway/Firmware/CC1310` ma `.project`) — stare `workspace_*` to leftovery. Pamięć poprawiona
+  ([[cc1310-ccs-project-paths]]).
+- **Audyt bazy (17.07)**: `node`(5) `node_param`(26, w tym sieroty 17/18/19) `param_def`(16) `solar_history`(~177, 21.06→17.07,
+  **duplikaty `reading_time`**) `config`(2: rules + legacy addr_watermark) `sample`(511, **MARTWA → DROP**) + VIEW `solar_state`.
 
 ### 2026-06-27 — DECYZJA: architektura zasilania rev-2 (indoor PV + LiFePO4 + voltage-LUT; drop BQ35100/TPL5111)
 - **Kontekst**: bateryjny T&H node rev-1 (CR123A + BQ35100 + TPL5111) działa E2E (telemetria temp/hum/napięcie), ale BQ35100 to ślepa uliczka do SoC/pomiaru zużycia.
