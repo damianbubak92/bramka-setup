@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
+import com.aitronic.smarthome.domain.model.SolarState
 
 private val Orange = Color(0xFFE1850B)
 // Górny margines viewBox (0..YSHIFT) był pusty — obcinamy go, przesuwając treść do góry.
@@ -29,18 +30,18 @@ private const val YSHIFT = 40f
 
 /**
  * Schemat instalacji solarnej — geometria 1:1 z buildSolarSchema() handoffu (viewBox 344x224).
- * @param pumpAngle kąt obrotu trójkąta pomp (0..360, animowany z zewnątrz)
- * @param auxPumpOn czy pompa dodatkowa pracuje (obraca się)
+ * Wartości (temperatury, % pompy, stany) pochodzą z [state] — czyli z live telemetrii.
+ * @param pumpAngle kąt obrotu trójkątów pomp (0..360, animowany z zewnątrz)
  */
 @Composable
-fun SolarSchematic(pumpAngle: Float, auxPumpOn: Boolean, modifier: Modifier = Modifier) {
+fun SolarSchematic(state: SolarState, pumpAngle: Float, modifier: Modifier = Modifier) {
     val tm = rememberTextMeasurer()
     Canvas(modifier.fillMaxWidth().aspectRatio(344f / (224f - YSHIFT))) {
-        drawSchema(pumpAngle, auxPumpOn, tm)
+        drawSchema(state, pumpAngle, tm)
     }
 }
 
-private fun DrawScope.drawSchema(angle: Float, auxOn: Boolean, tm: TextMeasurer) {
+private fun DrawScope.drawSchema(state: SolarState, angle: Float, tm: TextMeasurer) {
     val s = size.width / 344f
     val white = Color.White
     fun p(x: Float, y: Float) = Offset(x * s, (y - YSHIFT) * s)
@@ -78,7 +79,7 @@ private fun DrawScope.drawSchema(angle: Float, auxOn: Boolean, tm: TextMeasurer)
     drawPipe(212f, 188f, 262f, 188f)
 
     // --- kolektor ---
-    text(58f, 86f, "71,2°C", 15f, FontWeight.W600, 1f)
+    text(58f, 86f, tempLabel(state.collectorC), 15f, FontWeight.W600, 1f)
     roundRect(23f, 92f, 68f, 12f, 3f, null, white.copy(alpha = 0.30f), white.copy(alpha = 0.6f), 1.2f) // manifold
     for (i in 0 until 10) {  // rurki próżniowe
         val x = 27f + i * 6.4f
@@ -87,16 +88,17 @@ private fun DrawScope.drawSchema(angle: Float, auxOn: Boolean, tm: TextMeasurer)
     roundRect(23f, 186f, 68f, 5f, 2.5f, null, white.copy(alpha = 0.24f), white.copy(alpha = 0.5f), 1f) // dolna szyna
     text(58f, 212f, "Kolektor", 10f, FontWeight.W400, 0.75f)
 
-    // --- zbiornik główny ---
+    // --- zbiornik główny (4 temperatury pozycyjnie od góry: T4..T1) ---
     roundRect(138f, 52f, 74f, 144f, 13f, tankBrush(52f, 196f), null, white.copy(alpha = 0.6f), 1.5f)
-    listOf("73,2" to 80f, "64,1" to 112f, "58,1" to 144f, "51,5" to 176f).forEach { (t, y) ->
-        text(175f, y, "$t°C", 12.5f, FontWeight.W500, 1f)
+    val ys = listOf(80f, 112f, 144f, 176f)
+    state.mainTankTemps.take(4).forEachIndexed { i, t ->
+        text(175f, ys[i], tempLabel(t), 12.5f, FontWeight.W500, 1f)
     }
     text(175f, 212f, "Zbiornik główny", 10f, FontWeight.W400, 0.75f)
 
     // --- zbiornik dodatkowy ---
     roundRect(262f, 86f, 62f, 110f, 12f, tankBrush(86f, 196f), null, white.copy(alpha = 0.6f), 1.5f)
-    text(293f, 145f, "62,3°C", 15f, FontWeight.W600, 1f)
+    text(293f, 145f, tempLabel(state.auxTankC), 15f, FontWeight.W600, 1f)
     text(293f, 212f, "Zbiornik dodatkowy", 10f, FontWeight.W400, 0.75f)
 
     // --- pompy (trójkąt w kółku, obrót wokół centroidu = środek kółka) ---
@@ -116,6 +118,21 @@ private fun DrawScope.drawSchema(angle: Float, auxOn: Boolean, tm: TextMeasurer)
             drawPath(tri, Orange) // kolor stały — niezależny od pracy pompy
         }
     }
-    pump(113f, 98f, running = true, label = "78%")   // pompa kolektora — zawsze pracuje
-    pump(237f, 98f, running = auxOn, label = "")      // pompa dodatkowa — wg toggle
+    // pompa kolektora: zmiennoobrotowa, read-only — kręci się gdy flowRate > 0
+    // (pct < 0 = brak danych -> "—", zamiast mylącego "0%")
+    pump(113f, 98f, running = state.collectorPumpOn,
+        label = if (state.collectorPumpPct < 0) "—" else "${state.collectorPumpPct}%")
+    // pompa dodatkowa: sterowana przekaźnikiem — kręci się dopiero gdy node POTWIERDZI stan
+    pump(237f, 98f, running = state.auxPumpOn, label = "")
+}
+
+/** Etykieta temperatury; NaN = brak danych z bramki -> "—" (nie udajemy zera). */
+private fun tempLabel(v: Double): String = if (v.isNaN()) "—" else "${fmt1(v)}°C"
+
+/** Format PL, 1 miejsce po przecinku. */
+private fun fmt1(v: Double): String {
+    val r = kotlin.math.round(v * 10).toLong()
+    val whole = r / 10
+    val frac = (if (r < 0) -r else r) % 10
+    return "$whole,$frac"
 }

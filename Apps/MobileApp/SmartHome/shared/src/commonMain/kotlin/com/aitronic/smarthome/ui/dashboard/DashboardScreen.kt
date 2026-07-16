@@ -20,6 +20,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import com.aitronic.smarthome.data.solarDailyYieldKwh
+import com.aitronic.smarthome.data.solarState
 import com.aitronic.smarthome.domain.model.DashboardData
 import com.aitronic.smarthome.domain.model.PvState
 import com.aitronic.smarthome.domain.model.RoomTile
@@ -31,9 +35,19 @@ import androidx.compose.ui.graphics.vector.ImageVector
 @Composable
 fun DashboardScreen(
     data: DashboardData,
+    store: com.aitronic.smarthome.data.GatewayStore? = null,
     onOpenSolar: () -> Unit,
     onOpenClimate: () -> Unit,
 ) {
+    // Live tylko dla systemu solarnego — Klimat/PV/Pokoje są na razie atrapami
+    // (nod T&H w drodze; PV nie istnieje w bramce).
+    val gw = store?.state?.collectAsState()?.value
+    val liveSolar = gw?.let { s -> s.solarState()?.let { st -> s to st } }
+    val data = if (liveSolar == null) data else data.copy(
+        solar = liveSolar.second,
+        solarDailyYield = liveSolar.first.solarDailyYieldKwh()
+            ?.let { "${fmt1(it)} kWh" } ?: data.solarDailyYield,
+    )
     Column(
         Modifier
             .fillMaxSize()

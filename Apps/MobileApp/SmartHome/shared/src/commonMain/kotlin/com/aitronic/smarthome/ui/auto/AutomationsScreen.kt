@@ -24,13 +24,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.SmartHomeRepository
+import com.aitronic.smarthome.data.net.GatewaySource
+import com.aitronic.smarthome.data.net.RulesCodec
 import com.aitronic.smarthome.domain.model.*
 import com.aitronic.smarthome.ui.components.*
 import com.aitronic.smarthome.ui.icons.ShIcons
 import com.aitronic.smarthome.ui.theme.Sh
 import com.aitronic.smarthome.ui.theme.deviceColor
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable private fun noRipple() = remember { MutableInteractionSource() }
 
@@ -45,15 +49,41 @@ private data class EditDraft(
 private data class PickerReq(val title: String, val options: List<Pair<String, String>>, val selected: String, val onPick: (String) -> Unit)
 private data class ConfirmReq(val title: String, val msg: String, val label: String, val onOk: () -> Unit)
 
-/** Cała funkcja Automatyzacje: lista + edytor + dialogi. Stan lokalny (Stage 2 podłączy WS). */
+/**
+ * Cała funkcja Automatyzacje: lista + edytor + dialogi.
+ * Reguły są **czytane z bramki** (`getrules`) i **wypychane po każdej zmianie** (`setrules`).
+ *
+ * ⚠️ Ograniczenie backendu: schemat bramki nie zna flagi „enabled" — wypychamy tylko
+ * reguły włączone. Wyłączona reguła znika z bramki (zostaje lokalnie do czasu odświeżenia).
+ */
 @Composable
-fun AutomationsRoot(repo: SmartHomeRepository) {
-    val rules = remember { mutableStateListOf<Rule>().apply { addAll(repo.rules()) } }
-    var online by remember { mutableStateOf(true) }
+fun AutomationsRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
+    val rules = remember { mutableStateListOf<Rule>() }
     var editing by remember { mutableStateOf<EditDraft?>(null) }
     var confirm by remember { mutableStateOf<ConfirmReq?>(null) }
     var picker by remember { mutableStateOf<PickerReq?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val gwState = store?.state?.collectAsState()?.value
+    val online = gwState?.online ?: false
+
+    // Wczytaj reguły z bramki (raz). Bez bramki -> dane przykładowe.
+    LaunchedEffect(store) {
+        if (store == null) { rules.addAll(repo.rules()); return@LaunchedEffect }
+        store.rulesJson()
+            .onSuccess { rules.clear(); rules.addAll(RulesCodec.decode(it)) }
+            .onFailure { toast = "Nie udało się pobrać reguł" }
+    }
+
+    // Wypchnięcie aktualnego zestawu na bramkę.
+    fun push(okMsg: String) {
+        val s = store ?: return
+        scope.launch {
+            s.saveRulesJson(RulesCodec.encode(rules.toList()))
+                .onSuccess { toast = okMsg }
+                .onFailure { toast = "Bramka odrzuciła zapis" }
+        }
+    }
 
     LaunchedEffect(toast) { if (toast != null) { delay(2600); toast = null } }
 
@@ -61,11 +91,11 @@ fun AutomationsRoot(repo: SmartHomeRepository) {
         if (editing == null) {
             AutoList(
                 rules = rules, online = online,
-                onToggleOnline = { online = !online },
-                onToggleRule = { id -> rules.replaceRule(id) { it.copy(enabled = !it.enabled) } },
+                onToggleOnline = { scope.launch { store?.refresh() } },
+                onToggleRule = { id -> rules.replaceRule(id) { it.copy(enabled = !it.enabled) }; push("Zsynchronizowano z bramką") },
                 onNew = { editing = EditDraft(null, "", listOf(CondDraft()), "solar", 1) },
                 onEdit = { r -> editing = EditDraft(r.id, r.name, r.conditions.map { it.toDraft() }, r.action.target, r.action.value) },
-                onDelete = { r -> confirm = ConfirmReq("Usunąć regułę?", "„${r.name}\" zostanie trwale usunięta.", "Usuń") { rules.remove(r); confirm = null; toast = "Usunięto regułę" } },
+                onDelete = { r -> confirm = ConfirmReq("Usunąć regułę?", "„${r.name}\" zostanie trwale usunięta.", "Usuń") { rules.remove(r); confirm = null; push("Usunięto regułę") } },
             )
         } else {
             AutoEditor(
@@ -75,9 +105,9 @@ fun AutomationsRoot(repo: SmartHomeRepository) {
                 onPick = { picker = it },
                 onSave = {
                     val d = editing!!
-                    val saved = Rule(d.id ?: (rules.maxOfOrNull { it.id }?.plus(1) ?: 1L), d.name.ifBlank { "Bez nazwy" }, true, d.conds.map { it.toCondition() }, RuleAction(d.target, d.value))
+                    val saved = Rule(d.id ?: ((rules.maxOfOrNull { it.id } ?: 0L) + 1L), d.name.ifBlank { "Bez nazwy" }, true, d.conds.map { it.toCondition() }, RuleAction(d.target, d.value))
                     if (d.id == null) rules.add(saved) else rules.replaceRule(d.id) { saved }
-                    editing = null; toast = "Zapisano regułę"
+                    editing = null; push("Zapisano regułę")
                 },
             )
         }
@@ -358,7 +388,7 @@ private fun AutoEditor(
             Text("Akcja", color = Sh.textPrimary, fontSize = 16.sp, fontWeight = FontWeight.W500, modifier = Modifier.padding(top = 24.dp, bottom = 10.dp, start = 2.dp))
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Sh.surface).padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 PickerRow("Urządzenie docelowe", deviceName(draft.target)) {
-                    onPick(PickerReq("Wybierz urządzenie", AutoDevices, draft.target) { onChange(draft.copy(target = it)) })
+                    onPick(PickerReq("Wybierz urządzenie", AutoTargets, draft.target) { onChange(draft.copy(target = it)) })
                 }
                 Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Sh.bg).border(1.dp, Sh.fieldBorder, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 9.dp)) {
                     Column { Text("Typ akcji", color = Sh.textMuted, fontSize = 11.sp); Text("Ustaw przekaźnik", color = Sh.textPrimary, fontSize = 15.sp, modifier = Modifier.padding(top = 1.dp)) }

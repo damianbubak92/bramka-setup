@@ -87,6 +87,9 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, c
 	case strings.Contains(req, "command=listnodes"):
 		handleListNodes(store, w, r)
 
+	case strings.Contains(req, "command=state"):
+		handleState(store, w, r)
+
 	case strings.Contains(req, "command=listjoins"):
 		handleListJoins(joins, w, r)
 
@@ -171,6 +174,29 @@ func handleListJoins(joins *joinRegistry, w http.ResponseWriter, r *http.Request
 }
 
 // handleListNodes returns the provisioned nodes for the phone's device screen.
+// handleState answers "command=state" with the LAST KNOWN telemetry of every
+// node (node_param). The phone calls this once on open so the UI (temperatures,
+// pump triangles, the aux-pump toggle) reflects reality immediately instead of
+// waiting up to 2 minutes for the next WS telemetry push.
+func handleState(store *Store, w http.ResponseWriter, r *http.Request) {
+	st, err := store.ListState()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "DB error\n")
+		log.Printf("[HTTP] state DB error: %v", err)
+		return
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "marshal error\n")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+	log.Printf("[HTTP] state -> %d node(s)", len(st))
+}
+
 func handleListNodes(store *Store, w http.ResponseWriter, r *http.Request) {
 	nodes, err := store.ListNodes()
 	if err != nil {

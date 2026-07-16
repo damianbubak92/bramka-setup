@@ -4,19 +4,28 @@ import com.aitronic.smarthome.domain.model.CompareOp
 import com.aitronic.smarthome.domain.model.Condition
 import com.aitronic.smarthome.domain.model.RuleAction
 
-/** Katalog urządzeń i parametrów (z A_DEVICES / A_PARAMS handoffu). */
+/**
+ * Katalog reguł **przycięty do tego, co silnik M4F realnie umie zakodować**
+ * (Shared/Protocol/automation.h: DEV_SOLAR/BUFFER/SMARTPHONE, PARAM_T1..T4/SBUF_TEMP).
+ *
+ * Design apki był robiony na przyszłość (PV, czujnik klimatu, Tcol, moc/uzysk…) —
+ * te pozycje wrócą, gdy rozszerzymy protokół (np. po podłączeniu noda T&H).
+ * Do tego czasu nie wystawiamy ich w edytorze, żeby nie dało się zapisać reguły,
+ * której bramka nie potrafi wykonać.
+ */
 val AutoDevices: List<Pair<String, String>> = listOf(
     "solar" to "Sterownik solarny",
     "buffer" to "Sterownik bufora",
-    "pv" to "Falownik PV",
-    "climate" to "Czujnik klimatu",
 )
 
 val AutoParams: Map<String, List<String>> = mapOf(
-    "solar" to listOf("T1", "T2", "T3", "T4", "Tcol"),
-    "buffer" to listOf("sBuforTemp", "buforTemp"),
-    "pv" to listOf("moc", "uzysk"),
-    "climate" to listOf("temperatura", "wilgotnosc"),
+    "solar" to listOf("T1", "T2", "T3", "T4"),
+    "buffer" to listOf("sBuforTemp"),
+)
+
+/** Cele akcji: dziś tylko sterownik solarny (przekaźnik = pompa dodatkowa). */
+val AutoTargets: List<Pair<String, String>> = listOf(
+    "solar" to "Sterownik solarny",
 )
 
 fun deviceName(id: String): String = AutoDevices.firstOrNull { it.first == id }?.second ?: "—"

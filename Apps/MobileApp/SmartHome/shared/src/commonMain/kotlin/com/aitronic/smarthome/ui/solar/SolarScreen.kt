@@ -10,9 +10,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -20,19 +22,64 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.SmartHomeRepository
+import com.aitronic.smarthome.data.solarState
 import com.aitronic.smarthome.domain.model.SolarRange
+import com.aitronic.smarthome.domain.model.SolarState
 import com.aitronic.smarthome.ui.icons.ShIcons
+import kotlinx.coroutines.launch
 
 private val Surface = Color(0xFFE1850B)
 
+/** Ile czekamy na potwierdzenie z noda (SEND_PUMP_STATUS) zanim uznamy próbę za nieudaną. */
+private const val PUMP_CONFIRM_MS = 6_000L
+
+/** Stała wysokość paska statusu pompy — rezerwacja miejsca, żeby spinner nie rozpychał layoutu. */
+private val PUMP_STATUS_H = 22.dp
+
+/** Brak telemetrii z bramki: same "—", pompy stoją. NaN = wartość nieznana. */
+private val NO_SOLAR_DATA = SolarState(
+    powerKw = "— kW",
+    collectorC = Double.NaN,
+    mainTankTemps = List(4) { Double.NaN },
+    auxTankC = Double.NaN,
+    collectorPumpPct = -1, // -1 = brak danych ("—", nie mylące "0%")
+    collectorPumpOn = false,
+    auxPumpOn = false,
+)
+
 @Composable
-fun SolarScreen(repo: SmartHomeRepository, onBack: () -> Unit) {
-    val solar = remember { repo.solar() }
+fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val gw = store?.state?.collectAsState()?.value
+    // Live z bramki (snapshot z bazy przy starcie + push WS). Gdy bramka nie ma telemetrii
+    // tego noda — pokazujemy "—" i pompy STOJĄ. Żadnych danych przykładowych: udawanie
+    // pracującej pompy byłoby mylące.
+    val live = gw?.solarState()
+    val solar = live ?: NO_SOLAR_DATA
     var tab by remember { mutableStateOf(SolarRange.Day) }
     val periods = remember(tab) { repo.solarPeriods(tab) }
     var periodIndex by remember(tab) { mutableStateOf(periods.lastIndex.coerceAtLeast(0)) }
-    var auxOn by remember { mutableStateOf(solar.auxPumpOn) }
+    // --- Pompa dodatkowa ---
+    // Prawda o stanie pompy pochodzi WYŁĄCZNIE z telemetrii (pumpState) — node odsyła ją
+    // natychmiast po wykonaniu komendy (SEND_PUMP_STATUS), więc nie czekamy 2 min.
+    // `pending` = wartość zadana, trzymana do czasu potwierdzenia (wtedy toggle jest już
+    // przestawiony i widać spinner). Brak potwierdzenia w [PUMP_CONFIRM_MS] -> powrót.
+    val confirmed = solar.auxPumpOn
+    var pending by remember { mutableStateOf<Boolean?>(null) }
+    var pumpError by remember { mutableStateOf<String?>(null) }
+    val auxOn = pending ?: confirmed
+
+    LaunchedEffect(confirmed) {
+        if (pending != null && confirmed == pending) { pending = null; pumpError = null } // node potwierdził
+    }
+    LaunchedEffect(pending) {
+        if (pending != null) {
+            delay(PUMP_CONFIRM_MS)
+            if (pending != null) { pending = null; pumpError = "Pompa nie potwierdziła zmiany" }
+        }
+    }
 
     // ciągły obrót trójkątów pomp (1.15 s / obrót, liniowo)
     val rot = rememberInfiniteTransition(label = "pump")
@@ -78,12 +125,47 @@ fun SolarScreen(repo: SmartHomeRepository, onBack: () -> Unit) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(if (auxOn) "ON" else "OFF", color = Color.White.copy(alpha = 0.9f), fontSize = 14.sp, fontWeight = FontWeight.W600)
                             Spacer(Modifier.width(8.dp))
-                            PumpToggle(auxOn) { auxOn = !auxOn }
+                            PumpToggle(auxOn, enabled = pending == null) {
+                                val target = !auxOn
+                                pumpError = null
+                                pending = target
+                                // Prawdziwa komenda: bramka -> M4F -> SPI -> CC1310 -> RF -> node.
+                                // Trójkąt ruszy dopiero, gdy node odeśle pumpState (potwierdzenie).
+                                scope.launch {
+                                    store?.pump(target)?.onFailure {
+                                        pending = null
+                                        pumpError = "Bramka nie przyjęła komendy"
+                                    }
+                                }
+                            }
+                        }
+                        // Status próby przełączenia. Miejsce jest ZAREZERWOWANE na stałe —
+                        // spinner pojawia się "w locie" i nie przesuwa niczego na ekranie.
+                        Box(
+                            Modifier.height(PUMP_STATUS_H).padding(top = 6.dp),
+                            contentAlignment = Alignment.CenterEnd,
+                        ) {
+                            when {
+                                pending != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(
+                                        color = Color.White, strokeWidth = 2.dp,
+                                        modifier = Modifier.size(13.dp),
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        if (pending == true) "Włączanie pompy…" else "Wyłączanie pompy…",
+                                        color = Color.White.copy(alpha = 0.85f), fontSize = 11.sp,
+                                    )
+                                }
+                                pumpError != null -> Text(
+                                    pumpError!!, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.W500,
+                                )
+                            }
                         }
                     }
                 }
                 Spacer(Modifier.height(2.dp))
-                SolarSchematic(angle, auxOn)
+                SolarSchematic(solar, angle)
             }
 
             SectionDivider()
@@ -141,13 +223,14 @@ private fun SectionDivider() =
 
 /** Przełącznik pompy 64x36, uchwyt 28; ON: biały tor + pomarańczowy uchwyt. */
 @Composable
-private fun PumpToggle(on: Boolean, onToggle: () -> Unit) {
+private fun PumpToggle(on: Boolean, enabled: Boolean = true, onToggle: () -> Unit) {
     val knobLeft by animateDpAsState(if (on) 32.dp else 4.dp, tween(200), label = "knob")
     val trackColor by animateColorAsState(if (on) Color.White else Color.White.copy(alpha = 0.30f), tween(200), label = "track")
     val knobColor by animateColorAsState(if (on) Surface else Color.White, tween(200), label = "knobC")
     Box(
         Modifier.size(width = 64.dp, height = 36.dp).clip(RoundedCornerShape(18.dp)).background(trackColor)
-            .clickable(remember { MutableInteractionSource() }, indication = null) { onToggle() },
+            // w trakcie próby blokujemy klikanie, żeby nie wysyłać sprzecznych komend
+            .clickable(remember { MutableInteractionSource() }, indication = null, enabled = enabled) { onToggle() },
     ) {
         Box(Modifier.padding(start = knobLeft, top = 4.dp).size(28.dp).clip(CircleShape).background(knobColor))
     }

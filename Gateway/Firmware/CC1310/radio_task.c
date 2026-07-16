@@ -30,6 +30,13 @@
 #define SEND_DATA_TO_SLAVE    (1 << 3)
 #define EVENT_RESTART_RADIO   (1 << 4)
 #define CONCENTRATOR_ADDRESS  0x00   /* gen2 gateway = 0x00 (gen1 stays 0xF0); the RX filter below drops gen1's 0xF0 traffic so the two networks coexist during dev */
+
+/* Passive sniffing of gen1 (temporary, until the solar/bufor nodes are reflashed
+ * to target gen2). Frames addressed to gen1 are collected for telemetry but are
+ * NEVER ACKed: that conversation belongs to gen1 and a second ACK would collide
+ * with gen1's, breaking a working installation. RX is filtered in software (the
+ * radio hands us every frame), so listening in costs nothing on air. */
+#define GEN1_CONCENTRATOR_ADDRESS  0xF0
 #define NODE_ADDRESS          0xF1
 #define NUM_DATA_ENTRIES      2
 #define NUM_APPENDED_BYTES    2
@@ -331,10 +338,16 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                     packetDataPointer = (uint8_t*)&(currentDataEntry->data) + 1;
                     memcpy(rxMsg, packetDataPointer, packetLength);
                     int8_t lastPktRssi =rxStatistics.lastRssi;
-                    if (rxMsg[0] == CONCENTRATOR_ADDRESS)
+                    /* Accept our own traffic (0x00) AND sniff gen1's (0xF0). Only the
+                     * former gets an ACK - see GEN1_CONCENTRATOR_ADDRESS. */
+                    bool addressedToUs = (rxMsg[0] == CONCENTRATOR_ADDRESS);
+                    bool sniffGen1     = (rxMsg[0] == GEN1_CONCENTRATOR_ADDRESS);
+                    if (addressedToUs || sniffGen1)
                     {
                         if (rxMsg[1] == 'D' && rxMsg[packetLength-1] == calcChecksum(&rxMsg[2], packetLength - 3))
                         {
+                          if (addressedToUs)
+                          {
                             txMsg[0] = rxMsg[2];
                             txMsg[1] = 'A';
                             txMsg[2] = rxMsg[0];
@@ -350,6 +363,12 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                             //RF_cmdPropRx.endTrigger.triggerType = TRIG_NEVER;
                             rxCmdHandle = RF_postCmd(rfHandle, (RF_Op*)&RF_cmdPropTx, RF_PriorityNormal, echoCallbackACK, RF_EventCmdDone);
                             events = Event_pend(radioEventHandle, 0, EVENT_ACK_SENT, ACK_TIMEOUT_TICKS);
+                          }
+                          else
+                          {
+                            /* sniffed gen1 frame: stay off the air, let gen1 ACK it */
+                            events = 0;
+                          }
 
                          //   size_t tempStrLen = strlen(&rxMsg[3])-2;
                          //   char tempStr[MAX_MSG_SIZE];
@@ -365,7 +384,11 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                             mq_send(spiQueue, (char *) &receivedMessage, receivedMessage.length, 0);
                             Event_post(spiMasterEventHandle, SEND_DATA_TO_SLAVE);
 
-                            if (events & EVENT_ACK_SENT)
+                            if (sniffGen1)
+                            {
+                                Display_printf(display, 0, 0, "[Gateway RF RX] SNIFF gen1 (no ACK): src %02x|seq %d|RSSI: %d", rxMsg[2], rxMsg[packetLength-2], lastPktRssi);
+                            }
+                            else if (events & EVENT_ACK_SENT)
                             {
                                 Display_printf(display, 0, 0, "[Gateway RF TX] Received data from Node: %02x|%d|%d|RSSI: %d", rxMsg[2], rxMsg[packetLength-2], rxMsg[packetLength-1], lastPktRssi);
                                 Display_printf(display, 0, 0, "[Gateway RF TX] Successfully send ACK");

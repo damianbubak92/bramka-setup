@@ -313,6 +313,90 @@ type NodeInfo struct {
 	ProvisionedAt int64  `json:"provisionedAt"` // unix s
 }
 
+// NodeState is the LAST KNOWN telemetry of one node, as stored in node_param.
+// The phone reads this once on open so every field (temperatures, pump states,
+// toggles) shows real values immediately, without waiting for the next 2-minute
+// WS telemetry push.
+type NodeState struct {
+	Address int                `json:"address"`
+	Type    int                `json:"type"`    // NODE_* (from the node row RecordTelemetry upserts)
+	Params  map[string]float64 `json:"params"`  // param_key -> value (same keys as the WS telemetry event)
+	Ts      int64              `json:"ts"`      // unix s of the newest param in this node
+	// PowerKw is the derived instantaneous power for solar nodes, taken from the
+	// solar_state VIEW (30 * energy_gain_delta / 10000, i.e. the last 2-minute
+	// delta scaled to an hour). Sent so the phone can show real power immediately
+	// on open instead of waiting for a second reading to diff. nil = not a solar
+	// node / no history yet.
+	PowerKw *float64 `json:"powerKw,omitempty"`
+}
+
+// ListState returns the current state of every node we have telemetry for.
+// Mirrors the shape of the WS "telemetry" event so the app can seed its live
+// state with the same code path.
+func (s *Store) ListState() ([]NodeState, error) {
+	// Unknown type MUST NOT default to 0: NODE_SOLAR_CONTROLLER is 0, so an orphan
+	// node_param row (no node row) would masquerade as the solar controller and the
+	// app would render its missing params as zeros. -1 = unknown, matches no NODE_*.
+	rows, err := s.db.Query(
+		`SELECT p.node_id, COALESCE(n.node_type, -1), p.param_key,
+		        COALESCE(p.value_num, 0), p.ts
+		 FROM node_param p
+		 LEFT JOIN node n ON n.node_id = p.node_id
+		 ORDER BY p.node_id, p.param_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byID := make(map[int]*NodeState)
+	order := make([]int, 0, 8)
+	for rows.Next() {
+		var id, typ int
+		var key string
+		var val float64
+		var ts int64
+		if err := rows.Scan(&id, &typ, &key, &val, &ts); err != nil {
+			return nil, err
+		}
+		st, ok := byID[id]
+		if !ok {
+			st = &NodeState{Address: id, Type: typ, Params: make(map[string]float64)}
+			byID[id] = st
+			order = append(order, id)
+		}
+		st.Params[key] = val
+		if ts > st.Ts {
+			st.Ts = ts
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Derived power straight from the VIEW (last history row). Best-effort: a solar
+	// node with no history yet simply has no powerKw.
+	if prows, perr := s.db.Query(`SELECT node_id, generated_power_kw FROM solar_state`); perr == nil {
+		defer prows.Close()
+		for prows.Next() {
+			var id int
+			var kw sql.NullFloat64
+			if err := prows.Scan(&id, &kw); err != nil {
+				continue
+			}
+			if st, ok := byID[id]; ok && kw.Valid {
+				v := kw.Float64
+				st.PowerKw = &v
+			}
+		}
+	}
+
+	out := make([]NodeState, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out, nil
+}
+
 // ListNodes returns the PROVISIONED nodes (those with a factory_id, i.e. they
 // went through approval) for the phone's "devices" screen. Telemetry-only rows
 // (no factory_id) are excluded; so are pending_remove rows — once the user hits

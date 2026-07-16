@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.SampleRepository
 import com.aitronic.smarthome.data.SmartHomeRepository
 import com.aitronic.smarthome.ui.auto.AutomationsRoot
@@ -47,7 +48,7 @@ private enum class Detail { None, Climate, Solar }
  * Repozytorium wstrzykiwane (na razie SampleRepository) — Stage 2 podmieni na sieciowe.
  */
 @Composable
-fun AppScaffold(repo: SmartHomeRepository = SampleRepository) {
+fun AppScaffold(store: GatewayStore? = null, repo: SmartHomeRepository = SampleRepository) {
     var tab by remember { mutableStateOf(Tab.Dashboard) }
     var detail by remember { mutableStateOf(Detail.None) }
 
@@ -55,14 +56,15 @@ fun AppScaffold(repo: SmartHomeRepository = SampleRepository) {
         Box(Modifier.weight(1f)) {
             when (detail) {
                 Detail.Climate -> ClimateScreen(repo) { detail = Detail.None }
-                Detail.Solar -> SolarScreen(repo) { detail = Detail.None }
+                Detail.Solar -> SolarScreen(repo, store) { detail = Detail.None }
                 Detail.None -> when (tab) {
                     Tab.Dashboard -> DashboardScreen(
                         data = repo.dashboard(),
+                        store = store,
                         onOpenSolar = { detail = Detail.Solar },
                         onOpenClimate = { detail = Detail.Climate },
                     )
-                    Tab.Automations -> AutomationsRoot(repo)
+                    Tab.Automations -> AutomationsRoot(repo, store)
                     Tab.Devices -> DevicesRoot(repo)
                 }
             }
