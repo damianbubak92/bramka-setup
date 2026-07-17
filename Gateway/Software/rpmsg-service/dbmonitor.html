@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<!-- DB monitor (dev). Self-contained on purpose: no CDN, no fonts, no build step -
+     the gateway must not depend on the internet to render its own debug tool. -->
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Database monitor — bramka</title>
+<style>
+  :root{
+    --bg:#12100e; --panel:#1b1815; --line:#2e2a25; --txt:#ece7df; --muted:#9a9287;
+    --accent:#E1850B; --green:#2E9E6B; --red:#C0492B; --blue:#6FA8DC;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.45 ui-monospace,"Cascadia Code",Consolas,monospace}
+  header{display:flex;align-items:center;gap:12px;padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+  header h1{margin:0;font-size:14px;font-weight:600;letter-spacing:.02em}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--red);flex:0 0 auto}
+  .dot.on{background:var(--green)}
+  .grow{flex:1}
+  .btn{background:#2a2620;border:1px solid var(--line);color:var(--txt);padding:5px 10px;border-radius:6px;cursor:pointer;font:inherit}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#1b1815;font-weight:600}
+  main{display:grid;grid-template-columns:230px 1fr 320px;height:calc(100vh - 41px)}
+  .pane{overflow:auto;padding:10px}
+  #tables{border-right:1px solid var(--line);background:#171412}
+  #journal{border-left:1px solid var(--line);background:#171412}
+  .sect{color:var(--muted);text-transform:uppercase;font-size:10px;letter-spacing:.08em;margin:4px 0 8px}
+  .tbl{display:flex;justify-content:space-between;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer}
+  .tbl:hover{background:#221e1a}
+  .tbl.sel{background:#2b2318;color:var(--accent)}
+  .tbl .n{color:var(--muted)}
+  .tbl.view .name::after{content:" (view)";color:var(--muted);font-size:10px}
+  .tbl.flash{animation:fl 1s ease}
+  @keyframes fl{0%{background:#3a2c14}100%{background:transparent}}
+  table{border-collapse:collapse;width:100%;font-size:12px}
+  th,td{border:1px solid var(--line);padding:3px 7px;text-align:left;white-space:nowrap;max-width:340px;overflow:hidden;text-overflow:ellipsis}
+  th{background:#221e1a;position:sticky;top:0;color:var(--muted);font-weight:600}
+  td.null{color:#5f584f;font-style:italic}
+  tr:hover td{background:#1e1b17}
+  #sql{width:100%;height:70px;background:#0d0b0a;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:8px;font:inherit;resize:vertical}
+  .row{display:flex;align-items:center;gap:8px;margin:8px 0}
+  .ev{padding:5px 7px;border-bottom:1px solid var(--line);display:flex;gap:7px;align-items:baseline}
+  .ev .t{color:var(--muted);font-size:10px;flex:0 0 auto}
+  .op{font-weight:700;font-size:10px;padding:1px 5px;border-radius:4px;flex:0 0 auto}
+  .op.insert{background:rgba(46,158,107,.18);color:var(--green)}
+  .op.update{background:rgba(111,168,220,.18);color:var(--blue)}
+  .op.delete{background:rgba(192,73,43,.20);color:var(--red)}
+  .msg{color:var(--red);padding:6px 0;white-space:pre-wrap}
+  .ok{color:var(--green)}
+  .muted{color:var(--muted)}
+  .tabs{display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--line);margin:-10px -10px 10px;padding:0 10px;background:#171412}
+  .tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);padding:8px 12px;cursor:pointer;font:inherit}
+  .tab:hover{color:var(--txt)}
+  .tab.sel{color:var(--accent);border-bottom-color:var(--accent)}
+  .tab .badge{background:var(--accent);color:#1b1815;border-radius:8px;padding:0 5px;margin-left:6px;font-size:10px;font-weight:700}
+  #qsql{background:#0d0b0a;border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:6px;padding:8px;margin:0 0 8px;white-space:pre-wrap;color:var(--txt)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Database monitor</h1>
+  <span class="dot" id="wsdot"></span><span class="muted" id="wstxt">łączenie…</span>
+  <span class="grow"></span>
+  <span class="muted" id="dbinfo"></span>
+  <button class="btn" id="reload">Odśwież schemat</button>
+  <button class="btn" id="clearlog">Wyczyść dziennik</button>
+</header>
+
+<main>
+  <div class="pane" id="tables"><div class="sect">Tabele</div><div id="tlist"></div></div>
+
+  <div class="pane" id="center">
+    <!-- Two tabs on purpose: live telemetry auto-refreshes the browsed table, which
+         used to overwrite a query result before it could be read. Separate panes =
+         incoming data can never touch what the user asked for. -->
+    <div class="tabs">
+      <button class="tab sel" data-tab="live">Na żywo</button>
+      <button class="tab" data-tab="query">Zapytania</button>
+      <span class="grow"></span>
+      <span class="muted" id="livehint"></span>
+    </div>
+
+    <section id="tab-live">
+      <div class="sect" id="rtitle">Wybierz tabelę z listy po lewej</div>
+      <div class="row" id="pager" style="display:none">
+        <button class="btn" id="prev">‹ poprzednie</button>
+        <span class="muted" id="pinfo"></span>
+        <button class="btn" id="next">następne ›</button>
+      </div>
+      <div id="rows"></div>
+    </section>
+
+    <section id="tab-query" hidden>
+      <div class="sect">Konsola SQL <span class="muted">— Ctrl+Enter uruchamia</span></div>
+      <textarea id="sql" spellcheck="false" placeholder="SELECT * FROM node;"></textarea>
+      <div class="row"><button class="btn primary" id="run">Uruchom</button></div>
+
+      <div id="qcard" hidden>
+        <div class="sect">Wykonane zapytanie</div>
+        <pre id="qsql"></pre>
+        <div id="qstat"></div>
+        <div id="qrows"></div>
+        <div class="row">
+          <button class="btn" id="copy">Kopiuj</button>
+          <span class="muted" id="copied"></span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="pane" id="journal">
+    <div class="sect">Dziennik zdarzeń <span class="muted">(live)</span></div>
+    <div id="evs"></div>
+  </div>
+</main>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+const api = p => p + (p.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN);
+const $ = id => document.getElementById(id);
+
+let schema = [], sel = null, offset = 0, LIMIT = 100;
+let tab = 'live', pendingLive = false, lastQuery = null;
+
+// ---------- taby ----------
+function setTab(t){
+  tab = t;
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('sel', b.dataset.tab === t));
+  $('tab-live').hidden  = t !== 'live';
+  $('tab-query').hidden = t !== 'query';
+  $('livehint').textContent = t === 'query' ? 'telemetria nie rusza tego widoku' : '';
+  if (t === 'live' && pendingLive){ pendingLive = false; markLiveStale(false); loadRows(); }
+}
+function markLiveStale(on){
+  const b = document.querySelector('.tab[data-tab="live"]');
+  let badge = b.querySelector('.badge');
+  if (on && !badge){ badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = 'nowe'; b.appendChild(badge); }
+  if (!on && badge) badge.remove();
+}
+
+// ---------- schemat ----------
+async function loadSchema(){
+  const r = await fetch(api('/db/api/schema'));
+  schema = await r.json() || [];
+  const total = schema.reduce((a,t)=>a+(t.kind==='table'?t.count:0),0);
+  $('dbinfo').textContent = schema.length + ' obiektów · ' + total + ' rekordów';
+  $('tlist').innerHTML = '';
+  for (const t of schema){
+    const d = document.createElement('div');
+    d.className = 'tbl' + (t.kind==='view'?' view':'') + (sel===t.name?' sel':'');
+    d.id = 'tbl-' + t.name;
+    d.innerHTML = '<span class="name"></span><span class="n"></span>';
+    d.querySelector('.name').textContent = t.name;
+    d.querySelector('.n').textContent = t.count;
+    d.onclick = () => { sel = t.name; offset = 0; setTab('live'); loadSchema(); loadRows(); };
+    $('tlist').appendChild(d);
+  }
+}
+
+// ---------- wiersze ----------
+async function loadRows(){
+  if (!sel) return;
+  const r = await fetch(api('/db/api/rows?table='+encodeURIComponent(sel)+'&limit='+LIMIT+'&offset='+offset));
+  if (!r.ok){ $('rows').textContent = await r.text(); return; }
+  const res = await r.json();
+  $('rtitle').textContent = sel;
+  render(res, 'rows');
+  const t = schema.find(x=>x.name===sel);
+  $('pager').style.display = (t && t.count > LIMIT) ? 'flex' : 'none';
+  $('pinfo').textContent = (offset+1) + '–' + (offset+res.rows.length) + ' z ' + (t?t.count:'?');
+}
+
+// render into an explicit container: the live table and a query result must never
+// share one, or incoming telemetry overwrites what you are reading.
+function render(res, into){
+  const box = $(into);
+  if (res.error){ box.innerHTML = ''; box.textContent = res.error; box.className = 'msg'; return; }
+  box.className = '';
+  if (!res.columns.length){
+    box.innerHTML = '';
+    return; // a write: the status line above already says rows affected
+  }
+  let h = '<table><thead><tr>' + res.columns.map(()=>'<th></th>').join('') + '</tr></thead><tbody>';
+  h += res.rows.map(row => '<tr>' + row.map(()=>'<td></td>').join('') + '</tr>').join('');
+  h += '</tbody></table>';
+  box.innerHTML = h;
+  // wartości wstawiamy przez textContent (żadnego HTML z bazy -> zero XSS)
+  const ths = box.querySelectorAll('th');
+  res.columns.forEach((c,i)=> ths[i].textContent = c);
+  const trs = box.querySelectorAll('tbody tr');
+  res.rows.forEach((row,ri)=>{
+    const tds = trs[ri].querySelectorAll('td');
+    row.forEach((v,ci)=>{
+      if (v === null){ tds[ci].textContent = 'NULL'; tds[ci].className = 'null'; }
+      else tds[ci].textContent = String(v);
+    });
+  });
+}
+
+// ---------- konsola SQL ----------
+async function runSQL(){
+  const sql = $('sql').value.trim();
+  if (!sql) return;
+  const r = await fetch(api('/db/api/query'), {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({sql})
+  });
+  const res = await r.json();
+
+  lastQuery = {sql, res};
+  $('sql').value = '';              // wpisujesz kolejne, historia jest niżej
+  $('qcard').hidden = false;
+  $('qsql').textContent = sql;
+  $('qstat').className = res.error ? 'msg' : 'ok';
+  $('qstat').textContent = res.error
+    ? '✗ ' + res.error + ' · ' + res.durationMs + ' ms'
+    : (res.columns.length
+        ? '✓ ' + res.rows.length + ' wierszy · ' + res.durationMs + ' ms' + (res.truncated ? ' · ⚠ obcięto do 1000' : '')
+        : '✓ OK · zmienionych wierszy: ' + res.affected + ' · ' + res.durationMs + ' ms');
+  render(res, 'qrows');
+  $('copied').textContent = '';
+  loadSchema(); // licznik rekordów mógł się zmienić
+}
+
+// resultToText: query + status + rows as markdown, ready to paste into a chat.
+function resultToText(q){
+  const {sql, res} = q;
+  let t = '```sql\n' + sql + '\n```\n';
+  if (res.error) return t + 'BŁĄD: ' + res.error + ' (' + res.durationMs + ' ms)';
+  if (!res.columns.length) return t + 'OK · zmienionych wierszy: ' + res.affected + ' · ' + res.durationMs + ' ms';
+  t += '-- ' + res.rows.length + ' wierszy · ' + res.durationMs + ' ms' + (res.truncated ? ' · obcięto do 1000' : '') + '\n\n';
+  t += res.columns.join(' | ') + '\n' + res.columns.map(()=>'---').join(' | ') + '\n';
+  t += res.rows.map(r => r.map(v => v === null ? 'NULL' : String(v)).join(' | ')).join('\n');
+  return t;
+}
+
+async function copyResult(){
+  if (!lastQuery) return;
+  const text = resultToText(lastQuery);
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement('textarea'); // fallback (np. brak uprawnień do schowka)
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove();
+  }
+  $('copied').textContent = 'skopiowano ✓';
+  setTimeout(()=> $('copied').textContent = '', 2000);
+}
+
+// ---------- dziennik live ----------
+function addEvent(e){
+  const d = document.createElement('div');
+  d.className = 'ev';
+  const time = new Date(e.ts).toLocaleTimeString('pl-PL', {hour12:false});
+  d.innerHTML = '<span class="t"></span><span class="op"></span><span class="who"></span>';
+  d.querySelector('.t').textContent = time;
+  const op = d.querySelector('.op'); op.textContent = e.op; op.classList.add(e.op);
+  d.querySelector('.who').textContent = e.table + ' #' + e.rowid;
+  $('evs').prepend(d);
+  while ($('evs').childElementCount > 300) $('evs').lastChild.remove();
+
+  // podświetl tabelę na liście + odśwież widok, jeśli to ta oglądana
+  const row = $('tbl-' + e.table);
+  if (row){ row.classList.remove('flash'); void row.offsetWidth; row.classList.add('flash'); }
+  scheduleRefresh(e.table);
+}
+
+let refreshT = null, dirty = new Set();
+function scheduleRefresh(table){
+  dirty.add(table);
+  clearTimeout(refreshT);
+  refreshT = setTimeout(()=>{           // debounce: telemetria to seria zapisów naraz
+    loadSchema();
+    if (sel && dirty.has(sel)){
+      if (tab === 'live') loadRows();
+      else { pendingLive = true; markLiveStale(true); } // czekaj, nie przerywaj czytania
+    }
+    dirty.clear();
+  }, 400);
+}
+
+function connectWS(){
+  const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws?token=' + encodeURIComponent(TOKEN));
+  ws.onopen = () => { $('wsdot').classList.add('on'); $('wstxt').textContent = 'live'; };
+  ws.onclose = () => {
+    $('wsdot').classList.remove('on'); $('wstxt').textContent = 'rozłączono — ponawiam…';
+    setTimeout(connectWS, 3000);
+  };
+  ws.onmessage = m => {
+    let e; try { e = JSON.parse(m.data); } catch { return; }
+    if (e.type === 'db_event') addEvent(e);
+  };
+}
+
+$('run').onclick = runSQL;
+$('copy').onclick = copyResult;
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => setTab(b.dataset.tab));
+$('reload').onclick = () => { loadSchema(); loadRows(); };
+$('clearlog').onclick = () => $('evs').innerHTML = '';
+$('prev').onclick = () => { offset = Math.max(0, offset-LIMIT); loadRows(); };
+$('next').onclick = () => { offset += LIMIT; loadRows(); };
+$('sql').addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') runSQL(); });
+
+loadSchema();
+connectWS();
+</script>
+</body>
+</html>

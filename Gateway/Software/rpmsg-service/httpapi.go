@@ -23,6 +23,9 @@ type HTTPConfig struct {
 	CertFile  string // MUST be the exact cert the app pins (res/raw/cert.pem)
 	KeyFile   string // its matching private key
 	AuthToken string
+	// DBMonitor serves the dev DB monitor at /db (whole database + SQL console).
+	// Must be OFF in production - see dbmonitor.go.
+	DBMonitor bool
 }
 
 // StartHTTPAPI runs the phone-facing HTTPS API and blocks. Replicates the gen1
@@ -38,6 +41,9 @@ func StartHTTPAPI(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, cf
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		hub.serveWS(cfg.AuthToken, w, r)
 	})
+	if cfg.DBMonitor {
+		registerDBMonitor(mux, store, cfg.AuthToken)
+	}
 	srv := &http.Server{
 		Addr:      cfg.Addr,
 		Handler:   mux,

@@ -120,6 +120,14 @@ func (h *WSHub) PublishTelemetry(address, nodeType uint8, params map[string]floa
 	})
 }
 
+// PublishDBEvent feeds the DB monitor's journal (dev tool). Row-level, straight
+// from SQLite's update hook - see dbmonitor.go.
+func (h *WSHub) PublishDBEvent(ev DBEvent) {
+	h.publishJSON(map[string]interface{}{
+		"type": "db_event", "op": ev.Op, "table": ev.Table, "rowid": ev.RowID, "ts": ev.Ts,
+	})
+}
+
 func (h *WSHub) PublishNodeStatus(address uint8, status string) {
 	h.publishJSON(map[string]interface{}{
 		"type": "node_status", "address": address, "status": status,

@@ -14,6 +14,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -37,7 +38,9 @@ func OpenStore(path string, loc *time.Location) (*Store, error) {
 		}
 	}
 	dsn := path + "?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000"
-	db, err := sql.Open("sqlite3", dsn)
+	// driverWithUpdateHook (dbmonitor.go) is plain sqlite3 + an update hook, so the
+	// DB monitor can journal every write. With no hook installed the cost is nil.
+	db, err := sql.Open(driverWithUpdateHook, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db %s: %w", path, err)
 	}
@@ -148,6 +151,16 @@ func initNodeSchema(db *sql.DB) error {
 		if _, err := db.Exec(q); err != nil {
 			return err
 		}
+	}
+	// Defense in depth behind solarMinIntervalS: one reading per node per second,
+	// enforced by the DB itself. Deliberately NOT fatal - on a DB that still holds
+	// legacy duplicates this fails, and refusing to start (losing telemetry and
+	// recovery) would be a far worse outcome than a missing constraint.
+	if _, err := db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_solar_hist_uniq
+		 ON solar_history(node_id, reading_time)`); err != nil {
+		log.Printf("[Store] WARNING: solar_history uniqueness not enforced (%v) - "+
+			"clean the duplicates, then restart to apply it", err)
 	}
 	// migrate: node.factory_id (the chip's CC1310 FCFG identity) - added after the
 	// original schema so a known chip's rejoin can reuse its address. ALTER fails
@@ -548,10 +561,23 @@ func (s *Store) RecordTelemetry(nodeID, nodeType uint8, params []NodeParam, ts i
 	return tx.Commit()
 }
 
+// solarMinIntervalS rejects a second history row too close to the previous one.
+// The node reports every 2 min, so anything within a minute is a duplicate of the
+// SAME reading redelivered by the transport, not new data. That happens for real:
+// when the M4F stalls, the CC1310 keeps retrying the frame up over SPI, and once
+// the M4F recovers the whole backlog lands at once (observed: 8 identical rows in
+// one second after an 11h stall). Since energy_gain accumulates as prev + delta,
+// each duplicate would inflate the daily yield by another delta.
+//
+// A UNIQUE(node_id, reading_time) index alone would NOT be enough: it only catches
+// duplicates that share the exact same receive second.
+const solarMinIntervalS = 60
+
 // recordSolarHistory appends one solar_history row. energy_gain and pump_runtime
 // accumulate on the previous row IF it is the same local day, else they restart
 // from this reading (midnight reset in s.loc). energy_gain_delta is the raw 2-min
 // gain (kWh*10000); pump_runtime adds the 2-min report interval whenever flow>0.
+// Duplicate redeliveries are dropped (see solarMinIntervalS).
 func (s *Store) recordSolarHistory(tx *sql.Tx, nodeID uint8, v map[string]float64, ts int64) error {
 	delta := int64(v["energyGain"]) // raw 2-min gain, kWh*10000
 	pumpInc := int64(0)
@@ -566,6 +592,12 @@ func (s *Store) recordSolarHistory(tx *sql.Tx, nodeID uint8, v map[string]float6
 		Scan(&prevTime, &prevEnergy, &prevRuntime)
 	if err != nil && err != sql.ErrNoRows {
 		return err
+	}
+
+	if prevTime.Valid && ts-prevTime.Int64 < solarMinIntervalS {
+		log.Printf("[Store] solar node %d: duplicate reading %ds after the previous one - skipped",
+			nodeID, ts-prevTime.Int64)
+		return nil // node_param still got the update; only history must stay clean
 	}
 
 	energy, runtime := delta, pumpInc

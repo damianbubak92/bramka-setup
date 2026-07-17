@@ -105,7 +105,17 @@ function Deploy-Go {
     foreach ($f in $goFiles) {
         scp $f.FullName "${BRAMKA_HOST}:$remoteDir/"
     }
-    
+
+    # Step 3b: Copy go:embed assets. The embed happens AT BUILD TIME and we build on
+    # the bramka, so a missing asset fails the build ("no matching files found").
+    $assets = Get-ChildItem "$localDir\*.html" -ErrorAction SilentlyContinue
+    if ($assets) {
+        Write-Host "[2b/3] Copying embedded assets ($($assets.Count))..." -ForegroundColor Cyan
+        foreach ($a in $assets) {
+            scp $a.FullName "${BRAMKA_HOST}:$remoteDir/"
+        }
+    }
+
     # Step 4: Build (optional)
     if ($Build -or $Run) {
         Write-Host "[3/3] Building on bramka..." -ForegroundColor Cyan

@@ -26,9 +26,12 @@ func main() {
 	authToken := flag.String("auth-token", defaultAuthToken, "phone API shared token")
 	dbPath := flag.String("db", "/var/lib/bramka/bramka.db", "SQLite database path (serve mode)")
 	tz := flag.String("tz", "Europe/Warsaw", "IANA timezone for the engine wall-clock (time-sync)")
+	dbMonitor := flag.Bool("db-monitor", true,
+		"DEV ONLY: serve the DB monitor at /db (whole database + SQL console). Pass -db-monitor=false in production")
 	flag.Parse()
 
-	httpCfg := HTTPConfig{Addr: *httpAddr, CertFile: *tlsCert, KeyFile: *tlsKey, AuthToken: *authToken}
+	httpCfg := HTTPConfig{Addr: *httpAddr, CertFile: *tlsCert, KeyFile: *tlsKey,
+		AuthToken: *authToken, DBMonitor: *dbMonitor}
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("=== rpmsg-service starting (test mode: %s, heartbeat idle: %dms) ===",
@@ -645,6 +648,12 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 	// commands with reqId in Phase B). FCM (background alerts) comes later.
 	hub := newWSHub()
 	go hub.run()
+
+	// DB monitor journal: SQLite's own update hook -> WS. Catches every write on
+	// every table (including ones added later), and never blocks a write.
+	if cfg.DBMonitor {
+		store.OnChange(hub.PublishDBEvent)
+	}
 
 	// Drain M4F->Linux events FIRST (before HELLO): a reconnect can find a backlog
 	// of stale telemetry/rule-fired buffered while Linux was down; consuming it
