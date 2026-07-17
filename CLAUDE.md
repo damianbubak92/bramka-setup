@@ -227,22 +227,60 @@ Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · d
 **Nowe komendy HTTP dodane 16-17.07:** `state` (ostatnia telemetria z `node_param` + `powerKw` z VIEW),
 `updatenode` (nazwa+pokój). Reszta kontraktu bez zmian.
 
-**👉 PLAN NA NASTĘPNĄ SESJĘ (ustalony z userem 17.07):**
-1. **Tabele historyczne per node** (dla typów, które tego potrzebują) + **prawdziwe wykresy zamiast atrap**
-   (Klimat 24h/7d/mies/rok, Solar dzień/mies/rok/total). Wymaga **endpointów historii w Go** — dziś NIE MA żadnego.
-2. **Dopracowanie automatyzacji.**
-3. **Cykl życia nodów**: dodawanie nowych, usuwanie starych, **wymiana zepsutego noda na nowy**
-   (dziś tożsamość = `factory_id`; wymiana chipa = inny `factory_id` → trzeba przepiąć adres).
+**✅ ZROBIONE 17.07 (druga część dnia) — DB monitor + sprzątanie bazy + historia solara + 2 fixy niezawodności:**
+- **DB monitor `/db`** (dev-only, flaga `-db-monitor` default ON): podgląd całej bazy na żywo + konsola SQL + dziennik
+  zdarzeń. Dziennik z **update-hooka SQLite** (`dbmonitor.go`, driver `sqlite3_hooked`) — łapie KAŻDY insert/update/delete
+  na każdej tabeli (też przyszłych), nieblokująco. UI dwa taby: „Na żywo" (auto-refresh) + „Zapytania" (telemetria NIE
+  przykrywa wyników; przycisk Kopiuj → markdown). `Deploy-Go` kopiuje teraz `*.html` (go:embed). URL: `/db?token=...`.
+- **Baza wysprzątana na żywo**: duplikaty `solar_history` skasowane (były bursty PO hangu M4F — CC1310 retransmituje
+  w górę, po recoverym backlog wchodzi naraz; noc = `delta 0`, uzysk NIE zawyżony), `energy_gain`/`pump_runtime`
+  **przeliczone od zera** per lokalny dzień (`SUM(delta)==max(energy_gain)` ✓), sieroty 17/18/19 usunięte,
+  `sample` DROP. Guard w Go: `recordSolarHistory` odrzuca pełny odczyt <60s od poprzedniego (`solarMinIntervalS`) +
+  `UNIQUE(node_id,reading_time)` **nie-fatalnie** (brudna baza nie blokuje startu).
+- **Historia solara — PRAWDZIWE WYKRESY + live-refresh na WS** (apka: wykresy z bramki, ostatni słupek rośnie sam co 2 min,
+  przeglądanie starszych okresów zachowane). `command=history&range=day|month|year|total` zwraca liczby + etykietę PL.
+- **🔑 REDESIGN HISTORII na model gen1 (18.07, `solaragg.go`) — zastąpił `solar_rollup`**: user słusznie zganił mój
+  compute-on-read (zapytania 8s na 500k wierszy). Teraz **3 tabele agregatów per node** `solar_hourly`/`solar_daily`/
+  `solar_monthly` (uzysk w **kWh** REAL, pompa w min), model 1:1 z gen1 (`SolarSystem{Daily,Monthly,Annual}Stats`).
+  `solar_history` = **bufor 2h** (kumulatyw `energy_gain`); agregacja **diff kumulatywu na granicach godzin** (`hour_yield =
+  max(0, kum − poprz_kum)`), **dzienny total = `SUM(hour_yield)`** (odporne na reset gen1 wpadający w środek mojej doby —
+  offset strefy ~1h). **Event-driven na ingest po commit** (błąd agregacji nie cofa surówki), retencja drop >2h po udanej
+  agregacji. Total z `solar_monthly`. Kompaktowość: `DeleteNode`→`dropSolarNode` (kasuje surówkę+3 agregaty). Zapytania w ms.
+  **NIE różnicujemy delt per odczyt** (to dawało bug 300 kWh). [[solar-aggregation-model]]
+- **🔑 SYNC GEN1 — 2 LATA HISTORII WCIĄGNIĘTE (18.07, zweryfikowane co do grosza)**: `gen1import.go` + PHP endpoint
+  `Gateway/Software/server-gen1/solar-export.php` (read-only JSON, klucz, sanityzowany w repo — realne creds tylko na
+  serwerze). `-test import-gen1 -gen1-url ... -gen1-key ... [-gen1-insecure]` (cert hosta nie pasuje → HTTP albo insecure).
+  **Pełny recompute**: czyść surówkę noda → wciągnij całość (extraTemp→`energy_gain`, pumpRuntime→`pump_runtime` verbatim,
+  BEZ rekonstrukcji delt) → `RebuildSolarAggregates` → drop surówki. Idempotentne, dev-only. Import PRZED serve (robi migrację
+  + build agregatów). **Weryfikacja**: wszystkie dni zgadzają się z gen1 co do grosza; gdzie się różnią — to gen1 gubił dni
+  (forward-only cron: przegapiony reset → `hourYield` sklamrowane do 0, np. 06-20 = 20 kWh w rawie ale 0 w monthly). **Nasza
+  metoda jest odporniejsza i poprawniejsza niż gen1.** [[gen1-server-scripts]]
+- **FIX pompy (18.07)**: `pump_runtime +2 min gdy energyGain z noda ≠ 0` (nie flow>0) — reguła gen1 (pompa może stać przy
+  resztkowym uzysku).
+- **🔑 FIX MOCY (apka)**: `energyGain` w telemetrii to **surowy przyrost 2-min**, NIE narastający. Apka różnicowała dwa
+  kolejne przyrosty → szum „0,12 kW". Teraz `moc = 30*energyGain/10000` wprost (jak VIEW). Uzysk dzienny z bramki
+  (`energyDayKwh` z VIEW `solar_state` — jeden przyrost nie da doby).
+- **🔑 FIX PROTOKOŁU `protocol.go` (commit 6577cd1, osobny)**: po hangu/reconnekcie M4F telemetria była **dropowana ~20 min**.
+  `HELLO_ACK` resetował `theirLastSeq=0`, ale zaległa ramka tuż po resecie wbijała go wysoko, a świeża sesja M4F (seq od 1)
+  leciała pod próg jako „duplikaty". Retransmisja sięga max `MAX_PENDING_ACKS`(8) wstecz → skok wstecz >16 = nowa sesja/wrap,
+  nie duplikat (`isDuplicateSeq`, `seqResyncWindow=16`). **To maskowało hangi M4F jako dłuższe** — prawdopodobnie
+  długoletni bug. Zweryfikowane: po reconnekcie seq=1 zapisuje się od razu. [[m4f-seq-resync-on-reconnect]]
 
-**⚠️ Do posprzątania w bazie ZANIM zrobimy wykresy (znalezione 17.07 — pełny audyt w Session Log):**
-- **Duplikaty `reading_time`** w `solar_history` (np. 4 rekordy o 00:32:16) → przy `energy_gain = prev + delta`
-  **zawyżają uzysk dzienny**. Rozważyć `UNIQUE(node_id, reading_time)` lub dedup przy zapisie.
-- **Sieroty 17/18/19** w `node_param` bez wiersza w `node` (to one udawały „solar" przez `COALESCE(...,0)`).
-- **Martwa tabela `sample`** (511 rek. + indeks) → `DROP`.
-- **Brak historii dla typu 6** (T&H ma `archive=0`) i **brak rollupów** (tylko surowe 2-min rekordy).
+**👉 PLAN NA NASTĘPNĄ SESJĘ:**
+1. **Apka — dostrojenie wyświetlania wykresów** (user 18.07: „wyświetlanie jest zepsute, niektóre rzeczy się nie
+   wyświetlają"). Endpoint historii działa i jest zweryfikowany; problem po stronie renderu w apce (słupki/osie/okresy
+   z nowymi danymi 2-letnimi). Kształt odpowiedzi `/history` bez zmian (`SolarSeries`).
+2. **Backup gen2 na zewn. serwer** (real-time push gdy online; apka czyta z mirrora gdy bramka nieosiągalna) — ten sam
+   endpoint-PHP wzorzec co import gen1, tylko POST. [[gen1-server-scripts]]
+2. **Backup bramki na zewn. serwer** (real-time push gdy online; apka czyta z mirrora gdy bramka nieosiągalna).
+3. **Dopracowanie automatyzacji.**
+4. **Cykl życia nodów**: dodawanie/usuwanie/**wymiana zepsutego** (tożsamość=`factory_id`; wymiana chipa → przepiąć adres).
+5. **Hang M4F** (znany, ~raz/kilka h, koreluje z ruchem SPI — sniff gen1 go nasilił). Recovery działa. Diagnoza czeka na
+   zrzut rejestrów hardfaultu (retained-RAM). User: „niebawem, ale najpierw plan".
 
-**Nadal ATRAPY w apce (świadomie):** Klimat (wykresy + interwał), PV, Dashboard poza kaflem solarnym, wykresy solar.
-**Luki bramki blokujące:** brak endpointów historii, brak komendy interwału pomiaru, brak noda/telemetrii PV.
+**Nadal ATRAPY w apce (świadomie):** Klimat (wykresy + interwał), PV, Dashboard poza kaflem solarnym.
+**Luki bramki blokujące:** brak komendy interwału pomiaru, brak noda/telemetrii PV, `reading_time`=czas ODBIORU nie pomiaru
+(po hangu backlog dostaje zły stempel — wymaga timestampu w protokole noda; wróci przy klimacie).
 **Nod T&H (rev2)** — protoypy w drodze; gdy dojdzie: rozszerzenie protokołu o `climate` → wykresy klimatu + interwał.
 
 **Odłożone long-term:**

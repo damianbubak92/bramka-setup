@@ -137,27 +137,43 @@ func initNodeSchema(db *sql.DB) error {
 			pump_runtime      INTEGER             -- accumulated this local day, minutes
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_solar_hist ON solar_history(node_id, reading_time)`,
-		// Hourly rollup: the ONLY materialized aggregate. Day/month/year/total charts
-		// are sums of these buckets, so there is one thing to keep correct instead of
-		// four. Two years of raw readings is ~525k rows (a year chart would scan 262k
-		// of them); as hours it is ~17.5k, cheap enough to sum on the A53.
+		// Three aggregate levels, gen1's proven model (SolarSystem{Daily,Monthly,
+		// Annual}Stats). Each row = one period; each level derives from the one below by
+		// diffing the CUMULATIVE energy at period boundaries (never summing per-reading
+		// deltas - that is what made a single sensor glitch explode a day to 300 kWh).
+		// solar_history is only a ~2h rolling buffer feeding these; the aggregates ARE
+		// the durable truth. Yields stored in real kWh (raw keeps the *10000 int form);
+		// pump in minutes. Per-node keyed, so provisioning/removal is one cascade.
 		//
-		// Always rebuilt from raw (never incremented in place), so it is idempotent:
-		// re-running over a range yields the same numbers. That is what makes back-
-		// filling gen1 history safe - a backfill rewrites the past, and gen1's
-		// forward-only cron chain could not cope with that.
-		//
-		// samples = raw readings in the bucket (30 expected at the 2-min cadence).
-		// It is coverage: it lets the UI say "this day is incomplete" instead of
-		// quietly drawing a stall as a low-yield day.
-		`CREATE TABLE IF NOT EXISTS solar_rollup (
-			node_id      INTEGER NOT NULL,
-			bucket       INTEGER NOT NULL,  -- unix s of the LOCAL hour start
-			energy_gain  INTEGER NOT NULL,  -- summed delta, kWh*10000
-			pump_runtime INTEGER NOT NULL,  -- minutes
-			samples      INTEGER NOT NULL,
+		//   solar_hourly  : 1 row per hour  -> Day chart   (day_yield = cum. since local midnight)
+		//   solar_daily   : 1 row per day   -> Month chart (month_yield = cum. since 1st of month)
+		//   solar_monthly : 1 row per month -> Year + Total (year_yield = cum. since January)
+		`CREATE TABLE IF NOT EXISTS solar_hourly (
+			node_id    INTEGER NOT NULL,
+			bucket     INTEGER NOT NULL,  -- unix s, local hour start
+			hour_yield REAL NOT NULL,     -- kWh produced in this hour
+			hour_pump  INTEGER NOT NULL DEFAULT 0, -- pump minutes in this hour
+			day_yield  REAL NOT NULL,     -- kWh cumulative (chain reference for the diff)
+			day_pump   INTEGER NOT NULL,  -- pump minutes cumulative (chain reference)
 			PRIMARY KEY (node_id, bucket)
 		)`,
+		`CREATE TABLE IF NOT EXISTS solar_daily (
+			node_id     INTEGER NOT NULL,
+			bucket      INTEGER NOT NULL,  -- unix s, local day start
+			day_yield   REAL NOT NULL,     -- kWh this day
+			month_yield REAL NOT NULL,     -- kWh cumulative since 1st of month
+			month_pump  INTEGER NOT NULL,  -- pump minutes cumulative this month
+			PRIMARY KEY (node_id, bucket)
+		)`,
+		`CREATE TABLE IF NOT EXISTS solar_monthly (
+			node_id     INTEGER NOT NULL,
+			bucket      INTEGER NOT NULL,  -- unix s, local month start
+			month_yield REAL NOT NULL,     -- kWh this month
+			year_yield  REAL NOT NULL,     -- kWh cumulative since January
+			year_pump   INTEGER NOT NULL,  -- pump minutes cumulative this year
+			PRIMARY KEY (node_id, bucket)
+		)`,
+		`DROP TABLE IF EXISTS solar_rollup`, // superseded by the three-level aggregates
 		// DROP+CREATE (not IF NOT EXISTS): a VIEW is only a definition, so recreating
 		// it every start keeps it in sync when we add columns (e.g. energy_gain_kwh).
 		`DROP VIEW IF EXISTS solar_state`,
@@ -203,6 +219,21 @@ func initNodeSchema(db *sql.DB) error {
 	// migrate: node.room - user-facing grouping for the phone's device manager.
 	// Purely a label (the node knows nothing about rooms); NULL/empty = "Bez pokoju".
 	if _, err := db.Exec(`ALTER TABLE node ADD COLUMN room TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	// migrate: solar_history.source - which system produced the row ('gen2' live, or
+	// 'gen1' back-filled from the legacy MySQL). The rollup uses gen1 for any hour it
+	// covers (gen1 is the source of truth with full coverage) and gen2 only where gen1
+	// has none - so a gen2 hang gap is auto-healed by gen1. Pre-existing rows = 'gen2'.
+	if _, err := db.Exec(`ALTER TABLE solar_history ADD COLUMN source TEXT NOT NULL DEFAULT 'gen2'`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	// migrate: solar_hourly.hour_pump - per-hour pump minutes. The daily total sums
+	// per-hour increments (robust when gen1's reset lands inside our local day), so we
+	// need the per-hour value, not just the cumulative day_pump.
+	if _, err := db.Exec(`ALTER TABLE solar_hourly ADD COLUMN hour_pump INTEGER NOT NULL DEFAULT 0`); err != nil &&
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return err
 	}
@@ -509,11 +540,15 @@ func (s *Store) GetNode(address uint8) (factoryID string, nodeType uint8, ok boo
 	return fid.String, uint8(nt), true, nil
 }
 
-// DeleteNode removes a node's registry row (provisioning remove). Its current
-// state in node_param is left as-is (harmless; a re-provision overwrites).
+// DeleteNode removes a node's registry row (provisioning remove) and, for a solar
+// node, its raw + aggregate history - so a removed node leaves nothing behind
+// (compact lifecycle). Its node_param current state is left as-is (harmless; a
+// re-provision overwrites).
 func (s *Store) DeleteNode(address uint8) error {
-	_, err := s.db.Exec(`DELETE FROM node WHERE node_id = ?`, address)
-	return err
+	if _, err := s.db.Exec(`DELETE FROM node WHERE node_id = ?`, address); err != nil {
+		return err
+	}
+	return s.dropSolarNode(address)
 }
 
 // allocAddr returns the lowest free pool address (freed addresses are reused).
@@ -587,16 +622,30 @@ func (s *Store) RecordTelemetry(nodeID, nodeType uint8, params []NodeParam, ts i
 		vals[pm.Key] = pm.Num
 	}
 
-	// Solar full reading (has energyGain) -> dedicated history with daily accumulation.
+	// Solar full reading (has energyGain) -> raw buffer with daily accumulation.
 	// A pump-only update (SEND_PUMP_STATUS) carries just pumpState -> node_param only.
+	solarFull := false
 	if nodeType == nodeTypeSolar {
 		if _, full := vals["energyGain"]; full {
 			if err := s.recordSolarHistory(tx, nodeID, vals, ts); err != nil {
 				return err
 			}
+			solarFull = true
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Roll up completed hours/days/months and prune the raw buffer AFTER the raw row
+	// is durably committed: an aggregation error must not lose the reading, it just
+	// leaves the buffer to be retried on the next ingest.
+	if solarFull {
+		if err := s.aggregateSolar(nodeID, ts); err != nil {
+			log.Printf("[Store] solar node %d: aggregation deferred (%v) - raw buffer kept", nodeID, err)
+		}
+	}
+	return nil
 }
 
 // solarMinIntervalS rejects a second history row too close to the previous one.
@@ -611,16 +660,19 @@ func (s *Store) RecordTelemetry(nodeID, nodeType uint8, params []NodeParam, ts i
 // duplicates that share the exact same receive second.
 const solarMinIntervalS = 60
 
-// recordSolarHistory appends one solar_history row. energy_gain and pump_runtime
-// accumulate on the previous row IF it is the same local day, else they restart
-// from this reading (midnight reset in s.loc). energy_gain_delta is the raw 2-min
-// gain (kWh*10000); pump_runtime adds the 2-min report interval whenever flow>0.
+// recordSolarHistory appends one solar_history row (the ~2h raw buffer), then rolls
+// completed hours/days/months into the aggregates and prunes old raw. energy_gain is
+// the yield accumulated since local midnight (kWh*10000): the node sends the 2-min
+// delta, we add it, resetting at midnight. pump_runtime accumulates 2 min whenever
+// that delta is non-zero (gen1's rule - the pump can have stopped, flow=0, while a
+// little yield still lands; matching it keeps gen1 and gen2 numbers comparable).
+// energy_gain_delta keeps the last 2-min delta for the power VIEW only.
 // Duplicate redeliveries are dropped (see solarMinIntervalS).
 func (s *Store) recordSolarHistory(tx *sql.Tx, nodeID uint8, v map[string]float64, ts int64) error {
 	delta := int64(v["energyGain"]) // raw 2-min gain, kWh*10000
 	pumpInc := int64(0)
-	if v["flowRate"] > 0 {
-		pumpInc = 2 // minutes (matches the node's 2-min report cadence)
+	if delta > 0 {
+		pumpInc = 2 // gen1 rule: pump minutes accrue on non-zero yield, not on flow
 	}
 
 	var prevTime, prevEnergy, prevRuntime sql.NullInt64
@@ -653,11 +705,10 @@ func (s *Store) recordSolarHistory(tx *sql.Tx, nodeID uint8, v map[string]float6
 		nodeID, ts, v["Tin"], v["Tout"],
 		v["T1"], v["T2"], v["T3"], v["T4"], v["Tcol"],
 		int64(v["flowRate"]), int64(v["pumpState"]), delta, energy, runtime)
-	if err != nil {
-		return err
-	}
-	// Same transaction as the raw row: the rollup can never disagree with history.
-	return s.rebuildSolarHour(tx, nodeID, ts)
+	// Aggregation + pruning happen AFTER this tx commits (see RecordTelemetry): if
+	// they fail the raw row must survive so the next ingest can retry - the whole
+	// point of "aggregation failed => keep the buffer".
+	return err
 }
 
 // sameLocalDay reports whether two unix timestamps fall on the same calendar day

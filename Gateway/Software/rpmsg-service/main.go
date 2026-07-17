@@ -28,7 +28,18 @@ func main() {
 	tz := flag.String("tz", "Europe/Warsaw", "IANA timezone for the engine wall-clock (time-sync)")
 	dbMonitor := flag.Bool("db-monitor", true,
 		"DEV ONLY: serve the DB monitor at /db (whole database + SQL console). Pass -db-monitor=false in production")
+	gen1URL := flag.String("gen1-url", "", "gen1 solar export endpoint (import-gen1 mode), e.g. https://host/solar-export.php")
+	gen1Key := flag.String("gen1-key", "", "shared key for the gen1 export endpoint (import-gen1 mode)")
+	gen1Insecure := flag.Bool("gen1-insecure", false, "skip TLS cert validation for the gen1 endpoint (its cert name mismatches)")
+	gen1MaxPages := flag.Int("gen1-max-pages", 0, "limit import-gen1 to N pages (0 = all); use a small value to verify before a full pull")
 	flag.Parse()
+
+	// import-gen1: a standalone admin operation (DB + HTTP only, no M4F). Handle it
+	// before touching the transport so it runs without the M4F link up.
+	if *testMode == "import-gen1" {
+		runImportGen1(*dbPath, *tz, *gen1URL, *gen1Key, *gen1Insecure, *gen1MaxPages)
+		return
+	}
 
 	httpCfg := HTTPConfig{Addr: *httpAddr, CertFile: *tlsCert, KeyFile: *tlsKey,
 		AuthToken: *authToken, DBMonitor: *dbMonitor}
@@ -616,6 +627,30 @@ func runFireSmokeTest(p *Protocol) {
 }
 
 // runServe is the production phone-access mode: connect to the M4F, keep its
+// runImportGen1 back-fills solar history from the gen1 MySQL via its PHP export
+// endpoint. Standalone: opens the DB, imports, rebuilds the rollup, exits. Safe to
+// re-run (resumes from the newest gen1 row already stored).
+func runImportGen1(dbPath, tz, endpoint, key string, insecure bool, maxPages int) {
+	if endpoint == "" {
+		log.Fatalf("[gen1] -gen1-url is required (e.g. -gen1-url https://host/solar-export.php)")
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		loc = time.Local
+	}
+	store, err := OpenStore(dbPath, loc)
+	if err != nil {
+		log.Fatalf("[gen1] open DB %s failed: %v", dbPath, err)
+	}
+	defer store.Close()
+
+	n, err := store.ImportGen1(endpoint, key, insecure, maxPages)
+	if err != nil {
+		log.Fatalf("[gen1] import failed after %d row(s): %v", n, err)
+	}
+	log.Printf("[gen1] done: %d new row(s) imported", n)
+}
+
 // wall-clock synced (NTP/system time), drain M4F->Linux events, and run the
 // phone-facing HTTPS API. Blocks in the HTTP server; peer-dead recovery and
 // signal handling stay in main().
@@ -641,11 +676,9 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 	defer store.Close()
 	log.Printf("[Serve] rules DB: %s", dbPath)
 
-	// Cover history that predates the rollup (no-op once it is current). Not fatal:
-	// charts are worth less than telemetry and recovery.
-	if err := store.BackfillSolarRollup(); err != nil {
-		log.Printf("[Serve] WARNING: solar rollup backfill failed: %v", err)
-	}
+	// Roll up any hour that completed while the service was down (the 2h raw buffer
+	// may hold a finished hour). Cheap; not a full rebuild.
+	store.AggregateAllSolarOnStartup()
 
 	// Pending node JOINs awaiting user approval (provisioning, [[provisioning-model]]).
 	joins := newJoinRegistry()
