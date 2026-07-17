@@ -344,6 +344,30 @@ func (p *Protocol) EventRx() <-chan ReceivedMessage {
 	return p.eventRxCh
 }
 
+// seqResyncWindow bounds how far a legitimate retransmit can reach back. M4F holds
+// at most MAX_PENDING_ACKS (8) reliable messages in flight, so a duplicate's seq is
+// never more than that below theirLastSeq. A larger backward jump is therefore NOT a
+// duplicate but a NEW M4F session (it restarts seq at 1 on HELLO) or a uint16 wrap.
+const seqResyncWindow = 16
+
+// isDuplicateSeq reports whether seq repeats an already-delivered frame. Caller MUST
+// hold theirSeqMu.
+//
+// The plain "seq <= theirLastSeq" test was not enough: a stale backlog frame arriving
+// just after the HELLO_ACK reset re-bumps theirLastSeq high, and the fresh low-seq
+// session is then dropped wholesale as "duplicates" - telemetry silently lost for
+// ~20 min after every M4F hang/recovery, until seq climbs back past the stale value.
+// A backward jump beyond seqResyncWindow is treated as a resync, not a duplicate.
+func (p *Protocol) isDuplicateSeq(seq uint16) bool {
+	if p.theirLastSeq == 0 || seq > p.theirLastSeq {
+		return false
+	}
+	if p.theirLastSeq-seq > seqResyncWindow {
+		return false // new session / wrap, not a retransmit
+	}
+	return true
+}
+
 // dispatchLoop reads from transport, parses, dispatches based on msg type.
 func (p *Protocol) dispatchLoop() {
 	defer p.wg.Done()
@@ -439,7 +463,7 @@ func (p *Protocol) handleIncoming(raw []byte) {
 	case C.MSG_DATA:
 		// Idempotency check
 		p.theirSeqMu.Lock()
-		isDup := (p.theirLastSeq != 0) && (seq <= p.theirLastSeq)
+		isDup := p.isDuplicateSeq(seq)
 		if !isDup {
 			p.theirLastSeq = seq
 		}
@@ -465,7 +489,7 @@ func (p *Protocol) handleIncoming(raw []byte) {
 		// idempotency + ACK as DATA, routed to the event channel (Type
 		// preserved so the consumer can demux NODE_TELEMETRY/STATE/RULE_FIRED).
 		p.theirSeqMu.Lock()
-		isDup := (p.theirLastSeq != 0) && (seq <= p.theirLastSeq)
+		isDup := p.isDuplicateSeq(seq)
 		if !isDup {
 			p.theirLastSeq = seq
 		}
