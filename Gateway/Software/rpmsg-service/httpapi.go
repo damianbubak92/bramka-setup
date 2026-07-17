@@ -196,7 +196,7 @@ func handleHistory(store *Store, req string, w http.ResponseWriter, r *http.Requ
 		rng = "day"
 	}
 	node := uint8(atoiOr(q.Get("node"), int(solarDefaultNode)))
-	count := atoiOr(q.Get("count"), solarDefaultCount(rng))
+	count := atoiOr(q.Get("count"), 0) // 0 = all periods that have data (SolarHistory)
 
 	series, err := store.SolarHistory(node, rng, count)
 	if err != nil {
@@ -220,19 +220,6 @@ func handleHistory(store *Store, req string, w http.ResponseWriter, r *http.Requ
 // nodes are reflashed for provisioning there is exactly one, so the phone need not
 // know the address.
 const solarDefaultNode uint8 = 0xF1
-
-// solarDefaultCount: how many periods back the charts page through by default.
-func solarDefaultCount(rng string) int {
-	switch rng {
-	case "day":
-		return 7
-	case "month":
-		return 12
-	case "year":
-		return 5
-	}
-	return 1
-}
 
 // handleState answers "command=state" with the LAST KNOWN telemetry of every
 // node (node_param). The phone calls this once on open so the UI (temperatures,

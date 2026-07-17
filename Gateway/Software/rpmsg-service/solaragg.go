@@ -399,7 +399,9 @@ func (s *Store) solarLabel(rng string, bucket, lastYear int64) string {
 }
 
 // SolarHistory builds chart series for "day"|"month"|"year"|"total". count = periods
-// back (newest last); ignored for "total".
+// back (newest last); ignored for "total". count <= 0 means "every period that has
+// data" (from the first reading to now), so the app's arrows can browse the whole
+// history and stop exactly where the data does.
 func (s *Store) SolarHistory(node uint8, rng string, count int) ([]SolarSeries, error) {
 	first, _, err := s.solarSpan(node)
 	if err != nil {
@@ -410,6 +412,17 @@ func (s *Store) SolarHistory(node uint8, rng string, count int) ([]SolarSeries, 
 	}
 	liveDay, liveKwh, livePump, hasLive := s.solarLiveDay(node)
 	now := time.Now().In(s.loc)
+
+	if count <= 0 { // span the whole history for this range
+		f := s.local(first)
+		switch rng {
+		case "day":
+			count = int(now.Sub(time.Date(f.Year(), f.Month(), f.Day(), 0, 0, 0, 0, s.loc)).Hours()/24) + 2
+		case "month":
+			count = (now.Year()-f.Year())*12 + int(now.Month()) - int(f.Month()) + 1
+		}
+		// year/total loops below already cover the full span when count <= 0.
+	}
 
 	switch rng {
 	case "day":

@@ -66,18 +66,26 @@ fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: 
     var periods by remember(tab) { mutableStateOf(if (store == null) repo.solarPeriods(tab) else emptyList()) }
     var loadingChart by remember(tab) { mutableStateOf(store != null) }
     var periodIndex by remember(tab) { mutableStateOf(-1) } // -1 = jeszcze nie ustawiony
-    // LIVE: przeładuj wykres gdy solar zgłosi nową telemetrię (ts rośnie co 2 min).
-    // Dzięki temu obserwując bieżący dzień widać, jak ostatni słupek sam rośnie.
-    // periodIndex NIE resetujemy przy odświeżeniu — jak przeglądasz starszy okres,
-    // nie wyrywa Cię do najnowszego; ustawiamy go na najnowszy tylko przy 1. załadowaniu.
-    val solarTs = gw?.firstOfType(com.aitronic.smarthome.data.net.NodeTypes.SOLAR)?.ts ?: 0L
-    LaunchedEffect(tab, store, solarTs) {
+    // PEŁNE ŁADOWANIE tylko przy zmianie zakresu/bramki: bramka zwraca WSZYSTKIE okresy
+    // z danymi (strzałki sięgają początku historii). Robimy to raz, nie co telemetrię.
+    LaunchedEffect(tab, store) {
         val s = store ?: return@LaunchedEffect
-        if (periods.isEmpty()) loadingChart = true // spinner tylko przy 1. ładowaniu, nie przy live-refresh
+        loadingChart = true
         val res = s.solarHistory(tab.wire)
         periods = res.getOrNull()?.toPeriods(tab).orEmpty()
         loadingChart = false
-        if (periodIndex < 0) periodIndex = periods.lastIndex.coerceAtLeast(0)
+        periodIndex = periods.lastIndex.coerceAtLeast(0)
+    }
+    // LIVE: telemetria zmienia TYLKO bieżący (najnowszy) okres. Gdy go oglądamy,
+    // dociągamy sam ostatni okres (count=1, ~1KB) zamiast całej historii — ostatni
+    // słupek rośnie na żywo, a przeglądanie starszych okresów nic nie kosztuje.
+    val solarTs = gw?.firstOfType(com.aitronic.smarthome.data.net.NodeTypes.SOLAR)?.ts ?: 0L
+    LaunchedEffect(solarTs) {
+        val s = store ?: return@LaunchedEffect
+        if (periods.isEmpty() || periodIndex != periods.lastIndex) return@LaunchedEffect
+        s.solarHistory(tab.wire, count = 1).getOrNull()?.toPeriods(tab)?.lastOrNull()?.let { newest ->
+            periods = periods.dropLast(1) + newest
+        }
     }
     // --- Pompa dodatkowa ---
     // Prawda o stanie pompy pochodzi WYŁĄCZNIE z telemetrii (pumpState) — node odsyła ją
