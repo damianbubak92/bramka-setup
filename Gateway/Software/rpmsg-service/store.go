@@ -137,11 +137,36 @@ func initNodeSchema(db *sql.DB) error {
 			pump_runtime      INTEGER             -- accumulated this local day, minutes
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_solar_hist ON solar_history(node_id, reading_time)`,
-		`CREATE VIEW IF NOT EXISTS solar_state AS
+		// Hourly rollup: the ONLY materialized aggregate. Day/month/year/total charts
+		// are sums of these buckets, so there is one thing to keep correct instead of
+		// four. Two years of raw readings is ~525k rows (a year chart would scan 262k
+		// of them); as hours it is ~17.5k, cheap enough to sum on the A53.
+		//
+		// Always rebuilt from raw (never incremented in place), so it is idempotent:
+		// re-running over a range yields the same numbers. That is what makes back-
+		// filling gen1 history safe - a backfill rewrites the past, and gen1's
+		// forward-only cron chain could not cope with that.
+		//
+		// samples = raw readings in the bucket (30 expected at the 2-min cadence).
+		// It is coverage: it lets the UI say "this day is incomplete" instead of
+		// quietly drawing a stall as a low-yield day.
+		`CREATE TABLE IF NOT EXISTS solar_rollup (
+			node_id      INTEGER NOT NULL,
+			bucket       INTEGER NOT NULL,  -- unix s of the LOCAL hour start
+			energy_gain  INTEGER NOT NULL,  -- summed delta, kWh*10000
+			pump_runtime INTEGER NOT NULL,  -- minutes
+			samples      INTEGER NOT NULL,
+			PRIMARY KEY (node_id, bucket)
+		)`,
+		// DROP+CREATE (not IF NOT EXISTS): a VIEW is only a definition, so recreating
+		// it every start keeps it in sync when we add columns (e.g. energy_gain_kwh).
+		`DROP VIEW IF EXISTS solar_state`,
+		`CREATE VIEW solar_state AS
 			SELECT node_id,
 			       bufor1_temp, bufor2_temp, bufor3_temp, bufor4_temp,
 			       collector_temp, flow_rate,
 			       30.0 * energy_gain_delta / 10000.0 AS generated_power_kw,
+			       energy_gain / 10000.0 AS energy_gain_kwh,  -- accumulated this local day
 			       second_pump_state, reading_time
 			FROM solar_history h
 			WHERE reading_time = (SELECT MAX(reading_time)
@@ -356,6 +381,11 @@ type NodeState struct {
 	// on open instead of waiting for a second reading to diff. nil = not a solar
 	// node / no history yet.
 	PowerKw *float64 `json:"powerKw,omitempty"`
+	// EnergyDayKwh is the yield accumulated so far this local day (solar_state VIEW,
+	// energy_gain/10000). The telemetry `energyGain` param is only the raw 2-min
+	// delta, so the phone cannot derive the daily figure itself. nil = not solar /
+	// no history yet.
+	EnergyDayKwh *float64 `json:"energyDayKwh,omitempty"`
 }
 
 // ListState returns the current state of every node we have telemetry for.
@@ -403,17 +433,25 @@ func (s *Store) ListState() ([]NodeState, error) {
 
 	// Derived power straight from the VIEW (last history row). Best-effort: a solar
 	// node with no history yet simply has no powerKw.
-	if prows, perr := s.db.Query(`SELECT node_id, generated_power_kw FROM solar_state`); perr == nil {
+	if prows, perr := s.db.Query(`SELECT node_id, generated_power_kw, energy_gain_kwh FROM solar_state`); perr == nil {
 		defer prows.Close()
 		for prows.Next() {
 			var id int
-			var kw sql.NullFloat64
-			if err := prows.Scan(&id, &kw); err != nil {
+			var kw, day sql.NullFloat64
+			if err := prows.Scan(&id, &kw, &day); err != nil {
 				continue
 			}
-			if st, ok := byID[id]; ok && kw.Valid {
+			st, ok := byID[id]
+			if !ok {
+				continue
+			}
+			if kw.Valid {
 				v := kw.Float64
 				st.PowerKw = &v
+			}
+			if day.Valid {
+				v := day.Float64
+				st.EnergyDayKwh = &v
 			}
 		}
 	}
@@ -615,7 +653,11 @@ func (s *Store) recordSolarHistory(tx *sql.Tx, nodeID uint8, v map[string]float6
 		nodeID, ts, v["Tin"], v["Tout"],
 		v["T1"], v["T2"], v["T3"], v["T4"], v["Tcol"],
 		int64(v["flowRate"]), int64(v["pumpState"]), delta, energy, runtime)
-	return err
+	if err != nil {
+		return err
+	}
+	// Same transaction as the raw row: the rollup can never disagree with history.
+	return s.rebuildSolarHour(tx, nodeID, ts)
 }
 
 // sameLocalDay reports whether two unix timestamps fall on the same calendar day

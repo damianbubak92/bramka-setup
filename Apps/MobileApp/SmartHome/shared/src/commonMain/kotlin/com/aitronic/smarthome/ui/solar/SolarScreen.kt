@@ -25,6 +25,8 @@ import androidx.compose.ui.unit.sp
 import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.SmartHomeRepository
 import com.aitronic.smarthome.data.solarState
+import com.aitronic.smarthome.data.toPeriods
+import com.aitronic.smarthome.domain.model.SolarPeriod
 import com.aitronic.smarthome.domain.model.SolarRange
 import com.aitronic.smarthome.domain.model.SolarState
 import com.aitronic.smarthome.ui.icons.ShIcons
@@ -59,8 +61,24 @@ fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: 
     val live = gw?.solarState()
     val solar = live ?: NO_SOLAR_DATA
     var tab by remember { mutableStateOf(SolarRange.Day) }
-    val periods = remember(tab) { repo.solarPeriods(tab) }
-    var periodIndex by remember(tab) { mutableStateOf(periods.lastIndex.coerceAtLeast(0)) }
+    // Wykresy z bramki (command=history). Przy podglądzie bez bramki (store==null)
+    // albo gdy bramka jeszcze nie ma danych — sample z repo, żeby ekran nie był pusty.
+    var periods by remember(tab) { mutableStateOf(if (store == null) repo.solarPeriods(tab) else emptyList()) }
+    var loadingChart by remember(tab) { mutableStateOf(store != null) }
+    var periodIndex by remember(tab) { mutableStateOf(-1) } // -1 = jeszcze nie ustawiony
+    // LIVE: przeładuj wykres gdy solar zgłosi nową telemetrię (ts rośnie co 2 min).
+    // Dzięki temu obserwując bieżący dzień widać, jak ostatni słupek sam rośnie.
+    // periodIndex NIE resetujemy przy odświeżeniu — jak przeglądasz starszy okres,
+    // nie wyrywa Cię do najnowszego; ustawiamy go na najnowszy tylko przy 1. załadowaniu.
+    val solarTs = gw?.firstOfType(com.aitronic.smarthome.data.net.NodeTypes.SOLAR)?.ts ?: 0L
+    LaunchedEffect(tab, store, solarTs) {
+        val s = store ?: return@LaunchedEffect
+        if (periods.isEmpty()) loadingChart = true // spinner tylko przy 1. ładowaniu, nie przy live-refresh
+        val res = s.solarHistory(tab.wire)
+        periods = res.getOrNull()?.toPeriods(tab).orEmpty()
+        loadingChart = false
+        if (periodIndex < 0) periodIndex = periods.lastIndex.coerceAtLeast(0)
+    }
     // --- Pompa dodatkowa ---
     // Prawda o stanie pompy pochodzi WYŁĄCZNIE z telemetrii (pumpState) — node odsyła ją
     // natychmiast po wykonaniu komendy (SEND_PUMP_STATUS), więc nie czekamy 2 min.
@@ -89,7 +107,9 @@ fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: 
         label = "angle",
     )
 
-    val period = periods[periodIndex.coerceIn(0, periods.lastIndex)]
+    // Pusto = ładowanie lub brak danych: "—", zero słupków (SolarChart to obsługuje).
+    val period = periods.getOrNull(periodIndex.coerceAtLeast(0))
+        ?: SolarPeriod(if (loadingChart) "Ładowanie…" else "Brak danych", emptyList(), emptyList(), "kWh", "—", "—")
 
     Column(Modifier.fillMaxSize().background(Surface).windowInsetsPadding(WindowInsets.safeDrawing)) {
         // Top bar

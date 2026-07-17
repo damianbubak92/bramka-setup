@@ -96,6 +96,9 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, c
 	case strings.Contains(req, "command=state"):
 		handleState(store, w, r)
 
+	case strings.Contains(req, "command=history"):
+		handleHistory(store, req, w, r)
+
 	case strings.Contains(req, "command=listjoins"):
 		handleListJoins(joins, w, r)
 
@@ -183,6 +186,54 @@ func handleListJoins(joins *joinRegistry, w http.ResponseWriter, r *http.Request
 }
 
 // handleListNodes returns the provisioned nodes for the phone's device screen.
+// handleHistory answers "command=history&range=day|month|year|total&node=<id>"
+// with the solar chart series (see solarhistory.go). Numbers only - labels and
+// units are the app's job, and it already formats for the phone's locale.
+func handleHistory(store *Store, req string, w http.ResponseWriter, r *http.Request) {
+	q, _ := url.ParseQuery(req)
+	rng := q.Get("range")
+	if rng == "" {
+		rng = "day"
+	}
+	node := uint8(atoiOr(q.Get("node"), int(solarDefaultNode)))
+	count := atoiOr(q.Get("count"), solarDefaultCount(rng))
+
+	series, err := store.SolarHistory(node, rng, count)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, err.Error()+"\n")
+		log.Printf("[HTTP] history error: %v", err)
+		return
+	}
+	b, err := json.Marshal(series)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "marshal error\n")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+	log.Printf("[HTTP] history node %d range %s -> %d period(s)", node, rng, len(series))
+}
+
+// solarDefaultNode is the legacy fixed-address solar controller (0xF1). Until the
+// nodes are reflashed for provisioning there is exactly one, so the phone need not
+// know the address.
+const solarDefaultNode uint8 = 0xF1
+
+// solarDefaultCount: how many periods back the charts page through by default.
+func solarDefaultCount(rng string) int {
+	switch rng {
+	case "day":
+		return 7
+	case "month":
+		return 12
+	case "year":
+		return 5
+	}
+	return 1
+}
+
 // handleState answers "command=state" with the LAST KNOWN telemetry of every
 // node (node_param). The phone calls this once on open so the UI (temperatures,
 // pump triangles, the aux-pump toggle) reflects reality immediately instead of

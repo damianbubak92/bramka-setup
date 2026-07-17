@@ -14,28 +14,30 @@ import kotlin.math.round
  *  - temperatury zbiornika: T4 (góra) … T1 (dół); `Tcol` = kolektor; `sBuforTemp` = zbiornik dodatkowy (node bufora)
  */
 
-/** Uzysk dzienny [kWh] z narastającego energyGain. */
+/**
+ * Uzysk dzienny [kWh]. UWAGA: `energyGain` w telemetrii to surowy przyrost 2-min
+ * (kWh×10000), NIE wartość narastająca — więc nie da się go policzyć z jednego
+ * odczytu. Bramka akumuluje go w dobie (solar_history.energy_gain) i podaje gotowy
+ * przez `energyDayKwh` (state → VIEW solar_state). "—" gdy brak danych.
+ */
 fun GatewayState.solarDailyYieldKwh(): Double? =
-    param(NodeTypes.SOLAR, Params.ENERGY_GAIN)?.let { it / 10_000.0 }
+    firstOfType(NodeTypes.SOLAR)?.let { cur ->
+        telemetry.entries.firstOrNull { it.value === cur }?.key?.let { energyDayKwh[it] }
+    }
 
 /**
- * Moc chwilowa [kW].
- * 1) Preferujemy własną deltę z dwóch kolejnych odczytów WS (najświeższa).
- * 2) Zanim ją uzbieramy — bierzemy wartość policzoną przez bramkę (VIEW solar_state,
- *    30*energy_gain_delta/10000 z ostatniego rekordu historii). Dzięki temu moc jest
- *    realna od razu po otwarciu apki; "—" zostaje tylko gdy baza jest naprawdę pusta
- *    (nowy node, brak historii).
+ * Moc chwilowa [kW] = 30 × przyrost_2min / 10000 — DOKŁADNIE ta sama formuła co
+ * VIEW solar_state na bramce. `energyGain` w telemetrii to już ten przyrost, więc
+ * liczymy wprost z BIEŻĄCEGO odczytu. (Wcześniej różnicowaliśmy dwa kolejne odczyty
+ * `now - prev` — a że oba to przyrosty ~1000, różnica ~30 dawała fałszywe ~0,1 kW.)
+ * Przyrost jest zawsze ≥ 0, reset o północy dotyczy akumulatu, nie przyrostu.
  */
 fun GatewayState.solarPowerKw(): Double? {
     val cur = firstOfType(NodeTypes.SOLAR) ?: return null
+    cur.params[Params.ENERGY_GAIN]?.let { return 30.0 * it / 10_000.0 }
+    // zanim przyjdzie 1. telemetria — wartość policzona przez bramkę (state → VIEW)
     val addr = telemetry.entries.firstOrNull { it.value === cur }?.key ?: return null
-    val computed = run {
-        val now = cur.params[Params.ENERGY_GAIN] ?: return@run null
-        val (prev, _) = prevEnergyGain[addr] ?: return@run null
-        val delta = now - prev
-        if (delta < 0) null else 30.0 * delta / 10_000.0 // delta<0 = reset o północy
-    }
-    return computed ?: powerKwHint[addr]
+    return powerKwHint[addr]
 }
 
 /** Pełny stan instalacji solarnej z live telemetrii (null = brak danych z bramki). */

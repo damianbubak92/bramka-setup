@@ -40,7 +40,7 @@ data class SolarState(
     val auxPumpOn: Boolean,     // pompa dodatkowa (sterowana ON/OFF)
 )
 
-enum class SolarRange { Day, Month, Year, Total }
+enum class SolarRange(val wire: String) { Day("day"), Month("month"), Year("year"), Total("total") }
 
 /** Uzysk energii dla jednego okresu (dzień/miesiąc/rok/total). */
 data class SolarPeriod(

@@ -21,14 +21,14 @@ data class GatewayState(
     val joins: List<PendingJoinDto> = emptyList(),
     /** address -> ostatnia telemetria */
     val telemetry: Map<Int, NodeTelemetry> = emptyMap(),
-    /** address -> poprzednia wartość energyGain (do policzenia mocy z delty) */
-    val prevEnergyGain: Map<Int, Pair<Double, Long>> = emptyMap(),
     /**
      * address -> moc policzona przez bramkę (VIEW solar_state) przy ostatnim `state`.
-     * Używana zanim uzbieramy własną deltę z dwóch pushy WS — dzięki temu moc jest
-     * realna od razu po otwarciu apki, a nie po 2 minutach.
+     * Fallback zanim przyjdzie 1. telemetria — moc realna od razu po otwarciu apki.
+     * Live moc liczy się już wprost z przyrostu w telemetrii (patrz solarPowerKw).
      */
     val powerKwHint: Map<Int, Double> = emptyMap(),
+    /** address -> uzysk narastająco w dobie [kWh] (VIEW solar_state). Bramka liczy. */
+    val energyDayKwh: Map<Int, Double> = emptyMap(),
     val loading: Boolean = false,
     val error: String? = null,
 ) {
@@ -88,8 +88,10 @@ class GatewayStore(
                     }
                 }
                 val hints = s.powerKwHint + snapshot.mapNotNull { n -> n.powerKw?.let { n.address to it } }
+                val dayKwh = s.energyDayKwh + snapshot.mapNotNull { n -> n.energyDayKwh?.let { n.address to it } }
                 s.copy(
-                    nodes = nodes, joins = joins, telemetry = merged, powerKwHint = hints,
+                    nodes = nodes, joins = joins, telemetry = merged,
+                    powerKwHint = hints, energyDayKwh = dayKwh,
                     loading = false, source = client.source, error = null,
                 )
             }
@@ -108,15 +110,8 @@ class GatewayStore(
                 // "pump-only" (SEND_PUMP_STATUS = sam pumpState) — podmiana całej mapy
                 // kasowała temperatury i uzysk aż do następnej pełnej telemetrii (2 min).
                 val mergedParams = (old?.params ?: emptyMap()) + ev.params
-                // Poprzedni energyGain zapamiętujemy TYLKO gdy przyszedł nowy energyGain
-                // (pump-only nie może przesunąć bazy delty -> inaczej moc spadłaby do 0).
-                val oldGain = old?.params?.get(Params.ENERGY_GAIN)
-                val newPrev = if (ev.params.containsKey(Params.ENERGY_GAIN) && oldGain != null)
-                    s.prevEnergyGain + (ev.address to (oldGain to (old.ts)))
-                else s.prevEnergyGain
                 s.copy(
                     telemetry = s.telemetry + (ev.address to NodeTelemetry(ev.nodeType, mergedParams, ev.ts)),
-                    prevEnergyGain = newPrev,
                     source = client.source,
                 )
             }
@@ -153,6 +148,10 @@ class GatewayStore(
         if (!client.updateNode(address, name, room)) error("Bramka odrzuciła zmianę")
         refresh()
     }
+
+    /** Wykresy uzysku solarnego (day|month|year|total). Osobne żądanie, nie część live-state. */
+    suspend fun solarHistory(range: String, count: Int = 0): Result<List<SolarSeriesDto>> =
+        runCatching { client.solarHistory(range, count) }
 
     suspend fun rulesJson(): Result<String> = runCatching { client.getRulesJson() }
 

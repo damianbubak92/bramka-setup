@@ -45,6 +45,34 @@ data class NodeStateDto(
     val ts: Long = 0,
     /** Moc chwilowa policzona przez bramkę (VIEW solar_state) — tylko nody solar. */
     val powerKw: Double? = null,
+    /** Uzysk narastająco w dobie [kWh] (VIEW solar_state) — tylko nody solar. */
+    val energyDayKwh: Double? = null,
+)
+
+/**
+ * command=history&range=day|month|year|total → [SolarSeriesDto] (solarhistory.go).
+ * Same liczby, bez etykiet/jednostek — formatowanie robi apka (locale telefonu).
+ * samples/expected = pokrycie danymi: pozwala odróżnić "0 kWh bo noc" od
+ * "0 kWh bo bramka nie zbierała" (nie rysujemy dziury jako słabego dnia).
+ */
+@Serializable
+data class SolarBarDto(
+    val bucket: Long = 0,        // unix s, początek okresu (godzina/dzień/miesiąc/rok)
+    val energyKwh: Double = 0.0,
+    val pumpMinutes: Long = 0,
+    val samples: Long = 0,
+    val expected: Long = 0,
+)
+
+@Serializable
+data class SolarSeriesDto(
+    val bucket: Long = 0,        // początek całego okresu
+    val label: String = "",      // gotowa etykieta PL (bramka: "12 lip 2026")
+    val bars: List<SolarBarDto> = emptyList(),
+    val energyKwh: Double = 0.0,   // suma za CAŁY okres
+    val pumpMinutes: Long = 0,
+    val samples: Long = 0,
+    val expected: Long = 0,
 )
 
 /** command=approvejoin → {address,factory,name,type} */

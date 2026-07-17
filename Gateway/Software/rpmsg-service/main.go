@@ -641,6 +641,12 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 	defer store.Close()
 	log.Printf("[Serve] rules DB: %s", dbPath)
 
+	// Cover history that predates the rollup (no-op once it is current). Not fatal:
+	// charts are worth less than telemetry and recovery.
+	if err := store.BackfillSolarRollup(); err != nil {
+		log.Printf("[Serve] WARNING: solar rollup backfill failed: %v", err)
+	}
+
 	// Pending node JOINs awaiting user approval (provisioning, [[provisioning-model]]).
 	joins := newJoinRegistry()
 
