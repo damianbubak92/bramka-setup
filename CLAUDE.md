@@ -286,12 +286,18 @@ Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · d
   na secrets.php, `-Indexes`). Koniec ręcznego sanityzowania przy commitach. Stare `server-gen1`/`server-gen2` scalone.
 
 **👉 PLAN NA NASTĘPNĄ SESJĘ:**
-1. **Test wymiany noda** z realnym nowym chipem (`replacenode` — kod gotowy).
-2. **Apka: read-from-mirror gdy bramka nieosiągalna** — kaskada LAN→zdalnie→mirror (apka ma już abstrakcję; `gw-restore.php`/
-   dedykowane read-endpointy z mirrora zwracają te same kształty co bramka). [[gen2-backup-mirror]]
-3. **Dopracowanie JOIN**: generowanie/usuwanie tabel per node przy provisioningu (agregaty solar mają to przez `dropSolarNode`).
-4. **Dopracowanie automatyzacji.**
-5. Produkcja: przenieść `-backup-url`/`-backup-key` do systemd unitu; usunąć sekcję gen1 z `secrets.php`.
+0. **⭐ ZARZĄDZANIE NODAMI — SPEC ZATWIERDZONY 19.07: `Docs/NODE-MANAGEMENT.md`.** Duży przemyślany model
+   (rozkmina usera): **rozdzielenie `id`(stała tożsamość logiczna, AUTOINCREMENT, kotwica historii+reguł) /
+   `address`(routing RF, reużywalny, NULL=odłączony) / `factory_id`(chip)**. Reaktywna tożsamość (bramka waliduje
+   `(addr,factory_id)` przy każdej telemetrii → `MSG_UNREGISTERED` → nod kasuje adres i milknie). Kosz z retencją
+   60 dni (soft-delete na serwerze, trwałe usunięcie tylko cronem czasowym, ZERO „opróżnij kosz"). Apka: „Utwórz
+   nowe"/„Wymień istniejące" (wymiana+re-parowanie pod jedną). **factory_id[8] w nagłówku ramki** (+8B). Kolejność
+   wdrożenia: **(1) Go+data model** (refaktor `node_id`→`id`+`address`, migracja, statusy `pending_join|active|
+   detached`, kosz/retencja/restore) → **(2) kontrakt drutu→firmware** → **(3) apka**. To zastępuje/rozszerza
+   dotychczasowy `replacenode` (kod jest, ale wejdzie w nowy model). [[provisioning-model]] [[gen2-backup-mirror]]
+1. **Apka: read-from-mirror gdy bramka nieosiągalna** — kaskada LAN→zdalnie→mirror. [[gen2-backup-mirror]]
+2. **Dopracowanie automatyzacji** (reguły po `id`, Go mapuje id→adres przy pushu — patrz spec §9).
+3. Produkcja: `-backup-url`/`-backup-key` do systemd unitu; usunąć sekcję gen1 z `secrets.php`.
 5. **Hang M4F** (znany, ~raz/kilka h, koreluje z ruchem SPI — sniff gen1 go nasilił). Recovery działa. Diagnoza czeka na
    zrzut rejestrów hardfaultu (retained-RAM). User: „niebawem, ale najpierw plan".
 
