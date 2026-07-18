@@ -266,12 +266,20 @@ Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · d
   nie duplikat (`isDuplicateSeq`, `seqResyncWindow=16`). **To maskowało hangi M4F jako dłuższe** — prawdopodobnie
   długoletni bug. Zweryfikowane: po reconnekcie seq=1 zapisuje się od razu. [[m4f-seq-resync-on-reconnect]]
 
-**👉 PLAN NA NASTĘPNĄ SESJĘ:**
-1. **Apka — dostrojenie wyświetlania wykresów** (user 18.07: „wyświetlanie jest zepsute, niektóre rzeczy się nie
-   wyświetlają"). Endpoint historii działa i jest zweryfikowany; problem po stronie renderu w apce (słupki/osie/okresy
-   z nowymi danymi 2-letnimi). Kształt odpowiedzi `/history` bez zmian (`SolarSeries`).
-2. **Backup gen2 na zewn. serwer** (real-time push gdy online; apka czyta z mirrora gdy bramka nieosiągalna) — ten sam
-   endpoint-PHP wzorzec co import gen1, tylko POST. [[gen1-server-scripts]]
+- **Wykresy solar — dopięte (18.07 wieczór, commit `09bedc7`)**: strzałki przeglądają **całą historię** (`command=history`
+  bez `count` → wszystkie okresy z danymi, liczone z `solarSpan`; blokada na realnym początku). Live-refresh **tani** — apka
+  dociąga tylko bieżący okres (`count=1`), pełną listę raz na zmianę zakresu. **Czas pracy pompy działa** — trzeba było
+  dodać `pumpRuntime` do `solar-export.php` na serwerze (był wgrany bez niego) + re-import. `solar-export.php` w repo
+  **zsanityzowany** (placeholdery — realne creds tylko na hostingu; gdyby user chciał lokalną kopię z creds → poza repo / gitignore).
+
+**👉 PLAN NA NASTĘPNĄ SESJĘ (ustalony z userem 18.07) — solar controller c.d.:**
+1. **Backup stanu + historii solar na zewn. serwer** (real-time push gdy online; apka czyta z mirrora gdy bramka nieosiągalna).
+   Ten sam wzorzec PHP-endpoint co import gen1, tylko **POST** (bramka pushuje). [[gen1-server-scripts]]
+2. **Dopracowanie JOIN**: generowanie/usuwanie tabel per node przy provisioningu (kompaktowość — agregaty solar już to mają
+   przez `dropSolarNode`, [[solar-aggregation-model]]; rozszerzyć wzorzec na resztę stanu noda).
+3. **Wymiana uszkodzonego noda**: podpięcie **istniejącej historii do NOWEGO urządzenia**. Dziś tożsamość = `factory_id`
+   (FCFG chipa); wymiana chipa = inny `factory_id` → trzeba przepiąć adres/historię na nowy chip zachowując ciągłość danych.
+   [[provisioning-model]]
 2. **Backup bramki na zewn. serwer** (real-time push gdy online; apka czyta z mirrora gdy bramka nieosiągalna).
 3. **Dopracowanie automatyzacji.**
 4. **Cykl życia nodów**: dodawanie/usuwanie/**wymiana zepsutego** (tożsamość=`factory_id`; wymiana chipa → przepiąć adres).
