@@ -248,7 +248,7 @@ Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · d
   agregacji. Total z `solar_monthly`. Kompaktowość: `DeleteNode`→`dropSolarNode` (kasuje surówkę+3 agregaty). Zapytania w ms.
   **NIE różnicujemy delt per odczyt** (to dawało bug 300 kWh). [[solar-aggregation-model]]
 - **🔑 SYNC GEN1 — 2 LATA HISTORII WCIĄGNIĘTE (18.07, zweryfikowane co do grosza)**: `gen1import.go` + PHP endpoint
-  `Gateway/Software/server-gen1/solar-export.php` (read-only JSON, klucz, sanityzowany w repo — realne creds tylko na
+  `Gateway/Software/server/solar-export.php` (read-only JSON, klucz, sekrety w gitignorowanym `secrets.php` — realne creds tylko na
   serwerze). `-test import-gen1 -gen1-url ... -gen1-key ... [-gen1-insecure]` (cert hosta nie pasuje → HTTP albo insecure).
   **Pełny recompute**: czyść surówkę noda → wciągnij całość (extraTemp→`energy_gain`, pumpRuntime→`pump_runtime` verbatim,
   BEZ rekonstrukcji delt) → `RebuildSolarAggregates` → drop surówki. Idempotentne, dev-only. Import PRZED serve (robi migrację
@@ -272,17 +272,26 @@ Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · d
   dodać `pumpRuntime` do `solar-export.php` na serwerze (był wgrany bez niego) + re-import. `solar-export.php` w repo
   **zsanityzowany** (placeholdery — realne creds tylko na hostingu; gdyby user chciał lokalną kopię z creds → poza repo / gitignore).
 
-**👉 PLAN NA NASTĘPNĄ SESJĘ (ustalony z userem 18.07) — solar controller c.d.:**
-1. **Backup stanu + historii solar na zewn. serwer** (real-time push gdy online; apka czyta z mirrora gdy bramka nieosiągalna).
-   Ten sam wzorzec PHP-endpoint co import gen1, tylko **POST** (bramka pushuje). [[gen1-server-scripts]]
-2. **Dopracowanie JOIN**: generowanie/usuwanie tabel per node przy provisioningu (kompaktowość — agregaty solar już to mają
-   przez `dropSolarNode`, [[solar-aggregation-model]]; rozszerzyć wzorzec na resztę stanu noda).
-3. **Wymiana uszkodzonego noda**: podpięcie **istniejącej historii do NOWEGO urządzenia**. Dziś tożsamość = `factory_id`
-   (FCFG chipa); wymiana chipa = inny `factory_id` → trzeba przepiąć adres/historię na nowy chip zachowując ciągłość danych.
-   [[provisioning-model]]
-2. **Backup bramki na zewn. serwer** (real-time push gdy online; apka czyta z mirrora gdy bramka nieosiągalna).
-3. **Dopracowanie automatyzacji.**
-4. **Cykl życia nodów**: dodawanie/usuwanie/**wymiana zepsutego** (tożsamość=`factory_id`; wymiana chipa → przepiąć adres).
+- **🔑 LIVE BACKUP + RESTORE + wzorzec sekretów (18.07 wieczór, ZWERYFIKOWANE NA ŻYWO)**: bramka pushuje cały durable-state
+  na zewn. mirror (osobna baza gen2 `baza23202_smarthome`). **Mechanizm**: triggery SQLite na durable tabelach → `backup_queue`
+  → worker co 15s dosyła do `gw-backup.php` z retry (offline → trzyma i dosyła gdy serwer wróci). Seed pełnej bazy raz (marker
+  `backup_seeded`). Probe `json_object` (bez JSON1 backup off, nie psuje zapisów). Flagi `-backup-url`/`-backup-key`. **Restore**
+  (`-test restore -restore-url gw-restore.php`) — świeża bramka odtwarza się z mirrora (zweryfikowane: 17483 wierszy → config/
+  nody/stan/historia). **Wymiana noda** (`replacenode&factory=<new>&target=<addr>`): nowy chip przejmuje STARY adres, historia
+  (kluczowana po `node_id`=adres) zostaje przypięta automatycznie (`ReplaceNode` + `dropSolarNode` na removie). Kod gotowy,
+  testnięcie z realnym chipem odłożone. [[gen2-backup-mirror]]
+- **🔑 WZORZEC SEKRETÓW (18.07)**: serwer skonsolidowany do **`Gateway/Software/server/`** (jeden katalog, bo na hostingu i tak
+  razem). Wszystkie skrypty PHP `require secrets.php` (**gitignored**) — jeden plik z creds do OBU baz (`$GEN1_*`/`$EXPORT_KEY`
+  dla importu + `$GW_*`/`$BACKUP_KEY` dla mirrora). Repo ma `secrets.example.php` (szablon) + `.htaccess` (`Require all denied`
+  na secrets.php, `-Indexes`). Koniec ręcznego sanityzowania przy commitach. Stare `server-gen1`/`server-gen2` scalone.
+
+**👉 PLAN NA NASTĘPNĄ SESJĘ:**
+1. **Test wymiany noda** z realnym nowym chipem (`replacenode` — kod gotowy).
+2. **Apka: read-from-mirror gdy bramka nieosiągalna** — kaskada LAN→zdalnie→mirror (apka ma już abstrakcję; `gw-restore.php`/
+   dedykowane read-endpointy z mirrora zwracają te same kształty co bramka). [[gen2-backup-mirror]]
+3. **Dopracowanie JOIN**: generowanie/usuwanie tabel per node przy provisioningu (agregaty solar mają to przez `dropSolarNode`).
+4. **Dopracowanie automatyzacji.**
+5. Produkcja: przenieść `-backup-url`/`-backup-key` do systemd unitu; usunąć sekcję gen1 z `secrets.php`.
 5. **Hang M4F** (znany, ~raz/kilka h, koreluje z ruchem SPI — sniff gen1 go nasilił). Recovery działa. Diagnoza czeka na
    zrzut rejestrów hardfaultu (retained-RAM). User: „niebawem, ale najpierw plan".
 

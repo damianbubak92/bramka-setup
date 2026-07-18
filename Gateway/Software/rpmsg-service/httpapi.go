@@ -105,6 +105,9 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, c
 	case strings.Contains(req, "command=approvejoin"):
 		handleApproveJoin(p, store, joins, hub, req, w, r)
 
+	case strings.Contains(req, "command=replacenode"):
+		handleReplaceNode(p, store, joins, hub, req, w, r)
+
 	case strings.Contains(req, "command=updatenode"):
 		handleUpdateNode(store, req, w, r)
 
@@ -312,6 +315,51 @@ func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, hub *WSHu
 	})
 	log.Printf("[HTTP] approvejoin: factory %s (type %d) -> addr 0x%02X name %q, JOIN_ACCEPT sent",
 		factory, pj.NodeType, addr, name)
+}
+
+// handleReplaceNode swaps a damaged node for a fresh chip while KEEPING the old
+// node's address + history. Request: "command=replacenode&factory=<newHex>&target=<dec addr>".
+// The new chip must have JOINed (be pending); it takes over the target address, and
+// the target row's factory_id is re-pointed to it - so history (keyed by address)
+// follows automatically. Old chip is abandoned.
+func handleReplaceNode(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, req string, w http.ResponseWriter, r *http.Request) {
+	vals, _ := url.ParseQuery(req)
+	factory := strings.ToLower(strings.TrimSpace(vals.Get("factory")))
+	target := uint8(atoiOr(vals.Get("target"), -1))
+
+	pj, ok := joins.Get(factory)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, "unknown join (new chip must JOIN first)\n")
+		return
+	}
+	fid, ok := factoryHexToBytes(factory)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "bad factory id\n")
+		return
+	}
+	if err := store.ReplaceNode(target, factory, time.Now().Unix()); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, err.Error()+"\n")
+		log.Printf("[HTTP] replacenode: %v", err)
+		return
+	}
+	if err := p.SendJoinAccept(fid, pj.NodeType, target); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "re-pointed, accept push failed\n")
+		log.Printf("[HTTP] replacenode: addr 0x%02X re-pointed to %s but accept push failed: %v", target, factory, err)
+		return
+	}
+	joins.Remove(factory)
+	hub.PublishNodeStatus(target, "pending_join")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"factory": factory, "type": pj.NodeType, "address": target, "replaced": true,
+	})
+	log.Printf("[HTTP] replacenode: addr 0x%02X now chip %s (type %d), history kept, JOIN_ACCEPT sent",
+		target, factory, pj.NodeType)
 }
 
 // handleRemoveNode unprovisions a node: tell it to drop its identity (CMD_REMOVE,

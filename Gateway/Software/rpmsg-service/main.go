@@ -32,6 +32,10 @@ func main() {
 	gen1Key := flag.String("gen1-key", "", "shared key for the gen1 export endpoint (import-gen1 mode)")
 	gen1Insecure := flag.Bool("gen1-insecure", false, "skip TLS cert validation for the gen1 endpoint (its cert name mismatches)")
 	gen1MaxPages := flag.Int("gen1-max-pages", 0, "limit import-gen1 to N pages (0 = all); use a small value to verify before a full pull")
+	backupURL := flag.String("backup-url", "", "external mirror push endpoint (gw-backup.php); enables live backup when set")
+	restoreURL := flag.String("restore-url", "", "external mirror pull endpoint (gw-restore.php); used by -test restore")
+	backupKey := flag.String("backup-key", "", "shared key for the backup/restore endpoints")
+	backupInsecure := flag.Bool("backup-insecure", false, "skip TLS cert validation for the backup/restore endpoints")
 	flag.Parse()
 
 	// import-gen1: a standalone admin operation (DB + HTTP only, no M4F). Handle it
@@ -40,6 +44,13 @@ func main() {
 		runImportGen1(*dbPath, *tz, *gen1URL, *gen1Key, *gen1Insecure, *gen1MaxPages)
 		return
 	}
+	// restore: rebuild a fresh gateway from the external mirror. Standalone (no M4F).
+	if *testMode == "restore" {
+		runRestore(*dbPath, *tz, *restoreURL, *backupKey, *backupInsecure)
+		return
+	}
+	backupCfg := BackupConfig{PushURL: *backupURL, Key: *backupKey,
+		Insecure: *backupInsecure, Interval: 15 * time.Second}
 
 	httpCfg := HTTPConfig{Addr: *httpAddr, CertFile: *tlsCert, KeyFile: *tlsKey,
 		AuthToken: *authToken, DBMonitor: *dbMonitor}
@@ -101,7 +112,7 @@ func main() {
 		case "fire-smoke":
 			runFireSmokeTest(p)
 		case "serve":
-			runServe(p, httpCfg, *dbPath, *tz)
+			runServe(p, httpCfg, *dbPath, *tz, backupCfg)
 		default:
 			log.Printf("Unknown test mode: %s", *testMode)
 		}
@@ -651,10 +662,33 @@ func runImportGen1(dbPath, tz, endpoint, key string, insecure bool, maxPages int
 	log.Printf("[gen1] done: %d new row(s) imported", n)
 }
 
+// runRestore rebuilds a fresh gateway's DB from the external mirror. Standalone
+// (no M4F): run once after a re-flash, before starting the service.
+func runRestore(dbPath, tz, restoreURL, key string, insecure bool) {
+	if restoreURL == "" {
+		log.Fatalf("[Restore] -restore-url is required (e.g. -restore-url https://host/gw-restore.php)")
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		loc = time.Local
+	}
+	store, err := OpenStore(dbPath, loc)
+	if err != nil {
+		log.Fatalf("[Restore] open DB %s failed: %v", dbPath, err)
+	}
+	defer store.Close()
+	if err := store.RestoreFromMirror(restoreURL, key, insecure); err != nil {
+		log.Fatalf("[Restore] failed: %v", err)
+	}
+	// Re-derive the current-hour rollup from whatever raw the restore did not carry.
+	store.AggregateAllSolarOnStartup()
+	log.Printf("[Restore] gateway rebuilt from mirror - start the service normally now")
+}
+
 // wall-clock synced (NTP/system time), drain M4F->Linux events, and run the
 // phone-facing HTTPS API. Blocks in the HTTP server; peer-dead recovery and
 // signal handling stay in main().
-func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
+func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupConfig) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Engine wall-clock zone, loaded from embedded tzdata so it's correct even if
@@ -679,6 +713,23 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string) {
 	// Roll up any hour that completed while the service was down (the 2h raw buffer
 	// may hold a finished hour). Cheap; not a full rebuild.
 	store.AggregateAllSolarOnStartup()
+
+	// Live backup: capture every change via triggers and drain to the mirror with
+	// retry. Seed the queue with the current DB once so the mirror starts complete
+	// (triggers only catch future changes). Disabled => remove triggers so the queue
+	// does not grow unbounded with no drainer.
+	if backupCfg.PushURL != "" {
+		if err := store.InstallBackupTriggers(); err != nil {
+			log.Printf("[Backup] trigger install failed (backup off): %v", err)
+		} else {
+			if err := store.SeedBackupFromCurrentState(); err != nil {
+				log.Printf("[Backup] seed failed: %v", err)
+			}
+			go backupWorker(store, backupCfg)
+		}
+	} else {
+		store.RemoveBackupTriggers()
+	}
 
 	// Pending node JOINs awaiting user approval (provisioning, [[provisioning-model]]).
 	joins := newJoinRegistry()

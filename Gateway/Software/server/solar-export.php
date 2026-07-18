@@ -6,26 +6,20 @@
 // Called by gen2: GET solar-export.php?since=<unix_ts>&limit=<n>&key=<KEY>
 //   - since : return rows with UNIX_TIMESTAMP(readingTime) > since (0 = from start)
 //   - limit : page size (default 2000, capped at 5000)
-//   - key   : shared secret (must match EXPORT_KEY below)
+//   - key   : shared secret (must match $EXPORT_KEY in secrets.php)
 // Returns a JSON array ordered by readingTime ASC. The gateway pages by advancing
 // `since` to the last ts it received, so paging is contiguous.
 //
 // SECURITY: read-only (SELECT), key-gated, no user input in SQL except two ints
-// (cast). Change EXPORT_KEY before deploying.
+// (cast). Creds + key live in secrets.php (gitignored).
 
 header('Content-Type: application/json; charset=utf-8');
 
-// ---- FILL IN on the server (do NOT commit real values) ----
-// Shared secret, must match the gateway's -gen1-key:
-const EXPORT_KEY = 'CHANGE_ME_export_key';
+// Credentials + key live in secrets.php (gitignored). Copy secrets.example.php ->
+// secrets.php on the server and fill it in. Never commit secrets.php.
+require __DIR__ . '/secrets.php';
 
-// gen1 MySQL - same creds as the other gen1 scripts on the server:
-$servername = 'CHANGE_ME_host';
-$dbname     = 'CHANGE_ME_db';
-$username   = 'CHANGE_ME_user';
-$password   = 'CHANGE_ME_password';
-
-if (($_GET['key'] ?? '') !== EXPORT_KEY) {
+if (($_GET['key'] ?? '') !== $EXPORT_KEY) {
     http_response_code(401);
     echo json_encode(['error' => 'bad key']);
     exit;
@@ -36,7 +30,7 @@ $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 2000;
 if ($limit < 1)    { $limit = 1; }
 if ($limit > 5000) { $limit = 5000; }
 
-$conn = new mysqli($servername, $username, $password, $dbname);
+$conn = new mysqli($GEN1_DB_HOST, $GEN1_DB_USER, $GEN1_DB_PASS, $GEN1_DB_NAME);
 if ($conn->connect_error) {
     http_response_code(500);
     echo json_encode(['error' => 'db connect']);

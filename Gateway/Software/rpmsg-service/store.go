@@ -51,6 +51,20 @@ func OpenStore(path string, loc *time.Location) (*Store, error) {
 	// Single connection: SQLite is not for concurrent writers; serialize via Go.
 	db.SetMaxOpenConns(1)
 
+	// backup_queue: pending pushes to the external mirror (see backup.go). Filled by
+	// triggers on the mirrored tables (installed only when backup is enabled), drained
+	// by the backup worker with retry - so a change made while the server is offline is
+	// held here and delivered when it comes back.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS backup_queue (
+		id      INTEGER PRIMARY KEY AUTOINCREMENT,
+		kind    TEXT NOT NULL,
+		op      TEXT NOT NULL,
+		payload TEXT NOT NULL
+	)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("init backup_queue: %w", err)
+	}
+
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS config (
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
@@ -343,6 +357,25 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) 
 		return 0, err
 	}
 	return addr, tx.Commit()
+}
+
+// ReplaceNode swaps a dead chip for a fresh one on an EXISTING address. History is
+// keyed by node_id (the address), not by factory_id, so re-pointing the address to
+// the new chip keeps all of the old node's history, name and room automatically. The
+// new chip then gets JOIN_ACCEPT with this same address and starts reporting under it.
+// status -> pending_join until the new chip confirms. Returns an error if the target
+// address is not a provisioned node.
+func (s *Store) ReplaceNode(targetAddr uint8, newFactoryID string, ts int64) error {
+	res, err := s.db.Exec(
+		`UPDATE node SET factory_id = ?, status = 'pending_join', provisioned_at = ?, last_seen = ?
+		 WHERE node_id = ?`, newFactoryID, ts, ts, targetAddr)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("no node at address 0x%02X to replace", targetAddr)
+	}
+	return nil
 }
 
 // NodeStatus returns a node's lifecycle state + identity (for the telemetry-path

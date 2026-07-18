@@ -1,0 +1,14 @@
+Options -Indexes
+
+# Wyłącz przekierowanie HTTPS dla tej subdomeny
+<IfModule mod_rewrite.c>
+    RewriteEngine Off
+</IfModule>
+
+# PHP settings
+php_value max_input_vars 3000
+
+# Zablokuj bezpośredni dostęp do sekretów
+<Files "secrets.php">
+    Require all denied
+</Files>

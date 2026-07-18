@@ -21,6 +21,10 @@ desktop.ini
 *.key
 *.crt
 
+# Server-side secrets (DB creds + shared keys). The PHP scripts require secrets.php;
+# copy secrets.example.php -> secrets.php on the server and fill it in. Never commit.
+secrets.php
+
 # --- monorepo: build artifacts across toolchains ---
 # CCS / TI firmware
 **/Debug/
