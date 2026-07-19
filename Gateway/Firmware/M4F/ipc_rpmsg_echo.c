@@ -350,7 +350,7 @@ typedef struct {
 } outbox_item_t;
 
 /* --- FreeRTOS objects (static allocation; no heap) --- */
-#define ENGINE_TASK_STACK_WORDS   2048u   /* StackType_t units; bumped from 1024 - NodeFrame (52B) enlarged locals/queue items, and engine_evaluate recurses. Headroom tracked via the [DIAG] stack-HWM self-scan (doPeriodicTick). */
+#define ENGINE_TASK_STACK_WORDS   1024u   /* StackType_t units. [DIAG] confirmed ~300 words used (720 free at 1024), so no bump needed - and M4F_DRAM is nearly full. Headroom tracked via the [DIAG] stack-HWM self-scan. */
 #define ENGINE_TASK_PRIORITY      2u      /* keep < comms task so RX/heartbeat win */
 #define OUTBOX_DEPTH              16u
 #define NODEIN_DEPTH              8u
@@ -370,6 +370,49 @@ static uint32_t stack_hwm_words(const StackType_t *base, uint32_t words)
         freeWords++;
     }
     return freeWords;
+}
+
+/* ---- COMMS liveness monitor (silent-hang diagnosis) --------------------------
+ * The COMMS task (freertos_main, highest priority) owns the heartbeat reply. When
+ * it silently stops replying (Go times out ~9 s later and reboots), we lose all
+ * insight because a full SoC reset wipes retained RAM. This monitor - a lower-prio
+ * task that runs whenever COMMS yields (its per-loop vTaskDelay) or BLOCKS (the
+ * likely hang: pending forever in RPMessage_send / an SPI wait) - watches a
+ * liveness counter and a per-stage marker, and logs WHICH stage COMMS froze in.
+ * The log lands in the m4f-watch trace within the ~9 s window before the reboot.
+ * (A busy-loop at max prio would starve this monitor too - then the [DIAG]/[MON]
+ * lines just stop, which itself says "total starve, not a block".) */
+#define MONITOR_TASK_STACK_WORDS  512u
+#define MONITOR_TASK_PRIORITY     3u    /* > engine/spi (2), < comms (max) */
+#define COMMS_STALL_CHECKS        3u    /* x2 s = 6 s, under Go's ~9 s heartbeat giveup */
+
+static StackType_t  gMonitorStack[MONITOR_TASK_STACK_WORDS];
+static StaticTask_t gMonitorTaskObj;
+
+volatile uint32_t gCommsLive  = 0u;   /* bumped once per COMMS loop iteration */
+volatile uint8_t  gCommsStage = 0u;   /* 1=rx 2=drain 3=tick 4=retry 5=sleep */
+
+static void monitorTask(void *args)
+{
+    uint32_t lastLive = 0u;
+    uint32_t stalls   = 0u;
+    (void)args;
+    DebugP_log("[MON] comms-liveness monitor started (prio %u)\r\n",
+               (unsigned)MONITOR_TASK_PRIORITY);
+    while (!gbShutdown) {
+        vTaskDelay(pdMS_TO_TICKS(2000u));
+        if (gCommsLive == lastLive) {
+            if (++stalls >= COMMS_STALL_CHECKS) {
+                DebugP_log("[MON] *** COMMS STALLED at stage=%u (1rx 2drain 3tick 4retry 5sleep), "
+                           "live=%u frozen ~%us - Linux heartbeat will reboot us ***\r\n",
+                           (unsigned)gCommsStage, (unsigned)gCommsLive, (unsigned)(stalls * 2u));
+            }
+        } else {
+            stalls = 0u;
+        }
+        lastLive = gCommsLive;
+    }
+    vTaskDelete(NULL);
 }
 
 static uint8_t      gOutboxStorage[OUTBOX_DEPTH * sizeof(outbox_item_t)];
@@ -748,10 +791,15 @@ static void doPeriodicTick(void)
          * overflow corrupts memory and wedges the core). Self-scan is used because
          * the SDK FreeRTOS config has INCLUDE_uxTaskGetStackHighWaterMark=0. */
         if ((gTickCount % 30U) == 0U) {
-            /* free words remaining; both task stacks are 2048 words after the bump. */
-            DebugP_log("[DIAG] free stack words (of 2048): engine=%u spi=%u\r\n",
+            /* stacks: free words (of 1024). spi xfer: started/done should track each
+             * other; if `to` (timeout) climbs and `done` stalls, a stuck SPI transfer
+             * is wedging the M4F (user hint - the whole core hangs on an unclosed SPI). */
+            uint32_t spiStarted = 0u, spiDone = 0u, spiTo = 0u;
+            spi_master_counters(&spiStarted, &spiDone, &spiTo);
+            DebugP_log("[DIAG] stack free: engine=%u spi=%u | spi xfer started=%u done=%u to=%u\r\n",
                        (unsigned)stack_hwm_words(gEngineStack, ENGINE_TASK_STACK_WORDS),
-                       (unsigned)spi_master_stack_hwm());
+                       (unsigned)spi_master_stack_hwm(),
+                       (unsigned)spiStarted, (unsigned)spiDone, (unsigned)spiTo);
         }
 
         (void)gTickCount; /* still counted; used only by the commented demo above */
@@ -924,6 +972,10 @@ void ipc_rpmsg_echo_main(void *args)
     memset(gEngineStack, 0xA5, sizeof(gEngineStack));   /* fill for the stack-HWM diagnostic */
     (void)xTaskCreateStatic(engineTask, "engine", ENGINE_TASK_STACK_WORDS, NULL,
                              ENGINE_TASK_PRIORITY, gEngineStack, &gEngineTaskObj);
+
+    /* COMMS-liveness monitor: logs which stage COMMS froze in on a silent hang. */
+    (void)xTaskCreateStatic(monitorTask, "monitor", MONITOR_TASK_STACK_WORDS, NULL,
+                             MONITOR_TASK_PRIORITY, gMonitorStack, &gMonitorTaskObj);
     DebugP_log("[M4F] Engine initialized (0 rules); engine task spawned\r\n");
 
     /* SPI master link to the CC1310 (slave): feeds node data into gNodeInQueue
@@ -937,20 +989,27 @@ void ipc_rpmsg_echo_main(void *args)
     
 /* COMMS task loop - sole owner of RPMessage send + gPendingAcks */
     while (!gbShutdown) {
+        gCommsLive++;   /* liveness beat for the monitor task (silent-hang diagnosis) */
+
         /* 1. RX from Linux (callback set the pending flag) */
+        gCommsStage = 1u;
         if (gRxBuffer.pending) {
             handleLinuxMessage();
         }
 
         /* 2. Engine outbox -> Linux reports + node delivery */
+        gCommsStage = 2u;
         drainEngineOutbox();
 
         /* 3. Periodic comms-side actions */
+        gCommsStage = 3u;
         doPeriodicTick();
 
         /* 4. Retry M4F-initiated reliable messages */
+        gCommsStage = 4u;
         processEventRetries();
 
+        gCommsStage = 5u;
         /* 5. Block 1 tick so the (lower-priority) ENGINE task gets to run.
          * MUST be vTaskDelay (not ClockP_usleep): this comms task runs at the
          * highest priority (freertos_main), so a busy-wait here would starve

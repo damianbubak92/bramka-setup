@@ -270,33 +270,38 @@ static void spiSlaveTaskFunction(UArg a0, UArg a1)
                                      EVENT_MASTER_INITIATE | SEND_DATA_TO_SLAVE,
                                      BIOS_WAIT_FOREVER);
 
-        /* A) Master initiated: it wants to send us a frame. Clock a NOP back. */
-        if (events & EVENT_MASTER_INITIATE) {
-            frame_make_nop(&txFrame);
-            memset(&rxFrame, 0, sizeof(rxFrame));
-            if (slave_do_transfer()) {
-                route_rx_frame();
-            } else if (display) {
-                Display_printf(display, 0, 0, "[SPI Slave] master-init xfer timeout");
-            }
-        }
-
-        /* B) We have node data (from radio) to send up to the M4F. */
-        if (events & SEND_DATA_TO_SLAVE) {
+        /* FULL-DUPLEX: every transfer carries our pending uplink frame (or a NOP) AND
+         * receives the master's downlink (or a NOP) - so a simultaneous up+down is one
+         * exchange, never a collision. Drain every queued uplink frame; if the master
+         * initiated with nothing queued, do one NOP transfer to receive its cmd.
+         * route_rx_frame() runs after EVERY transfer (the old SEND_DATA path skipped it
+         * and dropped a piggybacked downlink cmd - the collision bug). */
+        {
             NodeFrame nf;
+            bool didXfer = false;
+            int retry;
             while (mq_receive(spiQueue, (char *)&nf, SPI_QUEUE_MAX_MSG, NULL) != -1) {
-                int retry;
-                uint8_t pending = 0;   /* TODO: report queued count for burst drain */
-                frame_make_node_data(&txFrame, &nf, txSeq++, pending);
+                frame_make_node_data(&txFrame, &nf, txSeq++, 0);
                 for (retry = 0; retry < MAX_RETRIES; retry++) {
                     memset(&rxFrame, 0, sizeof(rxFrame));
                     if (slave_do_transfer()) {
-                        if (display) Display_printf(display, 0, 0,
-                            "[SPI Slave] sent node data up (type=%d)", nf.message.type);
+                        route_rx_frame();
                         break;
                     }
-                    if (display) Display_printf(display, 0, 0,
-                        "[SPI Slave] send-up retry %d", retry);
+                }
+                didXfer = true;
+            }
+            /* No uplink queued but the master wants to send -> one NOP transfer to
+             * receive its cmd. Gated on MASTER_INITIATE so a spurious wake never pulls
+             * SLAVE_READY and provokes a pointless exchange. */
+            if ((events & EVENT_MASTER_INITIATE) && !didXfer) {
+                frame_make_nop(&txFrame);
+                for (retry = 0; retry < MAX_RETRIES; retry++) {
+                    memset(&rxFrame, 0, sizeof(rxFrame));
+                    if (slave_do_transfer()) {
+                        route_rx_frame();
+                        break;
+                    }
                 }
             }
         }

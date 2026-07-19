@@ -33,6 +33,11 @@ bool spi_master_post_cmd(const NodeFrame *frame);
  * trending toward 0 is an overflow risk (diagnostic for the intermittent hang). */
 uint32_t spi_master_stack_hwm(void);
 
+/* SPI transfer accounting (silent-hang diagnosis). If the M4F wedges via a stuck
+ * SPI transaction, `timeout` climbs and `done` stalls just before. Any pointer NULL
+ * to skip. */
+void spi_master_counters(uint32_t *started, uint32_t *done, uint32_t *timeout);
+
 /* Graceful shutdown: wake the SPI task so it exits promptly (it tears down the
  * SLAVE_READY GPIO-IRQ - HwiP + bank intr + Sciclient introuter route - on exit),
  * then block until it has fully stopped or timeoutMs elapses. MUST be called

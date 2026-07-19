@@ -62,7 +62,7 @@
 #define SPI_ARM_TIMEOUT_MS       500u    /* max wait for slave to arm (scenario A); > slave hold */
 #define SPI_MAX_RETRIES          3
 #define SPI_OUT_DEPTH            8u
-#define SPI_TASK_STACK_WORDS     2048u   /* bumped from 1024 - NodeFrame (52B) enlarged the SPI frame locals + queue items */
+#define SPI_TASK_STACK_WORDS     1024u   /* [DIAG] confirmed ~290 words used (730 free at 1024); M4F_DRAM is nearly full so no bump. */
 #define SPI_TASK_PRIORITY        2u
 
 /* SLAVE_READY GPIO-IRQ routing (WKUP_MCU_GPIOMUX_INTROUTER0). M4_0 owns OUTP 4..7;
@@ -96,6 +96,12 @@ static volatile bool  gSpiStopped = false;     /* set after the task tears down 
 
 static uint32_t       gMrBase, gSrBase;        /* AddrTranslate'd GPIO bases */
 static uint8_t        gTxSeq = 1;
+
+/* SPI transfer accounting (silent-hang diagnosis): if the whole M4F wedges via a
+ * stuck SPI transaction, gSpiTimeout climbs and gSpiDone stalls right before it. */
+static volatile uint32_t gSpiStarted = 0u;
+static volatile uint32_t gSpiDone    = 0u;
+static volatile uint32_t gSpiTimeout = 0u;
 
 static SpiFrame       gTxFrame;
 static SpiFrame       gRxFrame;
@@ -204,15 +210,24 @@ static bool spi_do_transfer(void)
     t.rxBuf     = (void *)&gRxFrame;
     t.args      = NULL;
 
+    gSpiStarted++;
     status = MCSPI_transfer(gMcspiHandle[CONFIG_MCSPI0], &t);
     if (status != SystemP_SUCCESS) {
-        DebugP_log("[SPI] MCSPI_transfer start failed: %d\r\n", (int)status);
+        gSpiTimeout++;
+        DebugP_log("[SPI] MCSPI_transfer start failed: %d (started=%u done=%u to=%u)\r\n",
+                   (int)status, (unsigned)gSpiStarted, (unsigned)gSpiDone, (unsigned)gSpiTimeout);
         return false;
     }
     if (SemaphoreP_pend(&gXferDoneSem, SPI_XFER_TIMEOUT_TICKS) != SystemP_SUCCESS) {
-        DebugP_log("[SPI] transfer timeout\r\n");
+        /* Callback never fired within the window: the MCSPI transaction is stuck.
+         * A stuck transfer left un-cancelled is the prime suspect for the whole-M4F
+         * wedge (user hint) - see the counter divergence in [DIAG]. */
+        gSpiTimeout++;
+        DebugP_log("[SPI] transfer TIMEOUT (started=%u done=%u to=%u)\r\n",
+                   (unsigned)gSpiStarted, (unsigned)gSpiDone, (unsigned)gSpiTimeout);
         return false;
     }
+    gSpiDone++;
     return (t.status == MCSPI_TRANSFER_COMPLETED);
 }
 
@@ -458,6 +473,13 @@ uint32_t spi_master_stack_hwm(void)
         freeWords++;
     }
     return freeWords;
+}
+
+void spi_master_counters(uint32_t *started, uint32_t *done, uint32_t *timeout)
+{
+    if (started != NULL) { *started = gSpiStarted; }
+    if (done    != NULL) { *done    = gSpiDone;    }
+    if (timeout != NULL) { *timeout = gSpiTimeout; }
 }
 
 bool spi_master_post_cmd(const NodeFrame *frame)
