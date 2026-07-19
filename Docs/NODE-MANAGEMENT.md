@@ -58,6 +58,8 @@ CREATE UNIQUE INDEX ux_node_factory ON node(factory_id) WHERE factory_id IS NOT 
 - `pending_join` — przydzielono adres, czekamy aż nod potwierdzi (pierwsza telemetria pod nowym adresem+factory_id).
 - `active` — potwierdzony, żywy (ma adres + factory_id).
 - `detached` — przywrócony z kosza: ma `id` + historię, ale `address = NULL`, `factory_id = NULL`; czeka na sparowanie.
+- `legacy` — nod gen1 podsłuchiwany (sniff), poza nowym modelem tożsamości — patrz §13. Też ma `factory_id = NULL`,
+  ale to co innego niż `detached` (dlatego jawny status).
 
 `pending_remove` **znika** — w modelu reaktywnym kasowanie jest natychmiastowe (hard-delete lokalnie + kosz
 na serwerze), nie trzymamy wiersza czekając na potwierdzenie noda.
@@ -93,7 +95,8 @@ i już istnieje, nie wymyślamy własnego licznika.)
 
 - **Uplink (telemetria/JOIN/potwierdzenia):** bramka przyjmuje ramkę tylko gdy `(addr, factory_id)`
   = zarejestrowane aktywne wiązanie. Inaczej → `MSG_UNREGISTERED` w dół (§5.3). JOIN (addr=0xFF) jest
-  wyjątkiem — zawsze akceptowany do rejestru pending (niesie factory_id w payloadzie, jak dziś).
+  wyjątkiem — zawsze akceptowany do rejestru pending (niesie factory_id w payloadzie, jak dziś). **Ramki
+  legacy gen1** (stary format, bez factory_id) są zwolnione z tej walidacji — patrz §13.
 - **Downlink (komendy):** nod wykonuje komendę tylko gdy `factory_id` w ramce = JEGO własne FCFG
   (nie sam adres). To zabija groźny przypadek: stary chip na reużytym adresie NIE wykona cudzej komendy.
 
@@ -186,5 +189,28 @@ Dziś `node.node_id` = adres, historia kluczowana adresem. Jednorazowa migracja 
 2. **Kontrakt drutu → firmware**: factory_id w ramce, walidacja, `MSG_UNREGISTERED`, zachowanie noda.
    (Node robisz raz — dlatego kontrakt PRZED firmware.)
 3. **Apka**: dialog dodaj/wymień, dropdown kompatybilnych, kosz+przywracanie, confirm na usuwaniu.
+
+## 13. Współistnienie z podsłuchem gen1 (legacy) — sniff ZOSTAJE
+
+Nody gen1 (solar 0xF1, bufor 0xF2) są dalej podsłuchiwane (sniff bez ACK, [[provisioning-model]]) — nowy model
+je **grandfathering'uje**, NIE wypadają z niego. Dlaczego się nie gryzą i jak to obsłużyć:
+
+- **Rozłączność z natury**: adresy gen1 (0xF0+) są POZA pulą gen2 (0x10-0xEF); ramki gen1→0xF0, gen2→0x00;
+  CC1310 rozróżnia je filtrem adresu (stąd log `SNIFF gen1`). gen2 pozostaje PASYWNY wobec gen1 (nie ACK-uje,
+  nie odzywa się). Zero kolizji adresów, zero interakcji.
+- **Ramki gen1 są w STARYM formacie — bez `factory_id`.** Więc ingest się rozgałęzia po obecności factory_id:
+  - **Ramka legacy gen1** (bez factory_id) → routing po stałym adresie do noda `legacy`, zapis historii,
+    **BEZ walidacji `(addr, factory_id)`, BEZ `MSG_UNREGISTERED`** (pasywnie, jak dziś).
+  - **Ramka gen2** (z factory_id) → pełny nowy model (§5.2, §6.5).
+- **W data modelu**: legacy nody = `id`(autoincrement) + `address`(0xF1/0xF2) + `factory_id = NULL` +
+  **`status = legacy`**. Jawny status odróżnia je od `detached` (który też ma factory_id NULL, ale to
+  przywrócony gen2 czekający na chip — co innego). Legacy nie przechodzą JOIN, nie są walidowane, nie dostają
+  `MSG_UNREGISTERED`.
+- **Reszta działa tak samo**: historia/agregaty/backup/restore po `id` (nody 241/242 już tak jadą).
+- **Wygaszenie**: gdy user zdecyduje reflashować solar/bufor na firmware gen2 → JOIN → stają się pełnymi
+  nodami gen2 (z factory_id) → sniff dla nich wypada. Do tego czasu współistnieją bezterminowo.
+
+**Dla implementacji §12.1**: dodać status `legacy` do schematu; gałąź „legacy vs gen2" po obecności factory_id
+w ramce (CC1310 taguje przy sniffie). Nie ruszać ścieżki sniff w `radio_task.c` — działa.
 
 Powiązane: [[provisioning-model]], [[gen2-backup-mirror]], [[solar-aggregation-model]], `Docs/ARCHITECTURE-GEN2.md`.
