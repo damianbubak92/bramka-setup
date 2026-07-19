@@ -88,15 +88,20 @@ bool engine_rpmsg_dispatch(uint8_t msg_type, uint16_t seq,
         }
 
         case MSG_NODE_CMD: {
-            /* payload: MessageStruct - relay a phone command to a node */
-            if (payload_len != (uint16_t)sizeof(MessageStruct)) {
+            /* payload: NodeFrame (factory_id + MessageStruct, v2) OR a bare
+             * MessageStruct (legacy 44 B -> factory_id 0). Relay to the node. */
+            NodeFrame frame;
+            memset(&frame, 0, sizeof(frame));
+            if (payload_len == (uint16_t)sizeof(NodeFrame)) {
+                memcpy(&frame, payload, sizeof(NodeFrame));
+            } else if (payload_len == (uint16_t)sizeof(MessageStruct)) {
+                memcpy(&frame.msg, payload, sizeof(MessageStruct)); /* factory_id stays 0 */
+            } else {
                 sendError(seq);
                 return true;
             }
-            MessageStruct msg;
-            memcpy(&msg, payload, sizeof(MessageStruct));
             if (g_tx_node != NULL) {
-                g_tx_node(&msg);
+                g_tx_node(&frame);
             }
             ackIf(seq);
             return true;
@@ -121,12 +126,13 @@ bool engine_rpmsg_dispatch(uint8_t msg_type, uint16_t seq,
 /* ========================================================================= *
  * OUTBOUND: M4F -> Linux (reliable EVENT-style path)
  * ========================================================================= */
-void engine_rpmsg_report_telemetry(const MessageStruct *msg)
+void engine_rpmsg_report_telemetry(const NodeFrame *frame)
 {
-    if (g_tx_event == NULL || msg == NULL) {
+    if (g_tx_event == NULL || frame == NULL) {
         return;
     }
-    g_tx_event(MSG_NODE_TELEMETRY, (const uint8_t *)msg, (uint16_t)sizeof(*msg));
+    /* Send the whole NodeFrame (factory_id + msg) so Go can validate identity. */
+    g_tx_event(MSG_NODE_TELEMETRY, (const uint8_t *)frame, (uint16_t)sizeof(*frame));
 }
 
 void engine_rpmsg_report_state(void)

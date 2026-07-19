@@ -25,8 +25,10 @@ typedef int (*RpmsgEventTxFn)(uint8_t msg_type, const uint8_t *payload,
  * MSG_ERROR on rejection. Fire-and-forget (no retry). Maps to sendReply(). */
 typedef void (*RpmsgReplyFn)(uint8_t msg_type, uint16_t seq);
 
-/* Deliver a command to a node (over SPI to CC1310 - later roadmap). */
-typedef void (*NodeTxFn)(const MessageStruct *msg);
+/* Deliver a command to a node (over SPI to CC1310). The NodeFrame carries the
+ * target chip's factory_id alongside the message; a zero factory_id => the CC1310
+ * sends a legacy 'D' frame (no identity), otherwise a v2 'E' frame. */
+typedef void (*NodeTxFn)(const NodeFrame *frame);
 
 void engine_rpmsg_init(RpmsgEventTxFn tx_event,
                        RpmsgReplyFn   reply,
@@ -40,7 +42,7 @@ bool engine_rpmsg_dispatch(uint8_t msg_type, uint16_t seq,
                            const uint8_t *payload, uint16_t payload_len);
 
 /* M4F->Linux reporters (reliable EVENT-style path). */
-void engine_rpmsg_report_telemetry(const MessageStruct *msg);     /* MSG_NODE_TELEMETRY */
+void engine_rpmsg_report_telemetry(const NodeFrame *frame);       /* MSG_NODE_TELEMETRY (factory_id + msg) */
 void engine_rpmsg_report_state(void);                             /* MSG_NODE_STATE */
 void engine_rpmsg_report_rule_fired(uint16_t ruleIndex,
                                     const RuleAction *action);     /* MSG_RULE_FIRED */

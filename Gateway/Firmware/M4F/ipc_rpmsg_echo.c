@@ -344,13 +344,13 @@ typedef enum {
 
 typedef struct {
     outbox_kind_t kind;
-    MessageStruct msg;
+    NodeFrame     msg;       /* factory_id + MessageStruct (telemetry: sender; cmd: target) */
     uint16_t      ruleIndex;
     RuleAction    action;
 } outbox_item_t;
 
 /* --- FreeRTOS objects (static allocation; no heap) --- */
-#define ENGINE_TASK_STACK_WORDS   1024u   /* StackType_t units; tune in CCS */
+#define ENGINE_TASK_STACK_WORDS   2048u   /* StackType_t units; bumped from 1024 - NodeFrame (52B) enlarged locals/queue items, and engine_evaluate recurses. Headroom tracked via the [DIAG] stack-HWM self-scan (doPeriodicTick). */
 #define ENGINE_TASK_PRIORITY      2u      /* keep < comms task so RX/heartbeat win */
 #define OUTBOX_DEPTH              16u
 #define NODEIN_DEPTH              8u
@@ -358,13 +358,27 @@ typedef struct {
 static StackType_t  gEngineStack[ENGINE_TASK_STACK_WORDS];
 static StaticTask_t gEngineTaskObj;
 
+/* Free stack words remaining (high-water-mark): count words still holding the 0xA5
+ * fill from the deep (low-address) end. Cortex-M stacks grow down, so the untouched
+ * headroom sits at index 0+. Self-scan because the SDK FreeRTOS config has
+ * INCLUDE_uxTaskGetStackHighWaterMark=0. The stack MUST be 0xA5-filled before the
+ * task starts (done at creation). */
+static uint32_t stack_hwm_words(const StackType_t *base, uint32_t words)
+{
+    uint32_t freeWords = 0u;
+    while (freeWords < words && base[freeWords] == (StackType_t)0xA5A5A5A5u) {
+        freeWords++;
+    }
+    return freeWords;
+}
+
 static uint8_t      gOutboxStorage[OUTBOX_DEPTH * sizeof(outbox_item_t)];
 static StaticQueue_t gOutboxQueueObj;
 static QueueHandle_t gOutboxQueue;
 
 /* Node data INTO the engine (SPI -> here). Created now for the final task shape;
  * fed once the CC1310 SPI link exists. */
-static uint8_t      gNodeInStorage[NODEIN_DEPTH * sizeof(MessageStruct)];
+static uint8_t      gNodeInStorage[NODEIN_DEPTH * sizeof(NodeFrame)];
 static StaticQueue_t gNodeInQueueObj;
 static QueueHandle_t gNodeInQueue;
 
@@ -389,7 +403,12 @@ static void engineActionSink(const MessageStruct *msg, uint16_t ruleIndex,
     (void)ctx;
     outbox_item_t item;
     item.kind = OUTBOX_RULE_FIRED;
-    item.msg = *msg;
+    /* Engine-fired command: the engine works on addresses, not chip ids, so the
+     * NodeFrame carries a zero factory_id -> the CC1310 sends a legacy 'D' frame
+     * (its targets today are the gen1 legacy nodes). A future rule-controlled gen2
+     * node would need the engine to cache addr->factory_id from uplinks. */
+    memset(&item.msg, 0, sizeof(item.msg));
+    item.msg.msg = *msg;
     item.ruleIndex = ruleIndex;
     item.action = *action;
     if (xQueueSend(gOutboxQueue, &item, 0) != pdTRUE) {
@@ -400,11 +419,11 @@ static void engineActionSink(const MessageStruct *msg, uint16_t ruleIndex,
 
 /* Node TX sink (COMMS task context): relay a command down to a node over SPI.
  * Hands off to the SPI master task (non-blocking); the SPI task owns the bus. */
-static void nodeTxSink(const MessageStruct *msg)
+static void nodeTxSink(const NodeFrame *frame)
 {
-    if (!spi_master_post_cmd(msg)) {
+    if (!spi_master_post_cmd(frame)) {
         DebugP_log("[M4F] -> node: SPI out queue full (type=%u cmd=%u)\r\n",
-                    (unsigned)msg->type, (unsigned)msg->cmd);
+                    (unsigned)frame->msg.type, (unsigned)frame->msg.cmd);
     }
 }
 
@@ -415,13 +434,13 @@ static void nodeTxSink(const MessageStruct *msg)
 static void engineTask(void *args)
 {
     (void)args;
-    MessageStruct nodeMsg;
+    NodeFrame nodeMsg;   /* factory_id + MessageStruct from the SPI link */
 
     DebugP_log("[M4F] Engine task started\r\n");
     while (!gbShutdown) {
         uint32_t ms = engine_ms_to_next_minute();  /* to next :00, sub-second precise */
         if (xQueueReceive(gNodeInQueue, &nodeMsg, pdMS_TO_TICKS(ms)) == pdTRUE) {
-            if (nodeMsg.type == ENGINE_NODEIN_TIME_RESYNC) {
+            if (nodeMsg.msg.type == ENGINE_NODEIN_TIME_RESYNC) {
                 /* Time-sync sentinel: wake ONLY to break a stale (pre-sync) sleep
                  * so the next loop re-sizes the timeout from the fresh clock and
                  * aligns to :00. Do NOT evaluate here - evaluating off the :00
@@ -436,11 +455,11 @@ static void engineTask(void *args)
                  * types and evaluate the data-driven rules (COND_PARAMETER/_DELTA). */
                 outbox_item_t item;
                 item.kind = OUTBOX_TELEMETRY;
-                item.msg = nodeMsg;
+                item.msg = nodeMsg;                    /* NodeFrame: factory_id + reading */
                 if (xQueueSend(gOutboxQueue, &item, 0) != pdTRUE) {
                     DebugP_log("[M4F] outbox full - telemetry dropped\r\n");
                 }
-                (void)engine_update_node(&nodeMsg);   /* fold known types into live state */
+                (void)engine_update_node(&nodeMsg.msg);   /* fold known types into live state */
                 engine_evaluate(ENGINE_EVAL_NODE);
             }
         } else {
@@ -635,9 +654,9 @@ static void handleLinuxMessage(void)
              * minute tick to :00 immediately (engine_set_time already applied
              * inside the dispatch). Sentinel, best-effort. */
             if (msg_type == MSG_TIME_SYNC) {
-                MessageStruct wake;
+                NodeFrame wake;
                 memset(&wake, 0, sizeof(wake));
-                wake.type = ENGINE_NODEIN_TIME_RESYNC;
+                wake.msg.type = ENGINE_NODEIN_TIME_RESYNC;
                 (void)xQueueSend(gNodeInQueue, &wake, 0);
             }
             break;
@@ -723,6 +742,18 @@ static void doPeriodicTick(void)
          *     }
          * }
          */
+        /* Stack-headroom watch (every 30 s). HWM = FREE words still holding the
+         * 0xA5 fill at the deep (low-address) end of the task stack; trending toward
+         * 0 is the prime suspect for the intermittent, traffic-correlated hang (an
+         * overflow corrupts memory and wedges the core). Self-scan is used because
+         * the SDK FreeRTOS config has INCLUDE_uxTaskGetStackHighWaterMark=0. */
+        if ((gTickCount % 30U) == 0U) {
+            /* free words remaining; both task stacks are 2048 words after the bump. */
+            DebugP_log("[DIAG] free stack words (of 2048): engine=%u spi=%u\r\n",
+                       (unsigned)stack_hwm_words(gEngineStack, ENGINE_TASK_STACK_WORDS),
+                       (unsigned)spi_master_stack_hwm());
+        }
+
         (void)gTickCount; /* still counted; used only by the commented demo above */
     }
 }
@@ -885,11 +916,12 @@ void ipc_rpmsg_echo_main(void *args)
     /* Cross-task queues (lock-free): engine->comms outbox, SPI->engine node-in. */
     gOutboxQueue = xQueueCreateStatic(OUTBOX_DEPTH, sizeof(outbox_item_t),
                                        gOutboxStorage, &gOutboxQueueObj);
-    gNodeInQueue = xQueueCreateStatic(NODEIN_DEPTH, sizeof(MessageStruct),
+    gNodeInQueue = xQueueCreateStatic(NODEIN_DEPTH, sizeof(NodeFrame),
                                        gNodeInStorage, &gNodeInQueueObj);
     DebugP_assert(gOutboxQueue != NULL && gNodeInQueue != NULL);
 
     /* Spawn the ENGINE task; this task continues as the COMMS task. */
+    memset(gEngineStack, 0xA5, sizeof(gEngineStack));   /* fill for the stack-HWM diagnostic */
     (void)xTaskCreateStatic(engineTask, "engine", ENGINE_TASK_STACK_WORDS, NULL,
                              ENGINE_TASK_PRIORITY, gEngineStack, &gEngineTaskObj);
     DebugP_log("[M4F] Engine initialized (0 rules); engine task spawned\r\n");

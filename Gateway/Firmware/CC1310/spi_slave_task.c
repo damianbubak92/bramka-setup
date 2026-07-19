@@ -56,16 +56,24 @@ typedef struct {
     } payload;
 } MessageStruct;
 
+/* NodeFrame: chip identity + message. Mirrors Shared/Protocol/node_protocol.h
+ * (factory_id[8] + MessageStruct[44] = 52 B) so the SPI payload and the M4F/Go
+ * side agree byte-for-byte. factory_id all-zero = legacy/unknown ('D' RF frame). */
 typedef struct {
+    uint8_t       factory_id[8];
     MessageStruct message;
-    uint8_t retryCounter;
+} NodeFrame;
+
+typedef struct {
+    NodeFrame frame;
+    uint8_t   retryCounter;
 } RadioMessageStruct;
 
 /* ---- Task / event config ---- */
 #define SPI_SLAVE_TASK_STACK   2048
 #define SPI_SLAVE_TASK_PRIORITY 2
 #define SPI_QUEUE_NAME         "/spiQueue"
-#define SPI_QUEUE_MAX_MSG      sizeof(MessageStruct)
+#define SPI_QUEUE_MAX_MSG      sizeof(NodeFrame)
 
 #define EVENT_SPI_DONE             (1 << 1)   /* SPI transfer callback */
 #define EVENT_MASTER_INITIATE      (1 << 2)   /* MASTER_READY falling edge */
@@ -134,37 +142,44 @@ static void frame_make_nop(SpiFrame *f)
     frame_finalize(f);
 }
 
-static void frame_make_node_data(SpiFrame *f, const MessageStruct *m,
+static void frame_make_node_data(SpiFrame *f, const NodeFrame *nf,
                                  uint8_t seq, uint8_t pending)
 {
-    uint8_t len = (uint8_t)sizeof(MessageStruct);
+    uint8_t len = (uint8_t)sizeof(NodeFrame);
     memset(f, 0, sizeof(*f));
     f->type = SPI_FRAME_NODE_DATA;
     f->seq = seq;
     f->pending = pending;
     if (len > SPI_FRAME_PAYLOAD_MAX) len = SPI_FRAME_PAYLOAD_MAX;
     f->len = len;
-    memcpy(f->payload, m, len);
+    memcpy(f->payload, nf, len);   /* factory_id + MessageStruct */
     frame_finalize(f);
 }
 
-/* Forward a received M4F command frame to the radio (RF to node). */
+/* Forward a received M4F command frame to the radio (RF to node). The SPI payload
+ * is a NodeFrame (52 B); tolerate a legacy 44 B MessageStruct (factory_id 0). */
 static void route_rx_frame(void)
 {
     if (!frame_valid(&rxFrame)) {
         if (display) Display_printf(display, 0, 0, "[SPI Slave] RX frame invalid");
         return;
     }
-    if (rxFrame.type == SPI_FRAME_NODE_CMD && rxFrame.len >= sizeof(MessageStruct)) {
+    if (rxFrame.type == SPI_FRAME_NODE_CMD) {
         RadioMessageStruct job;
         memset(&job, 0, sizeof(job));
-        memcpy(&job.message, rxFrame.payload, sizeof(MessageStruct));
+        if (rxFrame.len >= sizeof(NodeFrame)) {
+            memcpy(&job.frame, rxFrame.payload, sizeof(NodeFrame));
+        } else if (rxFrame.len >= sizeof(MessageStruct)) {
+            memcpy(&job.frame.message, rxFrame.payload, sizeof(MessageStruct)); /* legacy */
+        } else {
+            return;
+        }
         job.retryCounter = 0;
         if (mq_send(radioQueue, (char *)&job, sizeof(job), 0) == 0) {
             Event_post(radioEventHandle, EVENT_SEND_PACKET);
             if (display) Display_printf(display, 0, 0,
                 "[SPI Slave] RX cmd -> radio (type=%d cmd=%d)",
-                job.message.type, job.message.cmd);
+                job.frame.message.type, job.frame.message.cmd);
         } else if (display) {
             Display_printf(display, 0, 0, "[SPI Slave] radioQueue full - cmd dropped");
         }
@@ -268,16 +283,16 @@ static void spiSlaveTaskFunction(UArg a0, UArg a1)
 
         /* B) We have node data (from radio) to send up to the M4F. */
         if (events & SEND_DATA_TO_SLAVE) {
-            MessageStruct msg;
-            while (mq_receive(spiQueue, (char *)&msg, SPI_QUEUE_MAX_MSG, NULL) != -1) {
+            NodeFrame nf;
+            while (mq_receive(spiQueue, (char *)&nf, SPI_QUEUE_MAX_MSG, NULL) != -1) {
                 int retry;
                 uint8_t pending = 0;   /* TODO: report queued count for burst drain */
-                frame_make_node_data(&txFrame, &msg, txSeq++, pending);
+                frame_make_node_data(&txFrame, &nf, txSeq++, pending);
                 for (retry = 0; retry < MAX_RETRIES; retry++) {
                     memset(&rxFrame, 0, sizeof(rxFrame));
                     if (slave_do_transfer()) {
                         if (display) Display_printf(display, 0, 0,
-                            "[SPI Slave] sent node data up (type=%d)", msg.type);
+                            "[SPI Slave] sent node data up (type=%d)", nf.message.type);
                         break;
                     }
                     if (display) Display_printf(display, 0, 0,

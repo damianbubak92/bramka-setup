@@ -62,7 +62,7 @@
 #define SPI_ARM_TIMEOUT_MS       500u    /* max wait for slave to arm (scenario A); > slave hold */
 #define SPI_MAX_RETRIES          3
 #define SPI_OUT_DEPTH            8u
-#define SPI_TASK_STACK_WORDS     1024u
+#define SPI_TASK_STACK_WORDS     2048u   /* bumped from 1024 - NodeFrame (52B) enlarged the SPI frame locals + queue items */
 #define SPI_TASK_PRIORITY        2u
 
 /* SLAVE_READY GPIO-IRQ routing (WKUP_MCU_GPIOMUX_INTROUTER0). M4_0 owns OUTP 4..7;
@@ -76,11 +76,11 @@
 /* ========================================================================== */
 extern volatile uint8_t gbShutdown;            /* set by Linux shutdown (ipc_rpmsg_echo.c) */
 
-static QueueHandle_t  gNodeInQueue;            /* engine input (we produce) */
+static QueueHandle_t  gNodeInQueue;            /* engine input (we produce), NodeFrame */
 
-static uint8_t        gSpiOutStorage[SPI_OUT_DEPTH * sizeof(MessageStruct)];
+static uint8_t        gSpiOutStorage[SPI_OUT_DEPTH * sizeof(NodeFrame)];
 static StaticQueue_t  gSpiOutQueueObj;
-static QueueHandle_t  gSpiOutQueue;            /* node commands (we consume) */
+static QueueHandle_t  gSpiOutQueue;            /* node commands (we consume), NodeFrame */
 
 static StackType_t    gSpiStack[SPI_TASK_STACK_WORDS];
 static StaticTask_t   gSpiTaskObj;
@@ -130,10 +130,10 @@ static void frame_make_nop(SpiFrame *f)
     frame_finalize(f);
 }
 
-static void frame_make_node_cmd(SpiFrame *f, const MessageStruct *m,
+static void frame_make_node_cmd(SpiFrame *f, const NodeFrame *nf,
                                 uint8_t seq, uint8_t pending)
 {
-    uint8_t len = (uint8_t)sizeof(MessageStruct);
+    uint8_t len = (uint8_t)sizeof(NodeFrame);
     memset(f, 0, sizeof(*f));
     f->type    = SPI_FRAME_NODE_CMD;
     f->seq     = seq;
@@ -142,7 +142,7 @@ static void frame_make_node_cmd(SpiFrame *f, const MessageStruct *m,
         len = SPI_FRAME_PAYLOAD_MAX;
     }
     f->len = len;
-    memcpy(f->payload, m, len);
+    memcpy(f->payload, nf, len);   /* factory_id + MessageStruct */
     frame_finalize(f);
 }
 
@@ -152,15 +152,21 @@ static void route_rx_frame(void)
         DebugP_log("[SPI] RX frame invalid (magic/CRC)\r\n");
         return;
     }
-    if (gRxFrame.type == SPI_FRAME_NODE_DATA &&
-        gRxFrame.len >= sizeof(MessageStruct)) {
-        MessageStruct m;
-        memcpy(&m, gRxFrame.payload, sizeof(MessageStruct));
-        if (xQueueSend(gNodeInQueue, &m, 0) != pdTRUE) {
+    if (gRxFrame.type == SPI_FRAME_NODE_DATA) {
+        NodeFrame nf;
+        memset(&nf, 0, sizeof(nf));
+        if (gRxFrame.len >= sizeof(NodeFrame)) {
+            memcpy(&nf, gRxFrame.payload, sizeof(NodeFrame));            /* v2: factory_id + msg */
+        } else if (gRxFrame.len >= sizeof(MessageStruct)) {
+            memcpy(&nf.msg, gRxFrame.payload, sizeof(MessageStruct));    /* legacy: factory_id 0 */
+        } else {
+            return;
+        }
+        if (xQueueSend(gNodeInQueue, &nf, 0) != pdTRUE) {
             DebugP_log("[SPI] nodeIn full - node data dropped\r\n");
         } else {
             DebugP_log("[SPI] RX node data -> engine (type=%u cmd=%u)\r\n",
-                        (unsigned)m.type, (unsigned)m.cmd);
+                        (unsigned)nf.msg.type, (unsigned)nf.msg.cmd);
         }
     }
     /* FRAME_NOP / FRAME_ACK: nothing to route. */
@@ -242,9 +248,9 @@ static bool spi_tx_clock_now(void)
  * IRQ mode: clear gSrSem, assert MR, then block on gSrSem until the falling edge
  * (the slave arming) arrives - zero CPU spent waiting. A final level re-check
  * tolerates a missed edge. POLL mode: sample the level every SPI_POLL_MS. */
-static bool spi_tx_cmd(const MessageStruct *m, uint8_t seq, uint8_t pending)
+static bool spi_tx_cmd(const NodeFrame *nf, uint8_t seq, uint8_t pending)
 {
-    frame_make_node_cmd(&gTxFrame, m, seq, pending);
+    frame_make_node_cmd(&gTxFrame, nf, seq, pending);
 
     if (gIrqActive) {
         while (SemaphoreP_pend(&gSrSem, 0u) == SystemP_SUCCESS) { }   /* drain stale */
@@ -289,7 +295,7 @@ static void spiTask(void *args)
                 gIrqActive ? "IRQ" : "POLL", (int)gIrqOutp);
 
     while (!gbShutdown) {
-        MessageStruct cmd;
+        NodeFrame cmd;
         uint32_t waitMs = gIrqActive ? SPI_IRQ_BACKSTOP_MS : SPI_POLL_MS;
 
         /* Wake on: outbound command posted (post_cmd posts gSrSem), a SLAVE_READY
@@ -301,7 +307,7 @@ static void spiTask(void *args)
             uint8_t pending = (uint8_t)uxQueueMessagesWaiting(gSpiOutQueue);
             if (!spi_tx_cmd(&cmd, gTxSeq++, pending)) {
                 DebugP_log("[SPI] cmd send GIVEUP (node type=%u)\r\n",
-                            (unsigned)cmd.type);
+                            (unsigned)cmd.msg.type);
             }
         }
 
@@ -441,12 +447,25 @@ static void spi_setup_slave_ready_irq(void)
 /* ========================================================================== */
 /*  Public API                                                                 */
 /* ========================================================================== */
-bool spi_master_post_cmd(const MessageStruct *msg)
+uint32_t spi_master_stack_hwm(void)
 {
-    if (msg == NULL || gSpiOutQueue == NULL) {
+    /* Free words still holding the 0xA5 fill from the deep end (Cortex-M stack grows
+     * down -> headroom sits at index 0+). Self-scan: the SDK FreeRTOS config has
+     * INCLUDE_uxTaskGetStackHighWaterMark=0. */
+    uint32_t freeWords = 0u;
+    while (freeWords < SPI_TASK_STACK_WORDS &&
+           gSpiStack[freeWords] == (StackType_t)0xA5A5A5A5u) {
+        freeWords++;
+    }
+    return freeWords;
+}
+
+bool spi_master_post_cmd(const NodeFrame *frame)
+{
+    if (frame == NULL || gSpiOutQueue == NULL) {
         return false;
     }
-    if (xQueueSend(gSpiOutQueue, msg, 0) != pdTRUE) {
+    if (xQueueSend(gSpiOutQueue, frame, 0) != pdTRUE) {
         return false;
     }
     SemaphoreP_post(&gSrSem);   /* wake the SPI task to drain the queue */
@@ -481,7 +500,7 @@ void spi_master_init(QueueHandle_t nodeInQueue)
     DebugP_log("[SPI] init begin\r\n");
     gNodeInQueue = nodeInQueue;
 
-    gSpiOutQueue = xQueueCreateStatic(SPI_OUT_DEPTH, sizeof(MessageStruct),
+    gSpiOutQueue = xQueueCreateStatic(SPI_OUT_DEPTH, sizeof(NodeFrame),
                                       gSpiOutStorage, &gSpiOutQueueObj);
     DebugP_assert(gSpiOutQueue != NULL);
     (void)SemaphoreP_constructBinary(&gXferDoneSem, 0);
@@ -499,6 +518,7 @@ void spi_master_init(QueueHandle_t nodeInQueue)
     GPIO_setDirMode(gSrBase, SR_PIN, GPIO_DIRECTION_INPUT);
     spi_setup_slave_ready_irq();
 
+    memset(gSpiStack, 0xA5, sizeof(gSpiStack));   /* fill for the stack-HWM diagnostic */
     gSpiTask = xTaskCreateStatic(spiTask, "spi_master", SPI_TASK_STACK_WORDS,
                                  NULL, SPI_TASK_PRIORITY, gSpiStack, &gSpiTaskObj);
     DebugP_assert(gSpiTask != NULL);

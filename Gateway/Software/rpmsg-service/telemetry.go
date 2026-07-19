@@ -80,39 +80,68 @@ import "C"
 
 import "unsafe"
 
+// splitNodeFrame separates the optional 8-byte factory_id envelope (NodeFrame,
+// node_protocol.h) from the MessageStruct. A payload >= 52 bytes is a NodeFrame
+// ([factory_id:8][MessageStruct:44]); a 44-byte one is a bare MessageStruct from a
+// legacy 'D' node or the gen1 sniff path (factory_id stays all-zero = unknown). This
+// keeps the gateway tolerant of both wire versions during the §12.2 rollout. The
+// returned msg slice aliases payload (valid for the call's lifetime).
+const factoryIDLen = 8 // NODE_FACTORY_ID_LEN (node_protocol.h)
+
+func splitNodeFrame(payload []byte) (factoryID [8]byte, msg []byte, ok bool) {
+	msgLen := int(unsafe.Sizeof(C.MessageStruct{}))
+	frameLen := int(unsafe.Sizeof(C.NodeFrame{}))
+	switch {
+	case len(payload) >= frameLen:
+		copy(factoryID[:], payload[:factoryIDLen])
+		return factoryID, payload[factoryIDLen : factoryIDLen+msgLen], true
+	case len(payload) >= msgLen:
+		return factoryID, payload[:msgLen], true
+	default:
+		return factoryID, nil, false
+	}
+}
+
+// msgStructFromBytes copies a MessageStruct-sized slice into a C struct so the C
+// compiler owns the layout (no Go-side offset/padding assumptions).
+func msgStructFromBytes(msg []byte) C.MessageStruct {
+	var m C.MessageStruct
+	C.memcpy(unsafe.Pointer(&m), unsafe.Pointer(&msg[0]), C.size_t(unsafe.Sizeof(m)))
+	return m
+}
+
 // NodeMsgCmd peeks the MessageStruct.cmd of a NODE_TELEMETRY payload so the drain
 // can route provisioning frames (CMD_JOIN_REQUEST) away from the telemetry path.
 func NodeMsgCmd(payload []byte) (cmd uint8, ok bool) {
-	need := int(unsafe.Sizeof(C.MessageStruct{}))
-	if len(payload) < need {
+	_, msg, ok := splitNodeFrame(payload)
+	if !ok {
 		return 0, false
 	}
-	var m C.MessageStruct
-	C.memcpy(unsafe.Pointer(&m), unsafe.Pointer(&payload[0]), C.size_t(need))
+	m := msgStructFromBytes(msg)
 	return uint8(m.cmd), true
 }
 
 // NodeMsgId returns the MessageStruct.id (node source address) of a
 // NODE_TELEMETRY payload - used to demux a remove-confirmation by source address.
 func NodeMsgId(payload []byte) (id uint8, ok bool) {
-	need := int(unsafe.Sizeof(C.MessageStruct{}))
-	if len(payload) < need {
+	_, msg, ok := splitNodeFrame(payload)
+	if !ok {
 		return 0, false
 	}
-	var m C.MessageStruct
-	C.memcpy(unsafe.Pointer(&m), unsafe.Pointer(&payload[0]), C.size_t(need))
+	m := msgStructFromBytes(msg)
 	return uint8(m.id), true
 }
 
 // DecodeJoinRequest extracts a joining node's factory id + type from a
-// CMD_JOIN_REQUEST MessageStruct (id is ADDR_UNPROVISIONED on the wire).
+// CMD_JOIN_REQUEST MessageStruct (id is ADDR_UNPROVISIONED on the wire). The
+// factory id is read from the joinData payload (carried there since the node has no
+// address yet); on a v2 frame it also equals the frame-level factory_id.
 func DecodeJoinRequest(payload []byte) (factoryID [8]byte, nodeType uint8, ok bool) {
-	need := int(unsafe.Sizeof(C.MessageStruct{}))
-	if len(payload) < need {
+	_, msg, ok := splitNodeFrame(payload)
+	if !ok {
 		return factoryID, 0, false
 	}
-	var m C.MessageStruct
-	C.memcpy(unsafe.Pointer(&m), unsafe.Pointer(&payload[0]), C.size_t(need))
+	m := msgStructFromBytes(msg)
 	if uint8(m.cmd) != uint8(C.CMD_JOIN_REQUEST) {
 		return factoryID, 0, false
 	}
@@ -129,16 +158,16 @@ type NodeParam struct {
 	Num float64
 }
 
-// DecodeTelemetry parses a MSG_NODE_TELEMETRY payload (a wire MessageStruct) into
-// node id/type + a generic param list. ok=false if the payload is too short or
-// the node type is unknown (caller logs + skips).
-func DecodeTelemetry(payload []byte) (nodeID, nodeType uint8, params []NodeParam, ok bool) {
-	need := int(unsafe.Sizeof(C.MessageStruct{}))
-	if len(payload) < need {
-		return 0, 0, nil, false
+// DecodeTelemetry parses a MSG_NODE_TELEMETRY payload into node id/type + the frame
+// factory_id (all-zero for a legacy/sniff frame) + a generic param list. ok=false if
+// the payload is too short or the node type is unknown (caller logs + skips). The
+// frame factory_id lets the drain validate (addr, factory_id) against the binding.
+func DecodeTelemetry(payload []byte) (nodeID, nodeType uint8, factoryID [8]byte, params []NodeParam, ok bool) {
+	factoryID, msg, ok := splitNodeFrame(payload)
+	if !ok {
+		return 0, 0, factoryID, nil, false
 	}
-	var m C.MessageStruct
-	C.memcpy(unsafe.Pointer(&m), unsafe.Pointer(&payload[0]), C.size_t(need))
+	m := msgStructFromBytes(msg)
 
 	var d C.DecodedNode
 	C.msg_decode(&m, &d)
@@ -173,7 +202,7 @@ func DecodeTelemetry(payload []byte) (nodeID, nodeType uint8, params []NodeParam
 			{"acc_uah", float64(int32(d.acc_uah))},
 		}
 	default:
-		return nodeID, nodeType, nil, false
+		return nodeID, nodeType, factoryID, nil, false
 	}
-	return nodeID, nodeType, params, true
+	return nodeID, nodeType, factoryID, params, true
 }

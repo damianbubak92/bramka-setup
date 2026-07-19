@@ -785,16 +785,14 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 					break
 				}
 
-				nodeID, nodeType, params, ok := DecodeTelemetry(ev.Payload)
+				nodeID, nodeType, frameFactory, params, ok := DecodeTelemetry(ev.Payload)
 				if !ok {
 					log.Printf("[Serve] NODE_TELEMETRY undecodable (%d bytes)", len(ev.Payload))
 					break
 				}
 
 				// Lifecycle gate: only registered nodes are recorded; status drives the rest.
-				// factory_id/type from NodeStatus feed (addr,factory_id) validation once the
-				// wire contract lands (§12.2); for now only the status is consulted.
-				status, _, _, exists, err := store.NodeStatus(nodeID)
+				status, storedFactory, _, exists, err := store.NodeStatus(nodeID)
 				if err != nil {
 					log.Printf("[Serve] node status query failed (0x%02X): %v", nodeID, err)
 					break
@@ -802,6 +800,21 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 				if !exists {
 					log.Printf("[Serve] telemetry from unregistered node 0x%02X - ignoring (unprovisioned should be silent)", nodeID)
 					break
+				}
+
+				// Reactive identity check (§12.2): a v2 frame (non-zero factory_id) from a
+				// non-legacy node must match the binding. A mismatch = a stale/impersonating
+				// chip on a reused address -> tell it to unregister and drop the reading.
+				// Legacy sniff nodes and old 'D' frames (factory_id == 0) are exempt.
+				if status != "legacy" && frameFactory != ([8]byte{}) {
+					if bound, ok := factoryHexToBytes(storedFactory); ok && bound != frameFactory {
+						if err := p.SendUnregister(frameFactory, nodeType, nodeID); err != nil {
+							log.Printf("[Serve] node 0x%02X identity mismatch - SendUnregister failed: %v", nodeID, err)
+						} else {
+							log.Printf("[Serve] node 0x%02X identity mismatch (frame factory != binding) - sent UNREGISTERED, dropping reading", nodeID)
+						}
+						break
+					}
 				}
 
 				if err := store.RecordTelemetry(nodeID, nodeType, params, time.Now().Unix()); err != nil {

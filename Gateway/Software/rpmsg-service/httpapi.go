@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -77,9 +78,9 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, c
 
 	switch {
 	case strings.Contains(req, "command=PUMP_ON"):
-		respondPump(p, true, w, r)
+		respondPump(p, store, true, req, w, r)
 	case strings.Contains(req, "command=PUMP_OFF"):
-		respondPump(p, false, w, r)
+		respondPump(p, store, false, req, w, r)
 
 	case strings.Contains(req, "command=getrules"):
 		j, err := store.GetRulesJSON()
@@ -517,18 +518,48 @@ func handleRestoreNode(store *Store, cfg HTTPConfig, req string, w http.Response
 	log.Printf("[HTTP] restorenode %d -> detached (awaiting re-pair)", id)
 }
 
-func respondPump(p *Protocol, on bool, w http.ResponseWriter, r *http.Request) {
+func respondPump(p *Protocol, store *Store, on bool, req string, w http.ResponseWriter, r *http.Request) {
 	label := "PUMP_OFF"
 	if on {
 		label = "PUMP_ON"
 	}
-	if err := p.SendPump(on); err != nil {
+
+	var err error
+	target := "legacy 0xF1"
+	vals, _ := url.ParseQuery(req)
+	if addrStr := strings.TrimSpace(vals.Get("address")); addrStr != "" {
+		// Targeted (gen2): resolve the node's factory_id so the CC1310 sends a v2 'E'
+		// frame the node validates. Without it the node ignores the command.
+		addr64, perr := strconv.ParseUint(addrStr, 10, 8)
+		if perr != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, "bad address\n")
+			return
+		}
+		addr := uint8(addr64)
+		factory, _, ok, gerr := store.GetNode(addr)
+		if gerr != nil || !ok {
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, "no such node\n")
+			return
+		}
+		var fid [8]byte
+		if b, fok := factoryHexToBytes(factory); fok {
+			fid = b
+		}
+		err = p.SendPumpTo(addr, fid, on)
+		target = fmt.Sprintf("node 0x%02X", addr)
+	} else {
+		err = p.SendPump(on) // legacy gen1 solar (0xF1, 'D' frame)
+	}
+
+	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		io.WriteString(w, "ERR\n")
-		log.Printf("[HTTP] %s from %s FAILED: %v", label, r.RemoteAddr, err)
+		log.Printf("[HTTP] %s (%s) from %s FAILED: %v", label, target, r.RemoteAddr, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain")
 	io.WriteString(w, "OK\n")
-	log.Printf("[HTTP] %s from %s -> node (MSG_NODE_CMD ACKed)", label, r.RemoteAddr)
+	log.Printf("[HTTP] %s (%s) from %s -> node (MSG_NODE_CMD ACKed)", label, target, r.RemoteAddr)
 }

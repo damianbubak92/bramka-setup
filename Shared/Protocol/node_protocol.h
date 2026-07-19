@@ -41,7 +41,8 @@
 /* --- provisioning (gen2) --- */
 #define CMD_JOIN_REQUEST       4u  /* node->gw: src 0xFF, type=node type, payload.joinData       */
 #define CMD_JOIN_ACCEPT        5u  /* gw->node: dest 0xFF, payload.joinAcceptData (matched by factory_id) */
-#define CMD_REMOVE             6u  /* gw->node: dest = node addr, payload.joinData (factory_id); node erases its address -> unprovisioned (0xFF) */
+#define CMD_REMOVE             6u  /* gw->node: dest = node addr; node erases its address -> unprovisioned (0xFF). User-initiated (device removed from the app). */
+#define CMD_UNREGISTERED       7u  /* gw->node: dest = node addr; REACTIVE - the (addr, factory_id) in an uplink did not match the gateway's binding. Same node action as REMOVE (erase address, go silent); distinct code so the reason is visible (impersonation/stale chip vs. user delete). Node acts only if the frame factory_id == its own FCFG. */
 
 #define NODE_TEXT_MAX  30u  /* textData.text capacity (gen1) */
 #define NODE_FACTORY_ID_LEN 8u  /* CC1310 FCFG IEEE address, identifies a chip pre-provisioning */
@@ -60,6 +61,18 @@
 #define ADDR_UNPROVISIONED  0xFFu  /* a node with no assigned address yet (JOIN src/dest) */
 #define ADDR_POOL_FIRST     0x10u  /* first assignable node address           */
 #define ADDR_POOL_LAST      0xEFu  /* last  assignable node address (~224 nodes) */
+
+/* ========================================================================= *
+ * RF FRAME TAG (byte [1] of the over-the-air frame). Versions the wire so old
+ * and new nodes coexist without a flag day (Docs/NODE-MANAGEMENT.md §12.2):
+ *   'D' (legacy): [dest]['D'][src][MessageStruct:len][seq][crc8]        - no factory_id
+ *   'E' (v2):     [dest]['E'][src][factory_id:8][MessageStruct:len][seq][crc8]
+ * The gateway branches on this byte: 'D' -> factory_id = all-zero (unvalidated:
+ * gen1 sniff or a not-yet-upgraded node); 'E' -> the frame carries the chip id
+ * of the node it concerns (sender on uplink, target on downlink).
+ * ========================================================================= */
+#define RF_FRAME_TAG_LEGACY  'D'
+#define RF_FRAME_TAG_V2      'E'
 
 /* ========================================================================= *
  * MessageStruct - one node<->gateway message.
@@ -118,6 +131,25 @@ typedef struct {
         } textData;
     } payload;
 } MessageStruct;
+
+/* ========================================================================= *
+ * NodeFrame - the identity-tagged envelope that carries a MessageStruct across
+ * the internal links (CC1310 <-> M4F over SPI, M4F <-> A53 over RPMsg) once the
+ * RF frame has been de-framed. `factory_id` = the chip this frame concerns:
+ * the SENDER on uplink (which node reported), the TARGET on downlink (which node
+ * a command is for). All-zero = legacy/unknown (a gen1-sniff frame or an old 'D'
+ * node) -> the gateway does NOT validate or react. MessageStruct stays 44 B; the
+ * id travels here, alongside it, not inside it. 8 (align 1) + 44 (align 4) at
+ * offset 8 -> no padding, sizeof = 52.
+ * ========================================================================= */
+typedef struct {
+    uint8_t       factory_id[NODE_FACTORY_ID_LEN];  /* [0..7]  chip id, 0 = unknown/legacy */
+    MessageStruct msg;                              /* [8..51] the message */
+} NodeFrame;
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+_Static_assert(sizeof(NodeFrame) == 52, "NodeFrame must be 52 bytes (8 + 44)");
+#endif
 
 /* ========================================================================= *
  * NodesData - authoritative live snapshot held by the engine (M4F).

@@ -103,9 +103,18 @@ typedef struct {
     } payload;
 } MessageStruct;
 
+/* NodeFrame: chip identity + message. Mirrors Shared/Protocol/node_protocol.h
+ * (factory_id[8] + MessageStruct[44] = 52 B) so the SPI payload matches the M4F/Go
+ * side. factory_id all-zero => legacy/unknown -> the RF frame uses tag 'D' (no
+ * factory_id); a set factory_id -> tag 'E' (carries it). See Docs/NODE-MANAGEMENT §12.2. */
 typedef struct {
+    uint8_t       factory_id[8];
     MessageStruct message;
-    uint8_t retryCounter;
+} NodeFrame;
+
+typedef struct {
+    NodeFrame frame;
+    uint8_t   retryCounter;
 } RadioMessageStruct;
 
 
@@ -115,7 +124,7 @@ static uint8_t radioTaskStack[RADIO_TASK_STACK_SIZE];
 
 extern Display_Handle display;
 
-#define PAYLOAD_LENGTH         50
+#define PAYLOAD_LENGTH         64   /* was 50; gen2 'E' frames add factory_id[8] -> solar telemetry is 57 B */
 #define TX_DELAY             (uint32_t)(4000000*0.1f)
 #define NUM_DATA_ENTRIES       2
 #define NUM_APPENDED_BYTES     2
@@ -258,24 +267,33 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                 //while (mq_receive(radioQueue, (char *) &tempMsg, MAX_MSG_SIZE, NULL) != -1)
                 while (mq_receive(radioQueue, (char *) &job, MAX_MSG_SIZE, NULL) != -1)
                 {
-                    MessageStruct *tempMsg = &job.message;
-                    //Display_printf(display, 0, 0, "Id:%d NodeType:%d Cmd:%d Data:%d",tempMsg.id, tempMsg.type, tempMsg.cmd, tempMsg.payload.pumpData.pumpState);
+                    MessageStruct *tempMsg = &job.frame.message;
                     char frame[MAX_MSG_SIZE];
-                    frame[0] = tempMsg->id;   /* dest = node address from the message (was hardcoded 0xF1) - multi-node + JOIN_ACCEPT to 0xFF */
-                    frame[1] = 'D';
-                    frame[2] = CONCENTRATOR_ADDRESS;
-
-                    memcpy(&frame[3], tempMsg, tempMsg->length);
+                    uint8_t k, hasFactory = 0, hdr, seqIdx, crcIdx;
+                    for (k = 0; k < 8; k++) { if (job.frame.factory_id[k]) { hasFactory = 1; break; } }
+                    frame[0] = tempMsg->id;   /* dest = node address from the message (multi-node + JOIN_ACCEPT to 0xFF) */
+                    frame[2] = CONCENTRATOR_ADDRESS;   /* src = gateway 0x00 */
+                    if (hasFactory) {
+                        frame[1] = 'E';   /* v2: [dest][E][src][factory_id:8][msg][seq][crc] */
+                        memcpy(&frame[3], job.frame.factory_id, 8);
+                        hdr = 11;
+                    } else {
+                        frame[1] = 'D';   /* legacy: [dest][D][src][msg][seq][crc] */
+                        hdr = 3;
+                    }
+                    memcpy(&frame[hdr], tempMsg, tempMsg->length);
+                    seqIdx = hdr + tempMsg->length;
+                    crcIdx = seqIdx + 1;
                     txSequenceNumber = txSequenceNumber + 1;
-                    frame[tempMsg->length + 3] = txSequenceNumber;
-                    frame[tempMsg->length + 4] = calcChecksum(&frame[2], tempMsg->length + 2);
-
+                    frame[seqIdx] = txSequenceNumber;
+                    /* checksum over src + (factory_id) + msg + seq = (hdr-2)+length+1 bytes */
+                    frame[crcIdx] = calcChecksum(&frame[2], (hdr - 2) + tempMsg->length + 1);
 
                     uint8_t destAdress = frame[0];
-                    uint8_t expectedCRC = frame[tempMsg->length + 4];
+                    uint8_t expectedCRC = frame[crcIdx];
                     bool acked = false;
 
-                    RF_cmdPropTx.pktLen = tempMsg->length + 5;
+                    RF_cmdPropTx.pktLen = crcIdx + 1;
                     RF_cmdPropTx.pPkt = (uint8_t*)frame;
                     RF_cmdPropTx.startTrigger.triggerType = TRIG_NOW;
                     RF_cmdPropTx.startTrigger.pastTrig = 1;
@@ -311,7 +329,7 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                     if (!acked)
                     {
 
-                            Display_printf(display, 0, 0, "[Gateway RF TX] Sent Message Not ACKED: %02x|%d|%d", frame[0], frame[tempMsg->length + 3], frame[tempMsg->length + 4]);
+                            Display_printf(display, 0, 0, "[Gateway RF TX] Sent Message Not ACKED: %02x|%d|%d", frame[0], frame[seqIdx], frame[crcIdx]);
                             if (job.retryCounter <= MAX_RETRIES)
                             {
                                 job.retryCounter = job.retryCounter + 1;
@@ -322,7 +340,7 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                         }
                         else
                         {
-                            Display_printf(display, 0, 0, "[Gateway RF TX] Sent Message ACKED: %02x|%d|%d", frame[0], frame[tempMsg->length + 3], frame[tempMsg->length + 4]);
+                            Display_printf(display, 0, 0, "[Gateway RF TX] Sent Message ACKED: %02x|%d|%d", frame[0], frame[seqIdx], frame[crcIdx]);
                             Display_printf(display, 0, 0, "[Gateway RF TX] Received ACK: %02x|%c|%02x|%d", rxMsg[0], rxMsg[1], rxMsg[2], rxMsg[3]);
 
                         }
@@ -344,7 +362,7 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                     bool sniffGen1     = (rxMsg[0] == GEN1_CONCENTRATOR_ADDRESS);
                     if (addressedToUs || sniffGen1)
                     {
-                        if (rxMsg[1] == 'D' && rxMsg[packetLength-1] == calcChecksum(&rxMsg[2], packetLength - 3))
+                        if ((rxMsg[1] == 'D' || rxMsg[1] == 'E') && rxMsg[packetLength-1] == calcChecksum(&rxMsg[2], packetLength - 3))
                         {
                           if (addressedToUs)
                           {
@@ -375,13 +393,17 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                          //   memcpy(tempStr, &rxMsg[3], tempStrLen);
                          //   tempStr[tempStrLen] = '\0';
                             //size_t tempStrLen = strlen(&message[3])-2;
-                            MessageStruct receivedMessage;
-                            memcpy(&receivedMessage, &rxMsg[3], packetLength - 5);
-                         //   size_t tempStrLen = sizeof(receivedMessage.payload.textData);
-                         //   char tempStr[MAX_MSG_SIZE];
-                         //   memcpy(tempStr, &receivedMessage.payload.textData.text[0], tempStrLen);
-                         //   tempStr[tempStrLen] = '\0';
-                            mq_send(spiQueue, (char *) &receivedMessage, receivedMessage.length, 0);
+                            /* Extract the identity-tagged frame: 'E' carries factory_id
+                             * (msg at offset 11), 'D' is legacy (msg at offset 3, factory_id 0). */
+                            NodeFrame nf;
+                            memset(&nf, 0, sizeof(nf));
+                            if (rxMsg[1] == 'E' && packetLength >= 13) {
+                                memcpy(nf.factory_id, &rxMsg[3], 8);
+                                memcpy(&nf.message, &rxMsg[11], packetLength - 13);
+                            } else {
+                                memcpy(&nf.message, &rxMsg[3], packetLength - 5);
+                            }
+                            mq_send(spiQueue, (char *) &nf, sizeof(nf), 0);
                             Event_post(spiMasterEventHandle, SEND_DATA_TO_SLAVE);
 
                             if (sniffGen1)

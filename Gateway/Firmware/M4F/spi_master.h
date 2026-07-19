@@ -23,10 +23,15 @@
  * Drivers_open(). */
 void spi_master_init(QueueHandle_t nodeInQueue);
 
-/* Queue a command MessageStruct to send to a node over SPI (FRAME_NODE_CMD).
- * Non-blocking; returns false if the out queue is full. Called from the comms
- * task (nodeTxSink). */
-bool spi_master_post_cmd(const MessageStruct *msg);
+/* Queue a command to send to a node over SPI (FRAME_NODE_CMD). The NodeFrame
+ * carries the target chip's factory_id + the MessageStruct (a zero factory_id =>
+ * the CC1310 emits a legacy 'D' frame). Non-blocking; returns false if the out
+ * queue is full. Called from the comms task (nodeTxSink). */
+bool spi_master_post_cmd(const NodeFrame *frame);
+
+/* Minimum free stack (words) the SPI task ever had - 0 if not started. A value
+ * trending toward 0 is an overflow risk (diagnostic for the intermittent hang). */
+uint32_t spi_master_stack_hwm(void);
 
 /* Graceful shutdown: wake the SPI task so it exits promptly (it tears down the
  * SLAVE_READY GPIO-IRQ - HwiP + bank intr + Sciclient introuter route - on exit),
