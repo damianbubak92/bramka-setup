@@ -1,9 +1,12 @@
 <?php
-// gw-restore.php - a fresh gateway pulls the whole mirror here to rebuild itself
-// after a hardware failure (registered nodes, rules, current state, solar history).
-// GET gw-restore.php?key=<secret> -> {config:[...], node:[...], node_param:[...],
-//   solar_hourly:[...], solar_daily:[...], solar_monthly:[...]}.
-// Read-only, key-gated. Deploy on the gen2 server DB. FILL IN creds; do NOT commit them.
+// gw-restore.php - the gateway pulls state back from the mirror. Three modes:
+//   (default)          full rebuild after a hardware failure - LIVE nodes only
+//                      (trash is skipped), plus rules + current state + solar history.
+//   ?archived=1        the trash: soft-deleted nodes (archived_at set), row only,
+//                      newest first - for the app's "Kosz" screen.
+//   ?node_id=<id>      one node + its full history - for restoring a single node
+//                      from the trash (brought back as `detached` on the gateway).
+// GET, key-gated, read-only. Deploy on the gen2 server DB. Creds in secrets.php.
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -24,33 +27,87 @@ if ($conn->connect_error) {
     exit;
 }
 
-$tables = [
-  'config'        => 'gw_config',
-  'node'          => 'gw_node',
+// mysqli returns every column as a string; cast the numeric ones back to numbers so
+// the gateway decodes them into typed fields. Text columns stay strings.
+function castRow(array $r): array {
+    static $text = ['name'=>1,'room'=>1,'value'=>1,'factory_id'=>1,'status'=>1,'param_key'=>1,'key'=>1];
+    foreach ($r as $k => $v) {
+        if ($v !== null && !isset($text[$k])) {
+            $r[$k] = is_numeric($v) ? (0 + $v) : $v;
+        }
+    }
+    return $r;
+}
+
+$historyTables = [
   'node_param'    => 'gw_node_param',
   'solar_hourly'  => 'gw_solar_hourly',
   'solar_daily'   => 'gw_solar_daily',
   'solar_monthly' => 'gw_solar_monthly',
 ];
 
-$out = [];
-foreach ($tables as $key => $table) {
+// ---- mode: trash listing (archived nodes) ----
+if (isset($_GET['archived'])) {
     $rows = [];
-    if ($res = $conn->query("SELECT * FROM $table")) {
-        while ($r = $res->fetch_assoc()) {
-            // numeric columns come back as strings from mysqli; cast the known ones
-            foreach ($r as $k => $v) {
-                if ($v !== null && $k !== 'name' && $k !== 'room' && $k !== 'value'
-                    && $k !== 'factory_id' && $k !== 'status' && $k !== 'param_key' && $k !== 'key') {
-                    $r[$k] = is_numeric($v) ? (0 + $v) : $v;
-                }
-            }
-            $rows[] = $r;
+    if ($res = $conn->query("SELECT * FROM gw_node WHERE archived_at IS NOT NULL ORDER BY archived_at DESC")) {
+        while ($r = $res->fetch_assoc()) { $rows[] = castRow($r); }
+        $res->free();
+    }
+    $conn->close();
+    echo json_encode(['node' => $rows]);
+    exit;
+}
+
+// ---- mode: single node + its history (restore one from trash) ----
+if (isset($_GET['node_id'])) {
+    $nid = (int)$_GET['node_id'];
+    $out = ['node' => []];
+    if ($s = $conn->prepare("SELECT * FROM gw_node WHERE node_id = ?")) {
+        $s->bind_param('i', $nid); $s->execute();
+        $res = $s->get_result();
+        while ($r = $res->fetch_assoc()) { $out['node'][] = castRow($r); }
+        $s->close();
+    }
+    foreach ($historyTables as $key => $table) {
+        $rows = [];
+        if ($s = $conn->prepare("SELECT * FROM $table WHERE node_id = ?")) {
+            $s->bind_param('i', $nid); $s->execute();
+            $res = $s->get_result();
+            while ($r = $res->fetch_assoc()) { $rows[] = castRow($r); }
+            $s->close();
         }
+        $out[$key] = $rows;
+    }
+    $conn->close();
+    echo json_encode($out);
+    exit;
+}
+
+// ---- mode: full restore (LIVE nodes only - trash is skipped) ----
+$out = [];
+// config is not node-scoped.
+$rows = [];
+if ($res = $conn->query("SELECT * FROM gw_config")) {
+    while ($r = $res->fetch_assoc()) { $rows[] = castRow($r); }
+    $res->free();
+}
+$out['config'] = $rows;
+// live nodes
+$rows = [];
+if ($res = $conn->query("SELECT * FROM gw_node WHERE archived_at IS NULL")) {
+    while ($r = $res->fetch_assoc()) { $rows[] = castRow($r); }
+    $res->free();
+}
+$out['node'] = $rows;
+// their history only (a trashed node's history is not restored into a live gateway)
+foreach ($historyTables as $key => $table) {
+    $rows = [];
+    if ($res = $conn->query(
+        "SELECT * FROM $table WHERE node_id IN (SELECT node_id FROM gw_node WHERE archived_at IS NULL)")) {
+        while ($r = $res->fetch_assoc()) { $rows[] = castRow($r); }
         $res->free();
     }
     $out[$key] = $rows;
 }
 $conn->close();
-
 echo json_encode($out);

@@ -26,6 +26,12 @@ type HTTPConfig struct {
 	// DBMonitor serves the dev DB monitor at /db (whole database + SQL console).
 	// Must be OFF in production - see dbmonitor.go.
 	DBMonitor bool
+	// Restore endpoint (gw-restore.php) for the trash: listtrash + restorenode read
+	// the mirror through it. Empty (serve started without -restore-url) => those two
+	// commands return "not configured" and everything else is unaffected.
+	RestoreURL      string
+	RestoreKey      string
+	RestoreInsecure bool
 }
 
 // StartHTTPAPI runs the phone-facing HTTPS API and blocks. Replicates the gen1
@@ -113,6 +119,12 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, c
 
 	case strings.Contains(req, "command=removenode"):
 		handleRemoveNode(p, store, hub, req, w, r)
+
+	case strings.Contains(req, "command=listtrash"):
+		handleListTrash(store, cfg, w, r)
+
+	case strings.Contains(req, "command=restorenode"):
+		handleRestoreNode(store, cfg, req, w, r)
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -446,6 +458,63 @@ func handleRemoveNode(p *Protocol, store *Store, hub *WSHub, req string, w http.
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"address": addr, "status": "removed"})
 	log.Printf("[HTTP] removenode 0x%02X (factory %s) -> deleted (address freed, mirror archived)", addr, factory)
+}
+
+// handleListTrash returns the soft-deleted nodes (trash) from the mirror as a JSON
+// array, so the app can offer restore within the retention window. Request:
+// "command=listtrash". Needs the restore endpoint configured (serve -restore-url).
+func handleListTrash(store *Store, cfg HTTPConfig, w http.ResponseWriter, r *http.Request) {
+	if cfg.RestoreURL == "" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "restore endpoint not configured\n")
+		log.Printf("[HTTP] listtrash: no -restore-url configured")
+		return
+	}
+	list, err := store.ListArchivedNodes(cfg.RestoreURL, cfg.RestoreKey, cfg.RestoreInsecure)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, "mirror unreachable\n")
+		log.Printf("[HTTP] listtrash failed: %v", err)
+		return
+	}
+	b, err := json.Marshal(list)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "marshal error\n")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+	log.Printf("[HTTP] listtrash -> %d archived", len(list))
+}
+
+// handleRestoreNode brings one node back from the mirror trash as `detached` (keeps
+// its stable id + history, awaits re-pair). Request: "command=restorenode&id=<node_id>".
+// The app refreshes its device list after the call (the restored node reappears there
+// awaiting a chip). Needs the restore endpoint configured (serve -restore-url).
+func handleRestoreNode(store *Store, cfg HTTPConfig, req string, w http.ResponseWriter, r *http.Request) {
+	if cfg.RestoreURL == "" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "restore endpoint not configured\n")
+		log.Printf("[HTTP] restorenode: no -restore-url configured")
+		return
+	}
+	vals, _ := url.ParseQuery(req)
+	id, err := strconv.ParseInt(strings.TrimSpace(vals.Get("id")), 10, 64)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "bad id\n")
+		return
+	}
+	if err := store.RestoreNodeFromMirror(cfg.RestoreURL, cfg.RestoreKey, cfg.RestoreInsecure, id); err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, "restore failed\n")
+		log.Printf("[HTTP] restorenode %d failed: %v", id, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"id": id, "status": "detached"})
+	log.Printf("[HTTP] restorenode %d -> detached (awaiting re-pair)", id)
 }
 
 func respondPump(p *Protocol, on bool, w http.ResponseWriter, r *http.Request) {

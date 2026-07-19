@@ -53,7 +53,8 @@ func main() {
 		Insecure: *backupInsecure, Interval: 15 * time.Second}
 
 	httpCfg := HTTPConfig{Addr: *httpAddr, CertFile: *tlsCert, KeyFile: *tlsKey,
-		AuthToken: *authToken, DBMonitor: *dbMonitor}
+		AuthToken: *authToken, DBMonitor: *dbMonitor,
+		RestoreURL: *restoreURL, RestoreKey: *backupKey, RestoreInsecure: *backupInsecure}
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("=== rpmsg-service starting (test mode: %s, heartbeat idle: %dms) ===",

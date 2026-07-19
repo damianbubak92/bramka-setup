@@ -388,3 +388,153 @@ func joinStrings(parts []string, sep string) string {
 	}
 	return out
 }
+
+// ---- trash (restore one node) ----
+
+// ArchivedNode is one soft-deleted node in the mirror's trash (the app's "Kosz").
+type ArchivedNode struct {
+	NodeID     int64  `json:"id"`
+	Type       int    `json:"type"`
+	Name       string `json:"name"`
+	Room       string `json:"room"`
+	LastSeen   int64  `json:"lastSeen"`
+	ArchivedAt int64  `json:"archivedAt"` // unix s the node went to the trash
+}
+
+// ListArchivedNodes pulls the trash (soft-deleted nodes) from the mirror so the app
+// can offer restore within the retention window. Newest-deleted first.
+func (s *Store) ListArchivedNodes(restoreURL, key string, insecure bool) ([]ArchivedNode, error) {
+	client := httpClient(insecure)
+	resp, err := client.Get(restoreURL + "?key=" + key + "&archived=1")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("listtrash HTTP %d: %s", resp.StatusCode, b)
+	}
+	var dump struct {
+		Node []map[string]any `json:"node"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&dump); err != nil {
+		return nil, fmt.Errorf("decode listtrash: %w", err)
+	}
+	out := make([]ArchivedNode, 0, len(dump.Node))
+	for _, r := range dump.Node {
+		out = append(out, ArchivedNode{
+			NodeID:     asInt64(r["node_id"]),
+			Type:       int(asInt64(r["node_type"])),
+			Name:       asString(r["name"]),
+			Room:       asString(r["room"]),
+			LastSeen:   asInt64(r["last_seen"]),
+			ArchivedAt: asInt64(r["archived_at"]),
+		})
+	}
+	return out, nil
+}
+
+// RestoreNodeFromMirror brings one soft-deleted node back from the trash: pulls its
+// row + full history from the mirror and re-inserts locally as `detached` (address and
+// factory_id cleared - it keeps its stable id and all history, and awaits re-pairing
+// to a chip, §6.4). The local insert's triggers re-push the node with archived_at=NULL,
+// which un-archives it on the mirror (self-healing, no separate op).
+func (s *Store) RestoreNodeFromMirror(restoreURL, key string, insecure bool, id int64) error {
+	client := httpClient(insecure)
+	resp, err := client.Get(fmt.Sprintf("%s?key=%s&node_id=%d", restoreURL, key, id))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("restore node HTTP %d: %s", resp.StatusCode, b)
+	}
+	var dump mirrorDump
+	if err := json.NewDecoder(resp.Body).Decode(&dump); err != nil {
+		return fmt.Errorf("decode restore node: %w", err)
+	}
+	if len(dump.Node) == 0 {
+		return fmt.Errorf("node %d not in mirror trash", id)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Node row: keep identity + labels, but force detached (no address/chip yet).
+	n := dump.Node[0]
+	if _, err := tx.Exec(
+		`INSERT OR REPLACE INTO node
+		     (node_id, address, factory_id, node_type, name, room, status, provisioned_at, last_seen)
+		 VALUES (?, NULL, NULL, ?, ?, ?, 'detached', ?, ?)`,
+		id, asInt64(n["node_type"]), asString(n["name"]), asString(n["room"]),
+		asInt64(n["provisioned_at"]), asInt64(n["last_seen"])); err != nil {
+		return fmt.Errorf("restore node row: %w", err)
+	}
+
+	// History under the same node_id (idempotent - INSERT OR REPLACE).
+	tabs := []struct {
+		table string
+		cols  []string
+		rows  []map[string]any
+	}{
+		{"node_param", []string{"node_id", "param_key", "value_num", "ts"}, dump.NodeParam},
+		{"solar_hourly", []string{"node_id", "bucket", "hour_yield", "hour_pump", "day_yield", "day_pump"}, dump.SolarHourly},
+		{"solar_daily", []string{"node_id", "bucket", "day_yield", "month_yield", "month_pump"}, dump.SolarDaily},
+		{"solar_monthly", []string{"node_id", "bucket", "month_yield", "year_yield", "year_pump"}, dump.SolarMonthly},
+	}
+	total := 0
+	for _, t := range tabs {
+		if len(t.rows) == 0 {
+			continue
+		}
+		ph := make([]string, len(t.cols))
+		for i := range ph {
+			ph[i] = "?"
+		}
+		stmt, err := tx.Prepare("INSERT OR REPLACE INTO " + t.table +
+			" (" + joinStrings(t.cols, ",") + ") VALUES (" + joinStrings(ph, ",") + ")")
+		if err != nil {
+			return err
+		}
+		for _, row := range t.rows {
+			args := make([]any, len(t.cols))
+			for i, c := range t.cols {
+				args[i] = row[c]
+			}
+			if _, err := stmt.Exec(args...); err != nil {
+				stmt.Close()
+				return fmt.Errorf("restore %s: %w", t.table, err)
+			}
+			total++
+		}
+		stmt.Close()
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("[Restore] node %d back from trash as detached (%d history row(s))", id, total)
+	return nil
+}
+
+// asInt64/asString read a value out of a decoded JSON object (numbers arrive as
+// float64). Best-effort: a missing/mistyped field yields the zero value.
+func asInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	}
+	return 0
+}
+
+func asString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
