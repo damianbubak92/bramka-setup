@@ -141,6 +141,9 @@ Cztery scenariusze awarii, każdy ma jasnego ownera detekcji i akcji:
 - **NEVER** crash tests w `ExecStart` (`-test crash-m4f`, `-test silent-hang`, `-test hang`)
 - Production default: `-test hello` lub prawdziwy service mode
 - Crash tests są **interactive only**: `ssh -t ... ad-hoc -test X`
+- **serve MUSI paść głośno** gdy brak bazy/krytycznego zasobu (`log.Fatalf`, nie `Printf`+`return`) — inaczej transport
+  żyje, systemd widzi `active`, a HTTP/WS nie stoi (serwis „udaje zdrowego"). Baza: unit ma `ExecStartPre=+... chown -R
+  bramka:bramka /var/lib/bramka` (self-heal po interaktywnym root-serve). [[gateway-db-ownership-trap]]
 
 ### Filesystem & power
 - Consumer SD cards (GOODRAM, ogólne) **NIE NADAJĄ się** do dev pracy z crash testami
@@ -418,6 +421,30 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-07-19 (późna noc) — serve przestał udawać zdrowego + self-heal własności bazy + wyścig udev ✅
+- **Objaw**: po nocnym reboocie apka same „kreski" i DB monitor rozłączony, ale `systemctl is-active`=**active running**.
+  Serwer HTTP/WS na `:9443` w ogóle nie słuchał (`NO-LISTENER-9443`).
+- **🔑 ROOT CAUSE — serve maskował awarię bazy jako „zdrowy"**: `runServe` na błędzie `OpenStore` robił
+  `log.Printf` + **`return`**, ale transport/protokół/heartbeat/kicker-watchdoga (odpalone wcześniej w `main()`) żyły dalej
+  → systemd widział `active`, watchdog kopany, a **HTTP/DB nigdy nie wstały**. W journalu jedyny ślad:
+  `[Serve] open DB ... failed: init node schema: attempt to write a readonly database`.
+- **Dlaczego baza readonly**: user `bramka` nie mógł pisać — baza (a właściwie `bramka.db-wal`/`-shm` i/lub katalog)
+  wróciły na własność **root** po interaktywnym `serve`/imporcie odpalonym jako root. SQLite WAL musi móc tworzyć `-wal`/`-shm`
+  **w katalogu** → root-owned katalog/pliki = „readonly database" nawet gdy sam `.db` jest bramki.
+- **Fix natychmiastowy (na żywo, bez rebuildu)**: `chown -R bramka:bramka /var/lib/bramka` → restart → journal pokazał
+  `[HTTP] phone API listening on :9443` + `[DBMON] enabled` + `[WS] client connected`. Apka wróciła.
+- **3 UTWARDZENIA (w repo, czekają na wdrożenie):**
+  1. **`runServe`: `log.Printf`+`return` → `log.Fatalf`** (`main.go`) — brak bazy = proces pada z kodem ≠0 → systemd
+     restartuje, a przy realnej awarii wpada w `StartLimitBurst` → `failed`. **Serwis nie udaje już zdrowego.** (`Deploy-Go`)
+  2. **Self-heal własności bazy w unicie** (`Gateway/Setup/systemd/rpmsg-service.service`):
+     `ExecStartPre=+/bin/sh -c 'chown -R bramka:bramka /var/lib/bramka'` — `+` = jako root mimo `User=bramka` i poza
+     sandboxem. Każdy start sam naprawia własność → interaktywny root-serve już nie rozłoży produkcji. (`Install-GoService`)
+  3. **Wyścig udev na `/dev/rpmsg0`** (`transport.go`): przy cold-boocie chrdev pojawiał się chwilę przed nadaniem grupy
+     `bramka` przez udev → pierwszy start padał `permission denied` (zjadał 1 z 3 `StartLimitBurst`). Nowe
+     `openWhenPermitted` retryuje open na `EACCES` przez `permWaitTimeout=5s` (device-wait 20s + to = pod `TimeoutStartSec=30s`);
+     błędy inne niż permission wychodzą od razu. (`Deploy-Go`)
+- **Wdrożenie**: kod (1+3) = `Deploy-Go`; unit (2) = `Install-GoService -ServiceName rpmsg-service`. [[gateway-db-ownership-trap]]
 
 ### 2026-07-19 (wieczór/noc) — §12.2 factory_id w ramce + gen2 solar node + M4F SILENT HANG ROZWIĄZANY ✅✅
 - **§12.2 (commit `5803c01`, pushed) — ZWERYFIKOWANE E2E NA REALNYM SOLAR NODZIE.** factory_id[8] w kopercie `NodeFrame`

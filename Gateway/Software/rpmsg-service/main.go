@@ -705,8 +705,10 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 	// loc drives the solar daily-accumulation reset boundary.
 	store, err := OpenStore(dbPath, loc)
 	if err != nil {
-		log.Printf("[Serve] open DB %s failed: %v", dbPath, err)
-		return
+		// Fail loud: without the DB there is no HTTP/WS API, so exiting non-zero lets
+		// systemd restart (and, on a real fault like a root-owned DB, hit StartLimit
+		// -> failed) instead of masquerading as "active" with transport up but no server.
+		log.Fatalf("[Serve] open DB %s failed: %v", dbPath, err)
 	}
 	defer store.Close()
 	log.Printf("[Serve] rules DB: %s", dbPath)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,12 @@ const (
 	// TimeoutStartSec=30s (READY=1 is sent right after OpenTransport).
 	deviceWaitTimeout  = 20 * time.Second
 	deviceWaitInterval = 500 * time.Millisecond
+
+	// Cold-boot udev race: the chrdev node can appear a beat before udev applies
+	// the group (bramka) that grants the service access. Retry the open on EACCES
+	// for a short window instead of exiting (which burns a StartLimit restart every
+	// cold boot). Kept small so device-wait + this stay under TimeoutStartSec=30s.
+	permWaitTimeout = 5 * time.Second
 )
 
 // Transport encapsulates RPMsg device access.
@@ -49,7 +56,7 @@ func OpenTransport() (*Transport, error) {
 		return nil, err
 	}
 
-	f, err := os.OpenFile(devPath, os.O_RDWR, 0)
+	f, err := openWhenPermitted(devPath, permWaitTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", devPath, err)
 	}
@@ -187,6 +194,33 @@ func waitForM4FChrdev(timeout time.Duration) (string, error) {
 		}
 		if attempt == 0 {
 			log.Printf("[Transport] M4F rpmsg device not ready, waiting up to %v...", timeout)
+		}
+		attempt++
+		time.Sleep(deviceWaitInterval)
+	}
+}
+
+// openWhenPermitted opens devPath O_RDWR, retrying on permission-denied until the
+// udev rule granting the service group has applied (or timeout). Non-permission
+// errors return immediately — only the cold-boot udev group race is absorbed.
+func openWhenPermitted(devPath string, timeout time.Duration) (*os.File, error) {
+	deadline := time.Now().Add(timeout)
+	attempt := 0
+	for {
+		f, err := os.OpenFile(devPath, os.O_RDWR, 0)
+		if err == nil {
+			if attempt > 0 {
+				log.Printf("[Transport] %s became accessible after %v",
+					devPath, time.Duration(attempt)*deviceWaitInterval)
+			}
+			return f, nil
+		}
+		if !errors.Is(err, os.ErrPermission) || time.Now().After(deadline) {
+			return nil, err
+		}
+		if attempt == 0 {
+			log.Printf("[Transport] %s not yet accessible (udev group race), waiting up to %v...",
+				devPath, timeout)
 		}
 		attempt++
 		time.Sleep(deviceWaitInterval)

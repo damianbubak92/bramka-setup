@@ -23,6 +23,11 @@ Type=notify
 #   RESTORE_URL=http://iot.aitronic.pl/gw-restore.php
 #   BACKUP_KEY=<secret>
 EnvironmentFile=-/etc/bramka/rpmsg.env
+# Self-heal DB ownership before start. If serve/import/restore was ever run
+# interactively as root, SQLite's -wal/-shm (or the dir) flip to root and the
+# bramka user then hits "attempt to write a readonly database" -> no HTTP/WS API.
+# '+' runs as root (bypassing User=bramka + sandbox) so this can chown. Idempotent.
+ExecStartPre=+/bin/sh -c 'chown -R bramka:bramka /var/lib/bramka'
 ExecStart=/opt/bramka/rpmsg-service/rpmsg-service -test serve -db /var/lib/bramka/bramka.db -backup-url=${BACKUP_URL} -restore-url=${RESTORE_URL} -backup-key=${BACKUP_KEY}
 WorkingDirectory=/opt/bramka/rpmsg-service
 
