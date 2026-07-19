@@ -13,7 +13,17 @@ StartLimitIntervalSec=60
 
 [Service]
 Type=notify
-ExecStart=/opt/bramka/rpmsg-service/rpmsg-service -test hello
+# Production service mode: serve (phone HTTPS API + WS + engine time-sync + rule push
+# + node telemetry -> DB + recovery). NOT a crash test despite the -test flag name.
+# Backup/restore endpoint URLs + key come from /etc/bramka/rpmsg.env (gitignored -
+# NEVER put the key in this unit, it is committed). The `-` makes the file optional;
+# the -flag=${VAR} form is empty-safe (missing file -> backup simply disabled, serve
+# still runs). Create the file on the gateway (root:bramka 0640):
+#   BACKUP_URL=http://iot.aitronic.pl/gw-backup.php
+#   RESTORE_URL=http://iot.aitronic.pl/gw-restore.php
+#   BACKUP_KEY=<secret>
+EnvironmentFile=-/etc/bramka/rpmsg.env
+ExecStart=/opt/bramka/rpmsg-service/rpmsg-service -test serve -db /var/lib/bramka/bramka.db -backup-url=${BACKUP_URL} -restore-url=${RESTORE_URL} -backup-key=${BACKUP_KEY}
 WorkingDirectory=/opt/bramka/rpmsg-service
 
 # === NON-ROOT (least privilege) ===
