@@ -8,14 +8,18 @@ import kotlinx.serialization.Serializable
  * na brakującym kluczu.
  */
 
-/** command=listnodes → [{address,type,name,factory,status,lastSeen,provisionedAt}] */
+/** command=listnodes → [{id,address,type,name,factory,status,lastSeen,provisionedAt,room}] */
 @Serializable
 data class NodeInfoDto(
+    /** Stała tożsamość logiczna (AUTOINCREMENT) — kotwica historii/reguł, przeżywa
+     * zmianę adresu/chipa. Klucz urządzenia w apce. */
+    val id: Long = 0,
+    /** Adres RF (reużywalny, 0 gdy detached/odłączony). Do komend (pompa) i replace. */
     val address: Int = 0,
     val type: Int = 0,
     val name: String = "",
     val factory: String = "",
-    val status: String = "active", // pending_join | active | pending_remove
+    val status: String = "active", // pending_join | active | detached | legacy
     val lastSeen: Long = 0,
     val provisionedAt: Long = 0,
     /** Grupowanie w apce; "" = Bez pokoju. Etykieta — node o pokoju nic nie wie. */
@@ -82,6 +86,34 @@ data class ApproveResultDto(
     val factory: String = "",
     val name: String = "",
     val type: Int = 0,
+)
+
+/** command=replacenode&factory=<hex>&target=<addr> → {factory,type,address,replaced} */
+@Serializable
+data class ReplaceResultDto(
+    val factory: String = "",
+    val type: Int = 0,
+    val address: Int = 0,
+    val replaced: Boolean = false,
+)
+
+/** command=listtrash → [{id,type,name,room,lastSeen,archivedAt}] — soft-usunięte nody
+ * (kosz), okno retencji 60 dni. */
+@Serializable
+data class TrashNodeDto(
+    val id: Long = 0,
+    val type: Int = 0,
+    val name: String = "",
+    val room: String = "",
+    val lastSeen: Long = 0,
+    val archivedAt: Long = 0,   // unix s — kiedy trafił do kosza
+)
+
+/** command=restorenode&id=<id> → {id,status} (status = "detached"). */
+@Serializable
+data class RestoreResultDto(
+    val id: Long = 0,
+    val status: String = "",
 )
 
 /** Zdarzenia z kanału WS (wshub.go: join_pending / telemetry / node_status). */

@@ -19,6 +19,8 @@ data class GatewayState(
     val source: GatewaySource = GatewaySource.Offline,
     val nodes: List<NodeInfoDto> = emptyList(),
     val joins: List<PendingJoinDto> = emptyList(),
+    /** Kosz — soft-usunięte nody. Ładowany na żądanie (loadTrash), nie live. */
+    val trash: List<TrashNodeDto> = emptyList(),
     /** address -> ostatnia telemetria */
     val telemetry: Map<Int, NodeTelemetry> = emptyMap(),
     /**
@@ -146,6 +148,48 @@ class GatewayStore(
 
     suspend fun updateNode(address: Int, name: String, room: String): Result<Unit> = runCatching {
         if (!client.updateNode(address, name, room)) error("Bramka odrzuciła zmianę")
+        refresh()
+    }
+
+    /** Wymień chip pod istniejącym AKTYWNYM nodem (nowy chip przejmuje adres target,
+     * historia zostaje). factoryHex = chip który właśnie dołączył (pending). newName
+     * pusty = zachowaj starą nazwę; podany = przemianuj (pokój zachowany). */
+    suspend fun replaceNode(factoryHex: String, targetAddress: Int, newName: String = ""): Result<ReplaceResultDto> = runCatching {
+        val r = client.replaceNode(factoryHex, targetAddress)
+        if (newName.isNotBlank()) {
+            val room = _state.value.nodes.firstOrNull { it.address == targetAddress }?.room ?: ""
+            client.updateNode(targetAddress, newName, room)
+        }
+        _state.update { s -> s.copy(joins = s.joins.filterNot { it.factory == factoryHex }) }
+        refresh()
+        r
+    }
+
+    /** Re-paruj świeży chip na node DETACHED (z kosza): bramka alokuje nowy adres i
+     * przypina go do node_id → historia wraca. newName jak w [replaceNode]. */
+    suspend fun repairNode(factoryHex: String, nodeId: Long, newName: String = ""): Result<ReplaceResultDto> = runCatching {
+        val r = client.repairNode(factoryHex, nodeId)
+        if (newName.isNotBlank() && r.address > 0) {
+            val room = _state.value.nodes.firstOrNull { it.id == nodeId }?.room ?: ""
+            client.updateNode(r.address, newName, room)
+        }
+        _state.update { s -> s.copy(joins = s.joins.filterNot { it.factory == factoryHex }) }
+        refresh()
+        r
+    }
+
+    /** Załaduj kosz (soft-usunięte nody) do stanu — na otwarcie ekranu Kosz. */
+    suspend fun loadTrash(): Result<Unit> = runCatching {
+        val t = client.listTrash()
+        _state.update { s -> s.copy(trash = t) }
+    }
+
+    /** Przywróć noda z kosza → wraca jako `detached`. Usuwamy z kosza OPTYMISTYCZNIE
+     * (mirror od-archiwizowuje z opóźnieniem workera ~15s, więc od-pytanie by go jeszcze
+     * pokazało), a listę nodów odświeżamy. */
+    suspend fun restoreNode(id: Long): Result<Unit> = runCatching {
+        client.restoreNode(id)
+        _state.update { s -> s.copy(trash = s.trash.filterNot { it.id == id }) }
         refresh()
     }
 

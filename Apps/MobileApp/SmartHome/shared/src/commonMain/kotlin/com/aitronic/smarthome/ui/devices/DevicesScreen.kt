@@ -52,6 +52,9 @@ private fun deviceIcon(type: String): ImageVector = when (type) {
 
 private data class DevDraft(val id: Long?, val name: String, val type: String, val room: String, val joining: Boolean)
 private data class ConfirmReq(val title: String, val msg: String, val onOk: () -> Unit)
+/** Kandydat do "Wymień istniejące" — node tego samego typu. Aktywny (przez adres,
+ * `replacenode`) albo detached z kosza (przez node_id, `repairnode` → odzysk historii). */
+private data class ReplaceTarget(val nodeId: Long, val address: Int, val name: String, val detached: Boolean)
 
 /**
  * Urządzenia = **nody zarejestrowane w bramce** (`command=listnodes` → tabela `node`).
@@ -88,18 +91,42 @@ fun DevicesRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
     var confirm by remember { mutableStateOf<ConfirmReq?>(null) }
     var roomPicker by remember { mutableStateOf(false) }
     var newRoom by remember { mutableStateOf("") }
+    var showJoin by remember { mutableStateOf(false) }
+    var showTrash by remember { mutableStateOf(false) }
+    var replacePick by remember { mutableStateOf(false) }
+    var replaceName by remember { mutableStateOf("") }
+    var notice by remember { mutableStateOf<String?>(null) }
+    // Błąd z bramki niesie tekst w treści; obcinamy prefiks "HTTP 400: " dla czytelności.
+    fun fail(t: Throwable) { notice = t.message?.substringAfter(": ")?.ifBlank { null } ?: "Operacja nie powiodła się" }
+
+    // Pierwszy oczekujący JOIN + zgodne cele wymiany: aktywne nody tego samego typu
+    // (replace po adresie) oraz detached z kosza (repair po node_id — odzysk historii).
+    val joinCtx = gw?.joins?.firstOrNull()
+    val nowS = gw?.telemetry?.values?.maxOfOrNull { it.ts } ?: 0L
+    val replaceTargets = remember(gw?.nodes, joinCtx?.type) {
+        gw?.nodes.orEmpty()
+            .filter { it.type == (joinCtx?.type ?: -1) && (it.status == "active" && it.address > 0 || it.status == "detached") }
+            .map { ReplaceTarget(it.id, it.address, it.name.ifBlank { NodeTypes.label(it.type) }, detached = it.status == "detached") }
+    }
 
     Box(Modifier.fillMaxSize().background(Sh.bg)) {
-        if (editing == null) {
+        if (showTrash) {
+            TrashScreen(
+                items = gw?.trash ?: emptyList(), nowS = nowS,
+                onBack = { showTrash = false },
+                onRestore = { t -> scope.launch { store?.restoreNode(t.id) } },
+            )
+        } else if (editing == null) {
             DevList(
                 devices = devices, rooms = allRooms, typeNames = typeNames, filter = filter,
                 onFilter = { filter = it },
                 pending = gw?.joins?.size ?: 0,
                 onJoin = {
                     // Prawdziwy JOIN: node zgłasza się sam (bramka wypycha join_pending po WS).
-                    // Tu tylko odświeżamy listę oczekujących.
                     scope.launch { store?.refresh() }
+                    if (gw?.joins?.isNotEmpty() == true) showJoin = true
                 },
+                onTrash = { scope.launch { store?.loadTrash() }; showTrash = true },
                 onOpen = { d -> editing = DevDraft(d.id, d.name, d.type, d.room, joining = false) },
             )
         } else {
@@ -110,8 +137,7 @@ fun DevicesRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
                 onOpenRoom = { roomPicker = true },
                 onDelete = {
                     val d = editing!!
-                    confirm = ConfirmReq("Usunąć urządzenie?", "„${d.name.ifBlank { "urządzenie" }}\" zostanie usunięte. Powiązane automatyzacje mogą przestać działać.") {
-                        // Graceful remove w bramce: wiersz znika dopiero gdy node potwierdzi.
+                    confirm = ConfirmReq("Usunąć urządzenie?", "„${d.name.ifBlank { "urządzenie" }}\" trafi do kosza (przywracalne przez 60 dni). Powiązane automatyzacje mogą przestać działać.") {
                         d.id?.let { id -> scope.launch { store?.removeNode(id.toInt()) } }
                         confirm = null; editing = null
                     }
@@ -168,6 +194,40 @@ fun DevicesRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
             )
         }
         confirm?.let { c -> ConfirmDialog(c.title, c.msg, "Usuń", c.onOk) { confirm = null } }
+        notice?.let { m -> NoticeDialog("Nie udało się", m) { notice = null } }
+
+        // Nowy node wykryty → utwórz nowe / wymień istniejące.
+        if (showJoin && joinCtx != null) {
+            JoinDialog(
+                factory = joinCtx.factory, type = joinCtx.type,
+                hasTargets = replaceTargets.isNotEmpty(),
+                onCreate = { name ->
+                    scope.launch { store?.approveJoin(joinCtx.factory, name)?.onFailure(::fail) }
+                    showJoin = false
+                },
+                onReplace = { name -> replaceName = name; replacePick = true },
+                onDismiss = { showJoin = false },
+            )
+        }
+        // Wybór noda do wymiany: aktywny → replace (przejmuje adres+historię),
+        // detached → repair (świeży adres, odzysk historii po node_id).
+        if (replacePick && joinCtx != null) {
+            SheetPicker(
+                title = "Wymień / odzyskaj urządzenie",
+                options = replaceTargets.map { t ->
+                    val label = if (t.detached) "${t.name} · z kosza (odzyska historię)" else t.name
+                    PickerOption(label, selected = false, onPick = {
+                        scope.launch {
+                            val res = if (t.detached) store?.repairNode(joinCtx.factory, t.nodeId, replaceName)
+                            else store?.replaceNode(joinCtx.factory, t.address, replaceName)
+                            res?.onFailure(::fail)
+                        }
+                        replacePick = false; showJoin = false
+                    })
+                },
+                onDismiss = { replacePick = false },
+            )
+        }
     }
 }
 
@@ -177,11 +237,17 @@ fun DevicesRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
 private fun DevList(
     devices: List<Device>, rooms: List<String>, typeNames: Map<String, String>, filter: String,
     pending: Int,
-    onFilter: (String) -> Unit, onJoin: () -> Unit, onOpen: (Device) -> Unit,
+    onFilter: (String) -> Unit, onJoin: () -> Unit, onTrash: () -> Unit, onOpen: (Device) -> Unit,
 ) {
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
         Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 12.dp)) {
-            Text("Urządzenia", color = Sh.textPrimary, fontSize = 28.sp, fontWeight = FontWeight.W500, letterSpacing = (-0.2).sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Urządzenia", color = Sh.textPrimary, fontSize = 28.sp, fontWeight = FontWeight.W500, letterSpacing = (-0.2).sp, modifier = Modifier.weight(1f))
+                Box(
+                    Modifier.clip(CircleShape).clickable(noRipple(), null) { onTrash() }.padding(8.dp),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(ShIcons.Trash, "Kosz", tint = Sh.textSecondary, modifier = Modifier.size(22.dp)) }
+            }
             val onlineCount = devices.count { it.online }
             Text("${devices.size} urządzeń · $onlineCount online", color = Sh.textMuted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
             // JOIN jest realny: node zgłasza się sam po wciśnięciu przycisku, a bramka
@@ -332,6 +398,125 @@ private fun DevEditor(
                     .clickable(noRipple(), null) { onSave() }.padding(vertical = 14.dp),
                 contentAlignment = Alignment.Center,
             ) { Text("Zapisz", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.W500) }
+        }
+    }
+}
+
+// ---------------- JOIN (utwórz nowe / wymień) ----------------
+
+/**
+ * Node zgłosił się przez JOIN. Dwie ścieżki (model tożsamości §12):
+ *  - **Utwórz nowe** → approvejoin: nowy `id`, przydział wolnego adresu, świeża historia.
+ *  - **Wymień istniejące** → replacenode: nowy chip przejmuje adres i historię wskazanego
+ *    aktywnego noda (naprawa po wymianie sprzętu). Dostępne tylko gdy jest zgodny cel.
+ */
+@Composable
+private fun JoinDialog(
+    factory: String, type: Int, hasTargets: Boolean,
+    onCreate: (String) -> Unit, onReplace: (String) -> Unit, onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    val uiType = NodeTypes.toUiType(type)
+    val col = deviceColor(uiType)
+    Box(
+        Modifier.fillMaxSize().background(Color(0xFF201B13).copy(alpha = 0.45f))
+            .clickable(noRipple(), null) { onDismiss() }.padding(28.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.widthIn(max = 340.dp).clip(RoundedCornerShape(24.dp)).background(Sh.surface)
+                .clickable(noRipple(), null) {}
+                .padding(start = 22.dp, end = 22.dp, top = 24.dp, bottom = 18.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(52.dp).clip(RoundedCornerShape(16.dp)).background(col.bg), contentAlignment = Alignment.Center) {
+                    Icon(deviceIcon(uiType), null, tint = col.c, modifier = Modifier.size(26.dp))
+                }
+                Column(Modifier.padding(start = 14.dp)) {
+                    Text("Nowe urządzenie", color = Sh.textPrimary, fontSize = 19.sp, fontWeight = FontWeight.W500)
+                    Text("${NodeTypes.label(type)} · ${factory.takeLast(6).uppercase()}", color = Sh.textMuted, fontSize = 12.sp)
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            InputField("Nazwa", name, { name = it }, placeholder = "np. Solar dach")
+            Spacer(Modifier.height(16.dp))
+            Box(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).background(Sh.graphiteBtn)
+                    .clickable(noRipple(), null) { onCreate(name.trim().ifBlank { NodeTypes.label(type) }) }
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text("Utwórz nowe", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.W500) }
+            if (hasTargets) {
+                Spacer(Modifier.height(10.dp))
+                OutlineButton("Wymień istniejące", Modifier.fillMaxWidth()) { onReplace(name.trim()) }
+                Text(
+                    "Nowy chip przejmie historię wybranego urządzenia (wymiana sprzętu lub odzysk z kosza). " +
+                        "Nazwę zmieni tylko, jeśli ją tu wpiszesz.",
+                    color = Sh.textMuted, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        }
+    }
+}
+
+// ---------------- KOSZ ----------------
+
+/**
+ * Kosz = soft-usunięte nody na mirrorze (retencja 60 dni; twarde usunięcie tylko cronem —
+ * ZERO "opróżnij kosz"). Przywrócenie → node wraca lokalnie jako `detached`.
+ */
+@Composable
+private fun TrashScreen(
+    items: List<com.aitronic.smarthome.data.net.TrashNodeDto>, nowS: Long,
+    onBack: () -> Unit, onRestore: (com.aitronic.smarthome.data.net.TrashNodeDto) -> Unit,
+) {
+    Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
+        Row(Modifier.fillMaxWidth().padding(start = 2.dp, end = 14.dp, top = 2.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(44.dp).clip(CircleShape).clickable(noRipple(), null) { onBack() }, contentAlignment = Alignment.Center) {
+                Icon(ShIcons.ChevronLeft, "Wstecz", tint = Sh.textPrimary, modifier = Modifier.size(24.dp))
+            }
+            Column(Modifier.padding(start = 6.dp)) {
+                Text("Kosz", color = Sh.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.W500)
+                Text("Usuwane automatycznie po 60 dniach", color = Sh.textMuted, fontSize = 12.sp)
+            }
+        }
+        if (items.isEmpty()) {
+            Column(Modifier.fillMaxSize().padding(bottom = 60.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Box(Modifier.size(76.dp).clip(RoundedCornerShape(24.dp)).background(Color(0xFFEDE8DE)), contentAlignment = Alignment.Center) {
+                    Icon(ShIcons.Trash, null, tint = Sh.textSecondary, modifier = Modifier.size(36.dp))
+                }
+                Spacer(Modifier.height(16.dp))
+                Text("Kosz jest pusty", color = Sh.textPrimary, fontSize = 18.sp, fontWeight = FontWeight.W500)
+                Text("Usunięte urządzenia pojawią się tutaj.", color = Sh.textMuted, fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
+            }
+        } else {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items.forEach { t ->
+                    val uiType = NodeTypes.toUiType(t.type)
+                    val col = deviceColor(uiType)
+                    val days = if (nowS > 0 && t.archivedAt > 0) ((nowS - t.archivedAt) / 86400L).coerceAtLeast(0) else -1L
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Sh.surface).padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(col.bg), contentAlignment = Alignment.Center) {
+                            Icon(deviceIcon(uiType), null, tint = col.c, modifier = Modifier.size(22.dp))
+                        }
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(t.name.ifBlank { NodeTypes.label(t.type) }, color = Sh.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.W500)
+                            Text(
+                                if (days >= 0) "${NodeTypes.label(t.type)} · w koszu ${days}d" else NodeTypes.label(t.type),
+                                color = Sh.textMuted, fontSize = 12.sp,
+                            )
+                        }
+                        Box(
+                            Modifier.clip(RoundedCornerShape(12.dp)).border(1.5.dp, Sh.fieldBorder, RoundedCornerShape(12.dp))
+                                .clickable(noRipple(), null) { onRestore(t) }.padding(horizontal = 14.dp, vertical = 8.dp),
+                        ) { Text("Przywróć", color = Sh.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.W500) }
+                    }
+                }
+            }
         }
     }
 }

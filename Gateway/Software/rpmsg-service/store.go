@@ -495,6 +495,58 @@ func (s *Store) ReplaceNode(targetAddr uint8, newFactoryID string, ts int64) err
 	return nil
 }
 
+// RepairNode re-pairs a fresh chip onto a DETACHED node (restored from trash),
+// reclaiming its stable node_id + history. Unlike ReplaceNode (which reuses the
+// still-live address of an active node), a detached node has no address, so a fresh
+// one is allocated. status -> pending_join until the new chip confirms. Returns the
+// newly allocated RF address, or an error if the node is not detached.
+func (s *Store) RepairNode(nodeID int64, newFactoryID string, ts int64) (uint8, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var status string
+	err = tx.QueryRow(`SELECT COALESCE(status,'active') FROM node WHERE node_id = ?`, nodeID).Scan(&status)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("no node with id %d", nodeID)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if status != "detached" {
+		return 0, fmt.Errorf("node %d is %s, not detached (use replace for an active node)", nodeID, status)
+	}
+	// A chip is one node: if this factory_id is already bound to another node the
+	// partial-unique index would reject the UPDATE with a raw SQL error. Pre-check so
+	// the user gets a clear message (remove that node first, or use a fresh chip).
+	var otherID int64
+	var otherName sql.NullString
+	switch e := tx.QueryRow(
+		`SELECT node_id, name FROM node WHERE factory_id = ? AND node_id <> ?`,
+		newFactoryID, nodeID).Scan(&otherID, &otherName); e {
+	case nil:
+		return 0, fmt.Errorf("chip already assigned to node %d (%s) - remove it first or use a new chip",
+			otherID, otherName.String)
+	case sql.ErrNoRows:
+		// good: chip is free
+	default:
+		return 0, e
+	}
+	newAddr, err := allocAddr(tx)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(
+		`UPDATE node SET address = ?, factory_id = ?, status = 'pending_join',
+		     provisioned_at = ?, last_seen = ? WHERE node_id = ?`,
+		newAddr, newFactoryID, ts, ts, nodeID); err != nil {
+		return 0, err
+	}
+	return newAddr, tx.Commit()
+}
+
 // NodeStatus returns a node's lifecycle state + identity (for the telemetry-path
 // state machine). status is 'active' for pre-migration rows (NULL).
 // UpdateNode sets the user-facing label and room of an already registered node.

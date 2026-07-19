@@ -422,6 +422,28 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-20 — §12.3 apka: dodaj/wymień po JOIN + kosz/przywracanie + re-pair detached (repairnode) ✅
+- **Apka `SmartHome` (KMP) — komplet zarządzania nodami** (ZWERYFIKOWANE NA ŻYWO, re-pair działa): po JOIN dialog
+  **„Utwórz nowe" / „Wymień istniejące"**; „Wymień" listuje zgodne nody **`active`** (replace po adresie) **oraz
+  `detached` z kosza** (repair po `node_id` — „· z kosza (odzyska historię)"). **Ekran Kosz** (`listtrash`) + „Przywróć"
+  (optymistyczne usunięcie ze stanu — mirror od-archiwizuje z lagiem workera ~15s). **Twardy confirm** usuwania
+  („trafi do kosza, przywracalne 60 dni"). **Nazwa przy wymianie/re-pair**: podana → `updatenode` (pokój zachowany),
+  pusta → stara. Pliki: `Dto.kt` (+id w NodeInfo, ReplaceResult/TrashNode/RestoreResult), `GatewayClient.kt`
+  (replace/repair/listTrash/restore), `GatewayStore.kt`, `DevicesScreen.kt`, `Forms.kt` (`NoticeDialog`). [[smarthome-app-kmp]]
+- **🔑 Gateway — nowa komenda `repairnode&factory=&id=`** (domyka §12 „re-pair detached", była luka): detached nie ma
+  adresu, więc `RepairNode` **alokuje nowy** i przypina chip do stałego `node_id` → historia (kluczowana po `node_id`)
+  wraca; `pending_join`→`active` po 1. telemetrii. `replacenode` (active) celuje po adresie, `repairnode` (detached) po
+  `node_id` — apka routuje sama. Pliki: `store.go RepairNode`, `httpapi.go handleRepairNode`+route.
+- **🔑 „jeden chip = jeden node"** (`RepairNode` pre-check): próba re-pair chipa, który jest już aktywnym nodem, dawała
+  surowy `UNIQUE constraint failed: node.factory_id` **połknięty po cichu przez apkę**. Teraz pre-check → czytelny błąd
+  „chip already assigned to node N (name) - remove it first or use a new chip", a apka pokazuje go przez `NoticeDialog`
+  (koniec cichego znikania dialogu). **Lekcja:** re-pair w produkcji = **nowy** chip (inny factory_id) na przywrócony
+  node; ten sam chip = konflikt (poprawnie blokowany). Test na jednym fizycznym chipie wymaga najpierw zwolnienia go
+  (remove starego noda).
+- **Znane kosmetyki (na jutro)** + świadome: dwa nody `detached` miałyby w apce ten sam `Device.id=0` (lista bez
+  explicit-key, apka i tak operuje po `node_id`/adresie z DTO). Re-pair `detached` na **zajęty** chip = blok (nie „steal"
+  starego noda — decyzja: bezpieczny default).
+
 ### 2026-07-19 (późna noc) — serve przestał udawać zdrowego + self-heal własności bazy + wyścig udev ✅
 - **Objaw**: po nocnym reboocie apka same „kreski" i DB monitor rozłączony, ale `systemctl is-active`=**active running**.
   Serwer HTTP/WS na `:9443` w ogóle nie słuchał (`NO-LISTENER-9443`).

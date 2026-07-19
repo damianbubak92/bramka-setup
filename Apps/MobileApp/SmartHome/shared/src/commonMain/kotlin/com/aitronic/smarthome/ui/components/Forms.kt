@@ -149,6 +149,31 @@ fun ConfirmDialog(title: String, message: String, confirmLabel: String, onConfir
     }
 }
 
+/** Prosty dialog informacyjny (błąd/komunikat) z jednym przyciskiem OK. */
+@Composable
+fun NoticeDialog(title: String, message: String, onDismiss: () -> Unit) {
+    Box(
+        Modifier.fillMaxSize().background(Color(0xFF201B13).copy(alpha = 0.45f))
+            .clickable(noRipple(), null) { onDismiss() }
+            .padding(28.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(24.dp)).background(Sh.surface)
+                .clickable(noRipple(), null) {}
+                .padding(start = 22.dp, end = 22.dp, top = 22.dp, bottom = 16.dp),
+        ) {
+            Text(title, color = Sh.textPrimary, fontSize = 18.sp, fontWeight = FontWeight.W500)
+            Text(message, color = Sh.textSecondary, fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(top = 8.dp))
+            Spacer(Modifier.height(20.dp))
+            Box(
+                Modifier.align(Alignment.End).clip(RoundedCornerShape(15.dp)).background(Sh.graphiteBtn)
+                    .clickable(noRipple(), null) { onDismiss() }.padding(horizontal = 26.dp, vertical = 11.dp),
+            ) { Text("OK", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.W500) }
+        }
+    }
+}
+
 @Composable
 fun OutlineButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(

@@ -103,6 +103,24 @@ class GatewayClient(
         command("updatenode&address=$address&name=${name.urlEncode()}&room=${room.urlEncode()}")
             .trim().equals("OK", ignoreCase = true)
 
+    /** Wymień chip pod istniejącym AKTYWNYM nodem: nowy chip (factoryHex, właśnie
+     * dołączony jako pending) przejmuje adres target; historia (kluczowana po id)
+     * zostaje. Bramka wysyła JOIN_ACCEPT do nowego chipa. */
+    suspend fun replaceNode(factoryHex: String, targetAddress: Int): ReplaceResultDto =
+        json.decodeFromString(command("replacenode&factory=$factoryHex&target=$targetAddress"))
+
+    /** Re-paruj świeży chip na node DETACHED (przywrócony z kosza): bramka alokuje nowy
+     * adres i przypina go do stałego node_id → historia (kluczowana po node_id) wraca. */
+    suspend fun repairNode(factoryHex: String, nodeId: Long): ReplaceResultDto =
+        json.decodeFromString(command("repairnode&factory=$factoryHex&id=$nodeId"))
+
+    /** Kosz — soft-usunięte nody na mirrorze (okno retencji 60 dni). */
+    suspend fun listTrash(): List<TrashNodeDto> = json.decodeFromString(command("listtrash"))
+
+    /** Przywróć noda z kosza → wraca lokalnie jako `detached` (czeka na sparowanie). */
+    suspend fun restoreNode(id: Long): RestoreResultDto =
+        json.decodeFromString(command("restorenode&id=$id"))
+
     /** Surowy JSON reguł (schemat apki) — parsowanie w warstwie wyżej. */
     suspend fun getRulesJson(): String = command("getrules")
 
