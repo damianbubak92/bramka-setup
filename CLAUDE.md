@@ -301,8 +301,9 @@ Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · d
 1. **Apka: read-from-mirror gdy bramka nieosiągalna** — kaskada LAN→zdalnie→mirror. [[gen2-backup-mirror]]
 2. **Dopracowanie automatyzacji** (reguły po `id`, Go mapuje id→adres przy pushu — patrz spec §9).
 3. Produkcja: `-backup-url`/`-backup-key` do systemd unitu; usunąć sekcję gen1 z `secrets.php`.
-5. **Hang M4F** (znany, ~raz/kilka h, koreluje z ruchem SPI — sniff gen1 go nasilił). Recovery działa. Diagnoza czeka na
-   zrzut rejestrów hardfaultu (retained-RAM). User: „niebawem, ale najpierw plan".
+5. ~~**Hang M4F**~~ **ROZWIĄZANY 19.07 (commit `43f7758`)** — to była kolizja downlink↔uplink SPI (half-duplex), nie
+   hardfault. Fix: full-duplex CC1310. Szczegóły w Session Log. Opcjonalne utwardzanie (MCSPI cancel na M4F) odłożone —
+   niepotrzebne (`to=0`).
 
 **Nadal ATRAPY w apce (świadomie):** Klimat (wykresy + interwał), PV, Dashboard poza kaflem solarnym.
 **Luki bramki blokujące:** brak komendy interwału pomiaru, brak noda/telemetrii PV, `reading_time`=czas ODBIORU nie pomiaru
@@ -417,6 +418,37 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-07-19 (wieczór/noc) — §12.2 factory_id w ramce + gen2 solar node + M4F SILENT HANG ROZWIĄZANY ✅✅
+- **§12.2 (commit `5803c01`, pushed) — ZWERYFIKOWANE E2E NA REALNYM SOLAR NODZIE.** factory_id[8] w kopercie `NodeFrame`
+  (SPI+RPMsg, 52B), tag ramki RF `'D'`(legacy)/`'E'`(v2+factory_id), `CMD_UNREGISTERED(7)`. Go: `splitNodeFrame`
+  tolerancyjny 44/52B, walidacja `(addr,factory_id)`→`SendUnregister`, `SendPumpTo` (celowana pompa `&address=`).
+  M4F: NodeFrame przez SPI↔RPMsg. CC1310: `'E'` RF + `PAYLOAD_LENGTH 50→64` (solar 'E'=57B).
+  **Nowy gen2 solar node** `Nodes/SolarControllerNode` (port gen1 SubGHzSolarController, ePaper/fonty wycięte):
+  `node_identity.c/h` (FCFG factory_id + NVS adres), `rfEchoTx.c` ('E' TX + JOIN button + RX walidacja factory_id),
+  `solar_controller_task.c` (dispatch JOIN_ACCEPT/REMOVE/UNREGISTERED). **Test:** JOIN→approve→JOIN_ACCEPT→NVS→
+  telemetria solar→pompa (RELAY1) — wszystko działa; nod 16 (`ee467e22004b1200`, re-provision starego TH).
+  - **Pułapka noda (kosztowała debug):** pierwszy `Display_printf` był w `radioTaskInit` = **przed `BIOS_start`** →
+    blokujący UART pend bez schedulera → 32B FIFO wypchnęło część linii i zawis. Fix: log z kontekstu taska. Oryginał
+    printował tylko z tasków, więc nigdy tego nie trafił.
+- **🔑 M4F SILENT HANG — ROZWIĄZANY (commit `43f7758`, pushed).** Ten „znany, ~raz/kilka h, koreluje z SPI" hang to
+  **kolizja downlink↔uplink na SPI**. Link M4F↔CC1310 był half-duplex z dwoma niezależnymi inicjatorami (master:
+  MASTER_READY dla cmd, slave: SLAVE_READY dla danych). Gdy oba naraz: slave uzbrajał DANE ale gałąź `SEND_DATA` w
+  CC1310 **nie route'owała RX** (gubiła cmd), a rozjechany transfer **wieszał ISR SPI → TOTAL STARVE** (brak `[MON]`,
+  brak `[DIAG]` — nawet monitor task starwowany). **Repro deterministyczny (pomysł usera): pump-flood downlink na
+  żywej telemetrii uplink → wedge w ~15s; sam wolumen uplinku nigdy.** Fix: **każdy transfer FULL-DUPLEX** — obie
+  strony TX=frame-or-NOP + ZAWSZE `route_rx_frame`. Kolizja = jedna wymiana, nie zderzenie. **Weryfikacja:** 2 min
+  floodu (co zabijało w 15s) → `spi xfer started==done, to=0`, tylko chwilowe skoki latencji ~600ms w momentach
+  kolizji, po których czysto wraca.
+  - **Diagnostyka (została w kodzie, tania): monitor liveness COMMS** (loguje w którym stage COMMS zamarł),
+    **`[DIAG]` HWM stosów** (self-scan 0xA5, bo SDK ma `INCLUDE_uxTaskGetStackHighWaterMark=0`) + **liczniki SPI**
+    started/done/timeout. Wykluczyły stos (engine/spi ~720 słów wolnych) i wskazały SPI. **Diagnoza silent hangu bez
+    JTAG: monitor NIŻSZEGO prio łapie zablokowany COMMS; jego CISZA (+DIAG) = total starve = wedge ISR.**
+  - **Lekcja:** kolizję potwierdź triggerem (flood), nie zgaduj. „lekkie zwiechy co 10s" usera = dokładnie momenty
+    kolizji telemetria↔cmd. [[copy-repo-to-ccs-after-edits]]
+  - **Follow-up (opcjonalny, „utwardzanie"):** defensywny cancel/re-init MCSPI na M4F na timeoucie (dziś niepotrzebne:
+    `to=0`); zredukowałby ~600ms skok latencji przy kolizji. **Reflash noda do produkcyjnych 2 min** (kod cofnięty do
+    `>=11`, flashnięty nod dalej leci na test-hacku 10s do następnego flasha).
 
 ### 2026-07-19 — zarządzanie nodami §12.1: rozdzielenie tożsamości + kosz/restore/retencja ✅ (ZWERYFIKOWANE NA ŻYWO)
 - **§12.1 z `Docs/NODE-MANAGEMENT.md` ZROBIONE E2E** (3 commity, pushed): `caeaa6b` (decouple id/address + fix
