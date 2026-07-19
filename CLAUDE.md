@@ -286,15 +286,18 @@ Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · d
   na secrets.php, `-Indexes`). Koniec ręcznego sanityzowania przy commitach. Stare `server-gen1`/`server-gen2` scalone.
 
 **👉 PLAN NA NASTĘPNĄ SESJĘ:**
-0. **⭐ ZARZĄDZANIE NODAMI — SPEC ZATWIERDZONY 19.07: `Docs/NODE-MANAGEMENT.md`.** Duży przemyślany model
-   (rozkmina usera): **rozdzielenie `id`(stała tożsamość logiczna, AUTOINCREMENT, kotwica historii+reguł) /
-   `address`(routing RF, reużywalny, NULL=odłączony) / `factory_id`(chip)**. Reaktywna tożsamość (bramka waliduje
-   `(addr,factory_id)` przy każdej telemetrii → `MSG_UNREGISTERED` → nod kasuje adres i milknie). Kosz z retencją
-   60 dni (soft-delete na serwerze, trwałe usunięcie tylko cronem czasowym, ZERO „opróżnij kosz"). Apka: „Utwórz
-   nowe"/„Wymień istniejące" (wymiana+re-parowanie pod jedną). **factory_id[8] w nagłówku ramki** (+8B). Kolejność
-   wdrożenia: **(1) Go+data model** (refaktor `node_id`→`id`+`address`, migracja, statusy `pending_join|active|
-   detached`, kosz/retencja/restore) → **(2) kontrakt drutu→firmware** → **(3) apka**. To zastępuje/rozszerza
-   dotychczasowy `replacenode` (kod jest, ale wejdzie w nowy model). [[provisioning-model]] [[gen2-backup-mirror]]
+0. **⭐ ZARZĄDZANIE NODAMI — `Docs/NODE-MANAGEMENT.md`. §12.1 (Go+data model) ZROBIONE+ZWERYFIKOWANE 19.07**
+   (commity `caeaa6b`+`8661518`+`72a6a96`, pushed): **rozdzielenie `node_id`(AUTOINCREMENT, stała tożsamość) /
+   `address`(routing RF, reużywalny, NULL=detached) / `factory_id`(chip)** + migracja `migrateNodeIdentity`;
+   statusy `pending_join|active|detached|legacy` (**`pending_remove` usunięty** — usuwanie natychmiastowe);
+   `legacy` = sniff gen1 0xF1/0xF2 (grandfathered); **kosz na mirrorze** (removal→`archive_node` soft-delete,
+   auto-unarchive przy restore via `archived_at=NULL` w upsert) + `listtrash`/`restorenode` + cron 60 dni
+   (`gw-purge-cron.php`, jedyny hard-delete, ZERO „opróżnij kosz"). serve wymaga `-restore-url` dla kosza.
+   Zweryfikowane na żywo: remove 243→kosz→listtrash→restore→detached, mirror odarchiwizowany. Node 243 siedzi
+   teraz jako `detached` (przykład do §12.3). **ZOSTAJE: (2) kontrakt drutu→firmware** (`factory_id[8]` w nagłówku
+   ramki, walidacja `(addr,factory_id)`→`MSG_UNREGISTERED`, nod milknie — robi user w CCS) **→ (3) apka**
+   („Utwórz nowe"/„Wymień istniejące" dropdown kompatybilnych+detached, kosz+przywracanie, twardy confirm na
+   usuwaniu). [[provisioning-model]] [[gen2-backup-mirror]]
 1. **Apka: read-from-mirror gdy bramka nieosiągalna** — kaskada LAN→zdalnie→mirror. [[gen2-backup-mirror]]
 2. **Dopracowanie automatyzacji** (reguły po `id`, Go mapuje id→adres przy pushu — patrz spec §9).
 3. Produkcja: `-backup-url`/`-backup-key` do systemd unitu; usunąć sekcję gen1 z `secrets.php`.
@@ -414,6 +417,36 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-07-19 — zarządzanie nodami §12.1: rozdzielenie tożsamości + kosz/restore/retencja ✅ (ZWERYFIKOWANE NA ŻYWO)
+- **§12.1 z `Docs/NODE-MANAGEMENT.md` ZROBIONE E2E** (3 commity, pushed): `caeaa6b` (decouple id/address + fix
+  triggerów), `8661518` (removal→kosz + status legacy), `72a6a96` (restore z kosza + listtrash + cron 60 dni).
+- **Rozdzielenie tożsamości**: `node.node_id` = STAŁA logiczna AUTOINCREMENT (kotwica historii+reguł, nigdy nie
+  reużywana), `address` = OSOBNY reużywalny adres RF (0x10-0xEF, NULL=detached), `factory_id` = chip. Migracja
+  `migrateNodeIdentity` przebudowała tabelę `node` zachowując node_id, seed `address=node_id` (bez re-key historii).
+  node_id = **int64** (AUTOINCREMENT >255) → sweep całego `solaragg.go`. Partial unique na address/factory_id.
+- **Statusy** `pending_join|active|detached|legacy`; **`pending_remove` USUNIĘTY** — usuwanie NATYCHMIASTOWE
+  (`DeleteNode` hard-delete lokalnie + adres wolny od razu + best-effort powiadomienie noda). `detached` = przywrócony
+  z kosza (address/factory_id NULL, czeka na re-parowanie, pokazywany w `listnodes`). `legacy` = sniff gen1 0xF1/0xF2,
+  grandfathered (bez walidacji, bez MSG_UNREGISTERED). **Marker legacy po ADRESIE** (nie factory_id — w dev-bazie
+  241/242 MAJĄ factory_id z ręcznej rejestracji, a sim 0xF3 nie ma → heurystyk factory_id trafiał odwrotnie; bug
+  złapany na żywo, poprawiony na `address IN (241,242)`).
+- **Kosz na mirrorze** ([[gen2-backup-mirror]]): trigger `bq_node_d` → `archive_node` (soft-delete, `archived_at`)
+  zamiast purge. **Klucz: node upsert niesie `archived_at=NULL`** → każdy push żywego noda (insert LUB telemetria)
+  self-healingly odarchiwizowuje → restore nie potrzebuje osobnej operacji. `gw-restore.php` 3 tryby (pełny pomija
+  kosz / `?archived=1` / `?node_id=N`), `gw-purge-cron.php` = jedyny hard-delete (60 dni, tylko czasowo, ZERO ręcznego
+  opróżniania — „dziecko z telefonem"). Komendy `listtrash`/`restorenode&id=` (serve wymaga `-restore-url`).
+- **🔑 BUG FIX (niezawodność) — `InstallBackupTriggers` drop-then-create**: było `CREATE TRIGGER IF NOT EXISTS`
+  → zmieniona definicja triggera (dodanie `address`/`archived_at`) po cichu się NIE stosowała (stary trigger
+  zostawał). Objaw: `gw_node.address` = NULL na mirrorze mimo poprawnego kodu. Teraz drop przed create → każda zmiana
+  payloadu wchodzi. Zweryfikowane: adres wypełnił się po redeployu.
+- **Zweryfikowane na żywo (cała macierz)**: migracja na 2-letniej bazie czysta (node_id zachowane, telemetria
+  resolve'uje adres→id, historia/agregacja/apka OK, mirror z adresem); remove 243 → lokalnie znika+adres wolny, mirror
+  `archived_at` ustawione+historia została; `listtrash`→[243]; `restorenode 243`→lokalnie `detached`, mirror
+  odarchiwizowany, 243 znika z kosza; 241/242→legacy.
+- **ZOSTAJE**: §12.2 (kontrakt drutu→firmware: `factory_id[8]` w nagłówku ramki, walidacja `(addr,factory_id)`→
+  `MSG_UNREGISTERED`, nod milknie — user w CCS) → §12.3 (apka: dodaj/wymień, kosz+przywracanie, twardy confirm).
+  Node 243 zostawiony jako `detached` = żywy przykład do §12.3. [[provisioning-model]]
 
 ### 2026-07-16/17 — apka SmartHome ŻYJE: Stage 2 (sieć+pinning+live solar+sterowanie) + sniff gen1 ✅
 - **Apka steruje realną instalacją** (commity `52a54a0`, `ee56054`). Stack: Ktor 3.3.1 + kotlinx.serialization +
