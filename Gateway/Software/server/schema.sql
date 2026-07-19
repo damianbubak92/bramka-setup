@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS gw_node (
   provisioned_at BIGINT,
   last_seen      BIGINT,
   room           VARCHAR(128),
+  archived_at    BIGINT,            -- NULL = live; set = in trash (soft-delete, 60d retention)
   PRIMARY KEY (node_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

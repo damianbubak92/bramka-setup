@@ -18,7 +18,7 @@ require __DIR__ . '/secrets.php';
 // kind -> [table, [pk columns], [all columns]]
 $SCHEMA = [
   'config'        => ['gw_config',        ['key'],            ['key','value']],
-  'node'          => ['gw_node',          ['node_id'],        ['node_id','address','node_type','name','factory_id','status','provisioned_at','last_seen','room']],
+  'node'          => ['gw_node',          ['node_id'],        ['node_id','address','node_type','name','factory_id','status','provisioned_at','last_seen','room','archived_at']],
   'node_param'    => ['gw_node_param',     ['node_id','param_key'], ['node_id','param_key','value_num','ts']],
   'solar_hourly'  => ['gw_solar_hourly',  ['node_id','bucket'], ['node_id','bucket','hour_yield','hour_pump','day_yield','day_pump']],
   'solar_daily'   => ['gw_solar_daily',   ['node_id','bucket'], ['node_id','bucket','day_yield','month_yield','month_pump']],
@@ -53,7 +53,22 @@ try {
         $op   = $it['op']   ?? 'upsert';
         $data = $it['data'] ?? [];
 
-        // Special: wipe one node everywhere (node removal on the gateway).
+        // Special: soft-delete one node (node removal on the gateway). The row + its
+        // history STAY (trash); only archived_at is set. A server cron purges rows past
+        // the retention window (60d). Restore = the gateway re-inserts the node, whose
+        // upsert carries archived_at=NULL and clears this.
+        if ($kind === 'archive_node') {
+            $nid = (int)($data['node_id'] ?? -1);
+            $at  = (int)($data['archived_at'] ?? time());
+            $s = $conn->prepare("UPDATE gw_node SET archived_at = ? WHERE node_id = ?");
+            $s->bind_param('ii', $at, $nid); $s->execute(); $s->close();
+            $applied++;
+            continue;
+        }
+
+        // Special: hard-wipe one node everywhere (kept for disaster/manual use; the
+        // gateway itself uses archive_node now, and the retention cron does the real
+        // purge server-side).
         if ($kind === 'purge_node') {
             $nid = (int)($data['node_id'] ?? -1);
             foreach (['gw_node','gw_node_param','gw_solar_hourly','gw_solar_daily','gw_solar_monthly'] as $t) {

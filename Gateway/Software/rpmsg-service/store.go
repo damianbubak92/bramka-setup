@@ -224,8 +224,8 @@ func initNodeSchema(db *sql.DB) error {
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return err
 	}
-	// migrate: node.status - provisioning lifecycle state (pending_join | active |
-	// pending_remove). NULL on pre-existing rows is treated as 'active'.
+	// migrate: node.status - lifecycle state (pending_join | active | detached |
+	// legacy). NULL on pre-existing rows is treated as 'active'.
 	if _, err := db.Exec(`ALTER TABLE node ADD COLUMN status TEXT`); err != nil &&
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return err
@@ -253,6 +253,17 @@ func initNodeSchema(db *sql.DB) error {
 	}
 	// migrate: decouple the stable logical id from the RF address (Docs/NODE-MANAGEMENT.md).
 	if err := migrateNodeIdentity(db); err != nil {
+		return err
+	}
+	// migrate: tag the gen1 sniff controllers (solar 0xF1, buffer 0xF2) as `legacy`.
+	// Keyed by their fixed gen1 addresses - the reliable signal (factory_id is unreliable
+	// here: these got one from manual registration, while the 0xF3 dev sim node has none).
+	// The gen2 pool is 0x10-0xEF, so 0xF1/0xF2 are exclusively gen1. Legacy nodes are
+	// grandfathered: passive sniff, no (addr,factory_id) validation, no MSG_UNREGISTERED
+	// (Docs/NODE-MANAGEMENT §13). Idempotent.
+	if _, err := db.Exec(
+		`UPDATE node SET status = 'legacy'
+		 WHERE address IN (241, 242) AND COALESCE(status,'') <> 'legacy'`); err != nil {
 		return err
 	}
 	return seedParamDefs(db)
@@ -517,13 +528,6 @@ func (s *Store) MarkActive(address uint8) error {
 	return err
 }
 
-// SetPendingRemove marks a node as awaiting removal confirmation. The row (and
-// thus its address reservation) stays until the node confirms it cleared itself.
-func (s *Store) SetPendingRemove(address uint8) error {
-	_, err := s.db.Exec(`UPDATE node SET status = 'pending_remove' WHERE address = ?`, address)
-	return err
-}
-
 // NodeInfo is one provisioned node for the phone's device list (listnodes).
 type NodeInfo struct {
 	NodeID        int64  `json:"id"`           // stable logical id (survives address/chip changes)
@@ -531,7 +535,7 @@ type NodeInfo struct {
 	Type          int    `json:"type"`         // NODE_* (app maps to a label)
 	Name          string `json:"name"`         // user label set at approval
 	FactoryID     string `json:"factory"`      // chip identity (hex)
-	Status        string `json:"status"`       // pending_join | active | pending_remove
+	Status        string `json:"status"`       // pending_join | active | detached | legacy
 	LastSeen      int64  `json:"lastSeen"`     // unix s of last telemetry (0 = never)
 	ProvisionedAt int64  `json:"provisionedAt"` // unix s
 	Room          string `json:"room"`         // user grouping ("" = Bez pokoju)
@@ -636,19 +640,18 @@ func (s *Store) ListState() ([]NodeState, error) {
 	return out, nil
 }
 
-// ListNodes returns the PROVISIONED nodes (those with a factory_id, i.e. they
-// went through approval) for the phone's "devices" screen. Telemetry-only rows
-// (no factory_id) are excluded; so are pending_remove rows — once the user hits
-// remove the device vanishes from the UI immediately while the gateway quietly
-// finishes (confirms with the node, frees the address, or keeps it reserved).
-// last_seen is kept fresh by RecordTelemetry.
+// ListNodes returns the gen2 nodes for the phone's "devices" screen: active,
+// pending_join and detached (restored-from-trash, awaiting re-pair - factory_id NULL
+// but a real logical node the user should see and pair). Only `legacy` gen1 sniff
+// nodes are excluded - they belong on the Solar screen, not Devices. last_seen is
+// kept fresh by RecordTelemetry.
 func (s *Store) ListNodes() ([]NodeInfo, error) {
 	rows, err := s.db.Query(
 		`SELECT node_id, COALESCE(address,0), node_type, COALESCE(name,''), COALESCE(factory_id,''),
 		        COALESCE(status,'active'), COALESCE(last_seen,0), COALESCE(provisioned_at,0),
 		        COALESCE(room,'')
 		 FROM node
-		 WHERE factory_id IS NOT NULL AND COALESCE(status,'active') <> 'pending_remove'
+		 WHERE COALESCE(status,'active') <> 'legacy'
 		 ORDER BY node_id`)
 	if err != nil {
 		return nil, err
@@ -682,10 +685,13 @@ func (s *Store) GetNode(address uint8) (factoryID string, nodeType uint8, ok boo
 	return fid.String, uint8(nt), true, nil
 }
 
-// DeleteNode removes a node's registry row (provisioning remove) and, for a solar
-// node, its raw + aggregate history - so a removed node leaves nothing behind
-// (compact lifecycle). Its node_param current state is left as-is (harmless; a
-// re-provision overwrites).
+// DeleteNode removes a node LOCALLY: its registry row (freeing the RF address at
+// once) and, for a solar node, its raw + aggregate history - so nothing is left
+// behind on the gateway (compact lifecycle, immediate removal per the reactive
+// model). Its node_param current state is left as-is (harmless; a re-provision
+// overwrites). On the MIRROR the row + history are kept (the bq_node_d trigger
+// enqueues archive_node = soft-delete): that is the trash, from which RestoreNode
+// can bring the node back within the retention window.
 func (s *Store) DeleteNode(address uint8) error {
 	// Resolve to the stable node_id first: history/aggregates are keyed by it, and it
 	// is needed for the cascade after the node row (holding the address) is gone.
@@ -703,11 +709,14 @@ func (s *Store) DeleteNode(address uint8) error {
 }
 
 // allocAddr returns the lowest free pool address (freed addresses are reused).
-// This is safe because of the graceful-remove invariant: a node's row is deleted
-// (its address freed) ONLY after the node confirms it cleared itself to
-// unprovisioned - so a freed address never has a stale node on it. An offline /
-// never-confirmed node keeps its row (pending_remove), so its address stays
-// reserved and out of the free set. Runs inside the tx.
+// "Free" = no node row holds that address. Removal frees the address immediately
+// (the node goes to the trash keyed by its stable id, not its address; detached
+// nodes hold address=NULL) - so the pool never freezes because of the trash. The
+// hazard of a reused address (a removed-but-offline node returning on it) is closed
+// reactively by the wire contract: a frame's (addr, factory_id) must match the live
+// binding or the gateway sends MSG_UNREGISTERED (Docs/NODE-MANAGEMENT §5.2, firmware
+// step §12.2). Until that lands, removal best-effort tells an online node to clear
+// itself. Runs inside the tx.
 func allocAddr(tx *sql.Tx) (uint8, error) {
 	rows, err := tx.Query(
 		`SELECT address FROM node WHERE address BETWEEN ? AND ?`, addrPoolFirst, addrPoolLast)

@@ -34,9 +34,11 @@ const backupBatch = 500
 // for readability; the queue itself is ordered by insert id.
 //
 // Each entry: the trigger payload (json_object args) for INSERT/UPDATE upserts. node
-// DELETE enqueues a purge_node (wipes the node across the mirror in one shot); the
-// aggregates and node_param have no delete trigger - they are only removed via a node
-// purge or a dev-only rebuild that re-inserts.
+// DELETE enqueues an archive_node (soft-delete on the mirror: sets archived_at, keeps
+// the row + history as trash for restore); the retention cron does the eventual real
+// purge server-side. The aggregates and node_param have no delete trigger - they are
+// kept on the mirror through the trash window and only cleared by that cron (or a
+// dev-only rebuild that re-inserts).
 var backupTriggerSQL = []string{
 	// config (backup_* keys are gateway-local bookkeeping - never mirror them)
 	`CREATE TRIGGER IF NOT EXISTS bq_config_i AFTER INSERT ON config WHEN NEW.key NOT LIKE 'backup%' BEGIN
@@ -48,20 +50,25 @@ var backupTriggerSQL = []string{
 	`CREATE TRIGGER IF NOT EXISTS bq_config_d AFTER DELETE ON config WHEN OLD.key NOT LIKE 'backup%' BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('config','delete',
 			json_object('key',OLD.key)); END`,
-	// node
+	// node. The upsert carries archived_at = NULL: the local DB only ever holds LIVE
+	// nodes (the trash exists only on the mirror), so every push of a node row asserts
+	// "this node is live" and clears any archive on the mirror. That makes restore
+	// self-healing - re-inserting a node locally (or its next telemetry) un-archives it
+	// without a separate op. A local DELETE = removal -> the mirror soft-deletes
+	// (archive_node sets archived_at), keeping the row + history for the trash/restore.
 	`CREATE TRIGGER IF NOT EXISTS bq_node_i AFTER INSERT ON node BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('node','upsert',
 			json_object('node_id',NEW.node_id,'address',NEW.address,'node_type',NEW.node_type,'name',NEW.name,
 				'factory_id',NEW.factory_id,'status',NEW.status,'provisioned_at',NEW.provisioned_at,
-				'last_seen',NEW.last_seen,'room',NEW.room)); END`,
+				'last_seen',NEW.last_seen,'room',NEW.room,'archived_at',NULL)); END`,
 	`CREATE TRIGGER IF NOT EXISTS bq_node_u AFTER UPDATE ON node BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('node','upsert',
 			json_object('node_id',NEW.node_id,'address',NEW.address,'node_type',NEW.node_type,'name',NEW.name,
 				'factory_id',NEW.factory_id,'status',NEW.status,'provisioned_at',NEW.provisioned_at,
-				'last_seen',NEW.last_seen,'room',NEW.room)); END`,
+				'last_seen',NEW.last_seen,'room',NEW.room,'archived_at',NULL)); END`,
 	`CREATE TRIGGER IF NOT EXISTS bq_node_d AFTER DELETE ON node BEGIN
-		INSERT INTO backup_queue(kind,op,payload) VALUES('purge_node','delete',
-			json_object('node_id',OLD.node_id)); END`,
+		INSERT INTO backup_queue(kind,op,payload) VALUES('archive_node','archive',
+			json_object('node_id',OLD.node_id,'archived_at',CAST(strftime('%s','now') AS INTEGER))); END`,
 	// node_param (current state)
 	`CREATE TRIGGER IF NOT EXISTS bq_np_i AFTER INSERT ON node_param BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('node_param','upsert',
@@ -149,7 +156,7 @@ func (s *Store) SeedBackupFromCurrentState() error {
 			json_object('key',key,'value',value) FROM config WHERE key NOT LIKE 'backup%'`},
 		{"node", `INSERT INTO backup_queue(kind,op,payload) SELECT 'node','upsert',
 			json_object('node_id',node_id,'address',address,'node_type',node_type,'name',name,'factory_id',factory_id,
-				'status',status,'provisioned_at',provisioned_at,'last_seen',last_seen,'room',room) FROM node`},
+				'status',status,'provisioned_at',provisioned_at,'last_seen',last_seen,'room',room,'archived_at',NULL) FROM node`},
 		{"node_param", `INSERT INTO backup_queue(kind,op,payload) SELECT 'node_param','upsert',
 			json_object('node_id',node_id,'param_key',param_key,'value_num',value_num,'ts',ts) FROM node_param`},
 		{"solar_hourly", `INSERT INTO backup_queue(kind,op,payload) SELECT 'solar_hourly','upsert',

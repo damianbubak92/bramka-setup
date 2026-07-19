@@ -397,6 +397,13 @@ func handleUpdateNode(store *Store, req string, w http.ResponseWriter, r *http.R
 	log.Printf("[HTTP] updatenode 0x%02X -> name=%q room=%q", uint8(addr64), name, room)
 }
 
+// handleRemoveNode deletes a node immediately (reactive model, no pending_remove):
+// hard-delete locally (freeing the RF address at once) and, best-effort, tell an
+// online node to clear its stored identity so it goes silent now. On the mirror the
+// row + history are soft-deleted (kept as trash for restore within retention). An
+// offline node that returns on the freed address is handled reactively once the wire
+// contract lands (MSG_UNREGISTERED, §12.2); until then the best-effort notify covers
+// the online case. Request: "command=removenode&address=<dec>".
 func handleRemoveNode(p *Protocol, store *Store, hub *WSHub, req string, w http.ResponseWriter, r *http.Request) {
 	vals, _ := url.ParseQuery(req)
 	addr64, err := strconv.ParseUint(strings.TrimSpace(vals.Get("address")), 10, 8)
@@ -420,27 +427,25 @@ func handleRemoveNode(p *Protocol, store *Store, hub *WSHub, req string, w http.
 		return
 	}
 
-	// Graceful remove: mark pending_remove (KEEP the row so the address stays
-	// reserved) and tell the node to clear itself. The row is deleted + address
-	// freed only when the node confirms (drain: a node->gw CMD_REMOVE) - see
-	// runServe. If the node is offline now, it confirms when it next speaks
-	// (drain re-sends REMOVE on hearing from a pending_remove address).
-	if err := store.SetPendingRemove(addr); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		io.WriteString(w, "DB error\n")
-		log.Printf("[HTTP] removenode 0x%02X set pending failed: %v", addr, err)
-		return
-	}
+	// Best-effort: tell an online node to erase its identity and go silent now.
 	if fid, fok := factoryHexToBytes(factory); fok {
 		if err := p.SendRemove(fid, nodeType, addr); err != nil {
-			log.Printf("[HTTP] removenode 0x%02X: REMOVE push failed (will retry on contact): %v", addr, err)
+			log.Printf("[HTTP] removenode 0x%02X: notify push failed (offline?): %v", addr, err)
 		}
 	}
-	hub.PublishNodeStatus(addr, "pending_remove") // live: device shows "removing"
+	// Immediate hard-delete: frees the address and drops local history; the mirror
+	// keeps it as trash (bq_node_d -> archive_node).
+	if err := store.DeleteNode(addr); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "DB error\n")
+		log.Printf("[HTTP] removenode 0x%02X delete failed: %v", addr, err)
+		return
+	}
+	hub.PublishNodeStatus(addr, "removed") // live: device drops from the list
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"address": addr, "status": "pending_remove"})
-	log.Printf("[HTTP] removenode 0x%02X (factory %s) -> REMOVE sent, awaiting node confirm", addr, factory)
+	json.NewEncoder(w).Encode(map[string]interface{}{"address": addr, "status": "removed"})
+	log.Printf("[HTTP] removenode 0x%02X (factory %s) -> deleted (address freed, mirror archived)", addr, factory)
 }
 
 func respondPump(p *Protocol, on bool, w http.ResponseWriter, r *http.Request) {

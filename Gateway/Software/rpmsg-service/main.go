@@ -791,25 +791,15 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 				}
 
 				// Lifecycle gate: only registered nodes are recorded; status drives the rest.
-				status, factory, ntype, exists, err := store.NodeStatus(nodeID)
+				// factory_id/type from NodeStatus feed (addr,factory_id) validation once the
+				// wire contract lands (§12.2); for now only the status is consulted.
+				status, _, _, exists, err := store.NodeStatus(nodeID)
 				if err != nil {
 					log.Printf("[Serve] node status query failed (0x%02X): %v", nodeID, err)
 					break
 				}
 				if !exists {
 					log.Printf("[Serve] telemetry from unregistered node 0x%02X - ignoring (unprovisioned should be silent)", nodeID)
-					break
-				}
-				if status == "pending_remove" {
-					// Node never got the REMOVE (was offline) and is still reporting.
-					// Re-send it; don't record until it clears (self-healing).
-					if fid, fok := factoryHexToBytes(factory); fok {
-						if err := p.SendRemove(fid, ntype, nodeID); err != nil {
-							log.Printf("[Serve] re-send REMOVE to 0x%02X failed: %v", nodeID, err)
-						} else {
-							log.Printf("[Serve] node 0x%02X reporting while pending_remove - re-sent REMOVE", nodeID)
-						}
-					}
 					break
 				}
 
