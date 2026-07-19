@@ -198,7 +198,7 @@ func handleHistory(store *Store, req string, w http.ResponseWriter, r *http.Requ
 	if rng == "" {
 		rng = "day"
 	}
-	node := uint8(atoiOr(q.Get("node"), int(solarDefaultNode)))
+	node := int64(atoiOr(q.Get("node"), int(solarDefaultNode)))
 	count := atoiOr(q.Get("count"), 0) // 0 = all periods that have data (SolarHistory)
 
 	series, err := store.SolarHistory(node, rng, count)
@@ -219,10 +219,12 @@ func handleHistory(store *Store, req string, w http.ResponseWriter, r *http.Requ
 	log.Printf("[HTTP] history node %d range %s -> %d period(s)", node, rng, len(series))
 }
 
-// solarDefaultNode is the legacy fixed-address solar controller (0xF1). Until the
-// nodes are reflashed for provisioning there is exactly one, so the phone need not
-// know the address.
-const solarDefaultNode uint8 = 0xF1
+// solarDefaultNode is the legacy solar controller's stable node_id (= 241, preserved
+// from when node_id was the address 0xF1). It is a node_id (history key), NOT an RF
+// address - pump commands target the address separately in nodecmd.go. Until the
+// legacy sniff node is reflashed there is exactly one solar node, so the phone need
+// not pass a node id.
+const solarDefaultNode int64 = 241
 
 // handleState answers "command=state" with the LAST KNOWN telemetry of every
 // node (node_param). The phone calls this once on open so the UI (temperatures,

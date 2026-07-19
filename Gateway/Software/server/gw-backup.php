@@ -18,7 +18,7 @@ require __DIR__ . '/secrets.php';
 // kind -> [table, [pk columns], [all columns]]
 $SCHEMA = [
   'config'        => ['gw_config',        ['key'],            ['key','value']],
-  'node'          => ['gw_node',          ['node_id'],        ['node_id','node_type','name','factory_id','status','provisioned_at','last_seen','room']],
+  'node'          => ['gw_node',          ['node_id'],        ['node_id','address','node_type','name','factory_id','status','provisioned_at','last_seen','room']],
   'node_param'    => ['gw_node_param',     ['node_id','param_key'], ['node_id','param_key','value_num','ts']],
   'solar_hourly'  => ['gw_solar_hourly',  ['node_id','bucket'], ['node_id','bucket','hour_yield','hour_pump','day_yield','day_pump']],
   'solar_daily'   => ['gw_solar_daily',   ['node_id','bucket'], ['node_id','bucket','day_yield','month_yield','month_pump']],

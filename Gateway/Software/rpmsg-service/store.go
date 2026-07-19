@@ -251,7 +251,113 @@ func initNodeSchema(db *sql.DB) error {
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return err
 	}
+	// migrate: decouple the stable logical id from the RF address (Docs/NODE-MANAGEMENT.md).
+	if err := migrateNodeIdentity(db); err != nil {
+		return err
+	}
 	return seedParamDefs(db)
+}
+
+// migrateNodeIdentity splits node.node_id (which USED to be the RF address) into a
+// stable logical id + a separate, reusable `address`. After this, node_id is a
+// never-reused AUTOINCREMENT logical id (history and rules hang off it) and `address`
+// is the RF routing field (0x10-0xEF, NULL when a node is detached). See
+// Docs/NODE-MANAGEMENT.md. One-time recreate (a rowid PK cannot become AUTOINCREMENT
+// via ALTER). Existing nodes KEEP their node_id and get address = node_id (they were
+// the same), so NO history re-keying is needed - history stays keyed by the same
+// node_id values. New nodes get an AUTOINCREMENT node_id above the current max,
+// distinct from their pool-allocated address.
+func migrateNodeIdentity(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(node)`)
+	if err != nil {
+		return err
+	}
+	hasAddress := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "address" {
+			hasAddress = true
+		}
+	}
+	rows.Close()
+	if hasAddress {
+		return nil // already migrated
+	}
+
+	steps := []string{
+		`CREATE TABLE node_new (
+			node_id        INTEGER PRIMARY KEY AUTOINCREMENT,  -- STABLE logical id, NOT the RF address
+			address        INTEGER,                            -- RF address 0x10-0xEF; NULL = detached
+			factory_id     TEXT,
+			node_type      INTEGER NOT NULL,
+			name           TEXT,
+			room           TEXT,
+			status         TEXT,
+			provisioned_at INTEGER,
+			last_seen      INTEGER
+		)`,
+		// Existing node_id was the address -> preserve it as the logical id AND seed the
+		// address with the same value. pending_remove collapses to active (that state is
+		// gone in the new model).
+		`INSERT INTO node_new (node_id, address, factory_id, node_type, name, room, status, provisioned_at, last_seen)
+		 SELECT node_id, node_id, factory_id, node_type, name, room,
+		        CASE WHEN status = 'pending_remove' THEN 'active' ELSE COALESCE(status, 'active') END,
+		        provisioned_at, last_seen
+		 FROM node`,
+		`DROP TABLE node`,
+		`ALTER TABLE node_new RENAME TO node`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS ux_node_addr    ON node(address)    WHERE address    IS NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS ux_node_factory ON node(factory_id) WHERE factory_id IS NOT NULL`,
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range steps {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("node identity migration: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("[Store] node identity migrated: node_id is now a stable logical id, address is separate")
+	return nil
+}
+
+// nodeIDForAddress resolves an RF address to the stable logical node_id. ok=false if
+// no node currently holds that address.
+func (s *Store) nodeIDForAddress(address uint8) (int64, bool, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT node_id FROM node WHERE address = ?`, address).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
+}
+
+// addressForNode resolves a logical node_id to its current RF address (0, false if the
+// node is detached / has no address).
+func (s *Store) addressForNode(id int64) (uint8, bool, error) {
+	var addr sql.NullInt64
+	err := s.db.QueryRow(`SELECT address FROM node WHERE node_id = ?`, id).Scan(&addr)
+	if err == sql.ErrNoRows || !addr.Valid {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return uint8(addr.Int64), true, nil
 }
 
 // paramDefSeed is a built-in catalog row. Labels/units are sensible defaults for
@@ -326,37 +432,37 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) 
 	}
 	defer tx.Rollback()
 
-	// Known chip -> reuse its address (idempotent re-approve / rejoin).
-	var existing sql.NullInt64
-	err = tx.QueryRow(`SELECT node_id FROM node WHERE factory_id = ?`, factoryID).Scan(&existing)
+	// Known chip -> reuse its logical node + address (idempotent re-approve / rejoin).
+	var addr sql.NullInt64
+	err = tx.QueryRow(`SELECT address FROM node WHERE factory_id = ?`, factoryID).Scan(&addr)
 	if err != nil && err != sql.ErrNoRows {
 		return 0, err
 	}
-	if existing.Valid {
-		// Re-approve of a known chip: keep its address + update name/type. A node
-		// mid-removal (pending_remove) is revived to active (cancels the removal);
-		// otherwise the status is left as-is.
-		addr := uint8(existing.Int64)
+	if err != sql.ErrNoRows {
+		// Re-approve of a known chip: keep its node_id/address + update name/type.
+		// A node mid-removal is revived to active; a detached node needs a fresh
+		// address (handled by the replace/re-pair path, not here).
 		if _, err := tx.Exec(
 			`UPDATE node SET name = ?, node_type = ?, provisioned_at = ?, last_seen = ?,
 			     status = CASE WHEN status = 'pending_remove' THEN 'active' ELSE status END
-			 WHERE node_id = ?`, name, nodeType, ts, ts, addr); err != nil {
+			 WHERE factory_id = ?`, name, nodeType, ts, ts, factoryID); err != nil {
 			return 0, err
 		}
-		return addr, tx.Commit()
+		return uint8(addr.Int64), tx.Commit()
 	}
 
-	addr, err := allocAddr(tx)
+	newAddr, err := allocAddr(tx)
 	if err != nil {
 		return 0, err
 	}
-	// New node: pending_join until it confirms (reports under the assigned address).
+	// New logical node: node_id is AUTOINCREMENT (a stable id, distinct from the
+	// reusable RF address). pending_join until it confirms under the assigned address.
 	if _, err := tx.Exec(
-		`INSERT INTO node (node_id, node_type, name, factory_id, provisioned_at, last_seen, status)
-		 VALUES (?, ?, ?, ?, ?, ?, 'pending_join')`, addr, nodeType, name, factoryID, ts, ts); err != nil {
+		`INSERT INTO node (address, node_type, name, factory_id, provisioned_at, last_seen, status)
+		 VALUES (?, ?, ?, ?, ?, ?, 'pending_join')`, newAddr, nodeType, name, factoryID, ts, ts); err != nil {
 		return 0, err
 	}
-	return addr, tx.Commit()
+	return newAddr, tx.Commit()
 }
 
 // ReplaceNode swaps a dead chip for a fresh one on an EXISTING address. History is
@@ -368,7 +474,7 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) 
 func (s *Store) ReplaceNode(targetAddr uint8, newFactoryID string, ts int64) error {
 	res, err := s.db.Exec(
 		`UPDATE node SET factory_id = ?, status = 'pending_join', provisioned_at = ?, last_seen = ?
-		 WHERE node_id = ?`, newFactoryID, ts, ts, targetAddr)
+		 WHERE address = ?`, newFactoryID, ts, ts, targetAddr)
 	if err != nil {
 		return err
 	}
@@ -384,7 +490,7 @@ func (s *Store) ReplaceNode(targetAddr uint8, newFactoryID string, ts int64) err
 // Both are pure labels - the node knows nothing about either. The phone's device
 // editor saves them together, so this is one call (and one round trip).
 func (s *Store) UpdateNode(address uint8, name, room string) error {
-	_, err := s.db.Exec(`UPDATE node SET name = ?, room = ? WHERE node_id = ?`, name, room, address)
+	_, err := s.db.Exec(`UPDATE node SET name = ?, room = ? WHERE address = ?`, name, room, address)
 	return err
 }
 
@@ -393,7 +499,7 @@ func (s *Store) NodeStatus(address uint8) (status, factoryID string, nodeType ui
 	var nt int
 	e := s.db.QueryRow(
 		`SELECT COALESCE(status,'active'), COALESCE(factory_id,''), node_type
-		 FROM node WHERE node_id = ?`, address).Scan(&st, &fid, &nt)
+		 FROM node WHERE address = ?`, address).Scan(&st, &fid, &nt)
 	if e == sql.ErrNoRows {
 		return "", "", 0, false, nil
 	}
@@ -407,20 +513,21 @@ func (s *Store) NodeStatus(address uint8) (status, factoryID string, nodeType ui
 // the assigned address = the node's read-back confirmation).
 func (s *Store) MarkActive(address uint8) error {
 	_, err := s.db.Exec(
-		`UPDATE node SET status = 'active' WHERE node_id = ? AND status = 'pending_join'`, address)
+		`UPDATE node SET status = 'active' WHERE address = ? AND status = 'pending_join'`, address)
 	return err
 }
 
 // SetPendingRemove marks a node as awaiting removal confirmation. The row (and
 // thus its address reservation) stays until the node confirms it cleared itself.
 func (s *Store) SetPendingRemove(address uint8) error {
-	_, err := s.db.Exec(`UPDATE node SET status = 'pending_remove' WHERE node_id = ?`, address)
+	_, err := s.db.Exec(`UPDATE node SET status = 'pending_remove' WHERE address = ?`, address)
 	return err
 }
 
 // NodeInfo is one provisioned node for the phone's device list (listnodes).
 type NodeInfo struct {
-	Address       int    `json:"address"`      // node_id (assigned address)
+	NodeID        int64  `json:"id"`           // stable logical id (survives address/chip changes)
+	Address       int    `json:"address"`      // current RF address (reusable)
 	Type          int    `json:"type"`         // NODE_* (app maps to a label)
 	Name          string `json:"name"`         // user label set at approval
 	FactoryID     string `json:"factory"`      // chip identity (hex)
@@ -435,7 +542,8 @@ type NodeInfo struct {
 // toggles) shows real values immediately, without waiting for the next 2-minute
 // WS telemetry push.
 type NodeState struct {
-	Address int                `json:"address"`
+	NodeID  int64              `json:"id"`      // stable logical id
+	Address int                `json:"address"` // current RF address
 	Type    int                `json:"type"`    // NODE_* (from the node row RecordTelemetry upserts)
 	Params  map[string]float64 `json:"params"`  // param_key -> value (same keys as the WS telemetry event)
 	Ts      int64              `json:"ts"`      // unix s of the newest param in this node
@@ -460,7 +568,7 @@ func (s *Store) ListState() ([]NodeState, error) {
 	// node_param row (no node row) would masquerade as the solar controller and the
 	// app would render its missing params as zeros. -1 = unknown, matches no NODE_*.
 	rows, err := s.db.Query(
-		`SELECT p.node_id, COALESCE(n.node_type, -1), p.param_key,
+		`SELECT p.node_id, COALESCE(n.address, 0), COALESCE(n.node_type, -1), p.param_key,
 		        COALESCE(p.value_num, 0), p.ts
 		 FROM node_param p
 		 LEFT JOIN node n ON n.node_id = p.node_id
@@ -470,19 +578,20 @@ func (s *Store) ListState() ([]NodeState, error) {
 	}
 	defer rows.Close()
 
-	byID := make(map[int]*NodeState)
-	order := make([]int, 0, 8)
+	byID := make(map[int64]*NodeState)
+	order := make([]int64, 0, 8)
 	for rows.Next() {
-		var id, typ int
+		var id int64
+		var address, typ int
 		var key string
 		var val float64
 		var ts int64
-		if err := rows.Scan(&id, &typ, &key, &val, &ts); err != nil {
+		if err := rows.Scan(&id, &address, &typ, &key, &val, &ts); err != nil {
 			return nil, err
 		}
 		st, ok := byID[id]
 		if !ok {
-			st = &NodeState{Address: id, Type: typ, Params: make(map[string]float64)}
+			st = &NodeState{NodeID: id, Address: address, Type: typ, Params: make(map[string]float64)}
 			byID[id] = st
 			order = append(order, id)
 		}
@@ -500,7 +609,7 @@ func (s *Store) ListState() ([]NodeState, error) {
 	if prows, perr := s.db.Query(`SELECT node_id, generated_power_kw, energy_gain_kwh FROM solar_state`); perr == nil {
 		defer prows.Close()
 		for prows.Next() {
-			var id int
+			var id int64
 			var kw, day sql.NullFloat64
 			if err := prows.Scan(&id, &kw, &day); err != nil {
 				continue
@@ -535,7 +644,7 @@ func (s *Store) ListState() ([]NodeState, error) {
 // last_seen is kept fresh by RecordTelemetry.
 func (s *Store) ListNodes() ([]NodeInfo, error) {
 	rows, err := s.db.Query(
-		`SELECT node_id, node_type, COALESCE(name,''), COALESCE(factory_id,''),
+		`SELECT node_id, COALESCE(address,0), node_type, COALESCE(name,''), COALESCE(factory_id,''),
 		        COALESCE(status,'active'), COALESCE(last_seen,0), COALESCE(provisioned_at,0),
 		        COALESCE(room,'')
 		 FROM node
@@ -548,7 +657,7 @@ func (s *Store) ListNodes() ([]NodeInfo, error) {
 	out := []NodeInfo{}
 	for rows.Next() {
 		var n NodeInfo
-		if err := rows.Scan(&n.Address, &n.Type, &n.Name, &n.FactoryID,
+		if err := rows.Scan(&n.NodeID, &n.Address, &n.Type, &n.Name, &n.FactoryID,
 			&n.Status, &n.LastSeen, &n.ProvisionedAt, &n.Room); err != nil {
 			return nil, err
 		}
@@ -562,7 +671,7 @@ func (s *Store) GetNode(address uint8) (factoryID string, nodeType uint8, ok boo
 	var fid sql.NullString
 	var nt int
 	e := s.db.QueryRow(
-		`SELECT COALESCE(factory_id,''), node_type FROM node WHERE node_id = ?`, address).
+		`SELECT COALESCE(factory_id,''), node_type FROM node WHERE address = ?`, address).
 		Scan(&fid, &nt)
 	if e == sql.ErrNoRows {
 		return "", 0, false, nil
@@ -578,10 +687,19 @@ func (s *Store) GetNode(address uint8) (factoryID string, nodeType uint8, ok boo
 // (compact lifecycle). Its node_param current state is left as-is (harmless; a
 // re-provision overwrites).
 func (s *Store) DeleteNode(address uint8) error {
-	if _, err := s.db.Exec(`DELETE FROM node WHERE node_id = ?`, address); err != nil {
+	// Resolve to the stable node_id first: history/aggregates are keyed by it, and it
+	// is needed for the cascade after the node row (holding the address) is gone.
+	id, ok, err := s.nodeIDForAddress(address)
+	if err != nil {
 		return err
 	}
-	return s.dropSolarNode(address)
+	if !ok {
+		return nil // already gone
+	}
+	if _, err := s.db.Exec(`DELETE FROM node WHERE node_id = ?`, id); err != nil {
+		return err
+	}
+	return s.dropSolarNode(id)
 }
 
 // allocAddr returns the lowest free pool address (freed addresses are reused).
@@ -592,7 +710,7 @@ func (s *Store) DeleteNode(address uint8) error {
 // reserved and out of the free set. Runs inside the tx.
 func allocAddr(tx *sql.Tx) (uint8, error) {
 	rows, err := tx.Query(
-		`SELECT node_id FROM node WHERE node_id BETWEEN ? AND ?`, addrPoolFirst, addrPoolLast)
+		`SELECT address FROM node WHERE address BETWEEN ? AND ?`, addrPoolFirst, addrPoolLast)
 	if err != nil {
 		return 0, err
 	}
@@ -617,22 +735,24 @@ func allocAddr(tx *sql.Tx) (uint8, error) {
 }
 
 // RecordTelemetry upserts the node's current state (node_param) and, for a solar
-// full reading, appends a solar_history row, all in one transaction. ts is unix s.
-func (s *Store) RecordTelemetry(nodeID, nodeType uint8, params []NodeParam, ts int64) error {
+// full reading, appends a solar_history row, all in one transaction. `address` is the
+// RF source address; it is resolved to the stable node_id under which state and
+// history are keyed. The node must already be registered (the drain gates on
+// NodeStatus), so the resolution always finds a row. ts is unix s.
+func (s *Store) RecordTelemetry(address, nodeType uint8, params []NodeParam, ts int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
+	var nodeID int64
+	if err := tx.QueryRow(`SELECT node_id FROM node WHERE address = ?`, address).Scan(&nodeID); err != nil {
+		return fmt.Errorf("telemetry from unregistered address 0x%02X: %w", address, err)
+	}
 	if _, err := tx.Exec(
-		`INSERT INTO node (node_id, node_type, provisioned_at, last_seen)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(node_id) DO UPDATE SET
-		     node_type = excluded.node_type,
-		     last_seen = excluded.last_seen`,
-		nodeID, nodeType, ts, ts,
-	); err != nil {
+		`UPDATE node SET node_type = ?, last_seen = ? WHERE node_id = ?`,
+		nodeType, ts, nodeID); err != nil {
 		return err
 	}
 
@@ -701,7 +821,7 @@ const solarMinIntervalS = 60
 // little yield still lands; matching it keeps gen1 and gen2 numbers comparable).
 // energy_gain_delta keeps the last 2-min delta for the power VIEW only.
 // Duplicate redeliveries are dropped (see solarMinIntervalS).
-func (s *Store) recordSolarHistory(tx *sql.Tx, nodeID uint8, v map[string]float64, ts int64) error {
+func (s *Store) recordSolarHistory(tx *sql.Tx, nodeID int64, v map[string]float64, ts int64) error {
 	delta := int64(v["energyGain"]) // raw 2-min gain, kWh*10000
 	pumpInc := int64(0)
 	if delta > 0 {

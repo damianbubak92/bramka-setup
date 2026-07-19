@@ -85,7 +85,7 @@ func sameLocalYear(a, b int64, loc *time.Location) bool {
 // aggregateSolar rolls up every hour/day/month that has completed for this node, then
 // prunes the raw buffer. Own transaction: called AFTER the raw row is committed, so a
 // failure here never loses the reading - it just leaves the buffer for a retry.
-func (s *Store) aggregateSolar(node uint8, ts int64) error {
+func (s *Store) aggregateSolar(node int64, ts int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -110,7 +110,7 @@ func (s *Store) aggregateSolar(node uint8, ts int64) error {
 // raw buffer, then prunes it. Used after a gen1 import (which loads the full raw,
 // rebuilds, and drops it). gen1 is authoritative simply because we recompute from its
 // raw every time.
-func (s *Store) RebuildSolarAggregates(node uint8) error {
+func (s *Store) RebuildSolarAggregates(node int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -139,7 +139,7 @@ func (s *Store) RebuildSolarAggregates(node uint8) error {
 
 // distinctBucketsAfter returns the local period buckets (via startFn) that appear in
 // `table` for the node, are strictly before `boundary`, and after `after`.
-func (s *Store) distinctBuckets(tx *sql.Tx, table string, node uint8, timeCol string,
+func (s *Store) distinctBuckets(tx *sql.Tx, table string, node int64, timeCol string,
 	after, boundary int64, startFn func(int64) int64) ([]int64, error) {
 	rows, err := tx.Query(
 		"SELECT "+timeCol+" FROM "+table+" WHERE node_id = ? AND "+timeCol+" >= ? AND "+timeCol+" < ? ORDER BY "+timeCol,
@@ -164,7 +164,7 @@ func (s *Store) distinctBuckets(tx *sql.Tx, table string, node uint8, timeCol st
 	return out, rows.Err()
 }
 
-func (s *Store) aggregateHoursUpTo(tx *sql.Tx, node uint8, boundaryHour int64) error {
+func (s *Store) aggregateHoursUpTo(tx *sql.Tx, node int64, boundaryHour int64) error {
 	var lastAgg sql.NullInt64
 	if err := tx.QueryRow(`SELECT MAX(bucket) FROM solar_hourly WHERE node_id = ?`, node).Scan(&lastAgg); err != nil {
 		return err
@@ -182,7 +182,7 @@ func (s *Store) aggregateHoursUpTo(tx *sql.Tx, node uint8, boundaryHour int64) e
 	return nil
 }
 
-func (s *Store) aggregateOneHour(tx *sql.Tx, node uint8, h int64) error {
+func (s *Store) aggregateOneHour(tx *sql.Tx, node int64, h int64) error {
 	// This hour's cumulative = the last raw reading inside it.
 	var curEnergy, curPump int64
 	err := tx.QueryRow(
@@ -223,7 +223,7 @@ func (s *Store) aggregateOneHour(tx *sql.Tx, node uint8, h int64) error {
 	return err
 }
 
-func (s *Store) aggregateDaysUpTo(tx *sql.Tx, node uint8, boundaryDay int64) error {
+func (s *Store) aggregateDaysUpTo(tx *sql.Tx, node int64, boundaryDay int64) error {
 	var lastAgg sql.NullInt64
 	if err := tx.QueryRow(`SELECT MAX(bucket) FROM solar_daily WHERE node_id = ?`, node).Scan(&lastAgg); err != nil {
 		return err
@@ -241,7 +241,7 @@ func (s *Store) aggregateDaysUpTo(tx *sql.Tx, node uint8, boundaryDay int64) err
 	return nil
 }
 
-func (s *Store) aggregateOneDay(tx *sql.Tx, node uint8, d int64) error {
+func (s *Store) aggregateOneDay(tx *sql.Tx, node int64, d int64) error {
 	// Day total = SUM of per-hour increments (NOT the last hour's cumulative). gen1's
 	// reset can land inside our local day - zeroing the cumulative near the end - so the
 	// last hour is unreliable; the reset hour just contributes hour_yield 0 to the sum.
@@ -277,7 +277,7 @@ func (s *Store) aggregateOneDay(tx *sql.Tx, node uint8, d int64) error {
 	return err
 }
 
-func (s *Store) aggregateMonthsUpTo(tx *sql.Tx, node uint8, boundaryMonth int64) error {
+func (s *Store) aggregateMonthsUpTo(tx *sql.Tx, node int64, boundaryMonth int64) error {
 	var lastAgg sql.NullInt64
 	if err := tx.QueryRow(`SELECT MAX(bucket) FROM solar_monthly WHERE node_id = ?`, node).Scan(&lastAgg); err != nil {
 		return err
@@ -295,7 +295,7 @@ func (s *Store) aggregateMonthsUpTo(tx *sql.Tx, node uint8, boundaryMonth int64)
 	return nil
 }
 
-func (s *Store) aggregateOneMonth(tx *sql.Tx, node uint8, m int64) error {
+func (s *Store) aggregateOneMonth(tx *sql.Tx, node int64, m int64) error {
 	var monthYield float64
 	var monthPump int64
 	err := tx.QueryRow(
@@ -329,14 +329,14 @@ func (s *Store) aggregateOneMonth(tx *sql.Tx, node uint8, m int64) error {
 
 // pruneSolarRaw drops raw older than the 2h buffer (keeps enough for the next power
 // calc, which needs the previous reading).
-func (s *Store) pruneSolarRaw(tx *sql.Tx, node uint8, ts int64) error {
+func (s *Store) pruneSolarRaw(tx *sql.Tx, node int64, ts int64) error {
 	_, err := tx.Exec(`DELETE FROM solar_history WHERE node_id = ? AND reading_time < ?`,
 		node, ts-solarRawBufferSec)
 	return err
 }
 
 // dropSolarNode removes a node's raw + all aggregates (used when a node is removed).
-func (s *Store) dropSolarNode(node uint8) error {
+func (s *Store) dropSolarNode(node int64) error {
 	for _, t := range []string{"solar_history", "solar_hourly", "solar_daily", "solar_monthly"} {
 		if _, err := s.db.Exec("DELETE FROM "+t+" WHERE node_id = ?", node); err != nil {
 			return err
@@ -352,9 +352,9 @@ func (s *Store) AggregateAllSolarOnStartup() {
 	if err != nil {
 		return
 	}
-	var nodes []uint8
+	var nodes []int64
 	for rows.Next() {
-		var n uint8
+		var n int64
 		if rows.Scan(&n) == nil {
 			nodes = append(nodes, n)
 		}
@@ -372,7 +372,7 @@ func (s *Store) AggregateAllSolarOnStartup() {
 
 // solarLiveDay returns today's live cumulative (kWh, pump minutes) from the newest raw
 // row, plus which local day it belongs to. ok=false when there is no raw at all.
-func (s *Store) solarLiveDay(node uint8) (day int64, kwh float64, pump int64, ok bool) {
+func (s *Store) solarLiveDay(node int64) (day int64, kwh float64, pump int64, ok bool) {
 	var ts, energy, p int64
 	err := s.db.QueryRow(
 		`SELECT reading_time, energy_gain, pump_runtime FROM solar_history
@@ -402,7 +402,7 @@ func (s *Store) solarLabel(rng string, bucket, lastYear int64) string {
 // back (newest last); ignored for "total". count <= 0 means "every period that has
 // data" (from the first reading to now), so the app's arrows can browse the whole
 // history and stop exactly where the data does.
-func (s *Store) SolarHistory(node uint8, rng string, count int) ([]SolarSeries, error) {
+func (s *Store) SolarHistory(node int64, rng string, count int) ([]SolarSeries, error) {
 	first, _, err := s.solarSpan(node)
 	if err != nil {
 		return nil, err
@@ -463,7 +463,7 @@ func (s *Store) SolarHistory(node uint8, rng string, count int) ([]SolarSeries, 
 	return nil, fmt.Errorf("unknown range %q (day|month|year|total)", rng)
 }
 
-func (s *Store) solarSpan(node uint8) (int64, int64, error) {
+func (s *Store) solarSpan(node int64) (int64, int64, error) {
 	// The oldest data may already be aggregated away from the raw buffer, so span
 	// comes from the coarsest level present.
 	var first, last sql.NullInt64
@@ -482,7 +482,7 @@ func (s *Store) solarSpan(node uint8) (int64, int64, error) {
 
 // currentHourLiveYield: today's live cumulative minus the last aggregated hour of
 // today = the in-progress hour's partial yield (the raw tail of the day chart).
-func (s *Store) currentHourLiveYield(node uint8, dayB int64, liveKwh float64) float64 {
+func (s *Store) currentHourLiveYield(node int64, dayB int64, liveKwh float64) float64 {
 	var lastHourCum sql.NullFloat64
 	_ = s.db.QueryRow(
 		`SELECT day_yield FROM solar_hourly
@@ -495,7 +495,7 @@ func (s *Store) currentHourLiveYield(node uint8, dayB int64, liveKwh float64) fl
 	return v
 }
 
-func (s *Store) daySeries(node uint8, dayB, liveDay int64, liveKwh float64, livePump int64, hasLive bool) SolarSeries {
+func (s *Store) daySeries(node int64, dayB, liveDay int64, liveKwh float64, livePump int64, hasLive bool) SolarSeries {
 	isToday := hasLive && liveDay == dayB
 	ser := SolarSeries{Bucket: dayB, Label: s.solarLabel("day", dayB, 0)}
 
@@ -535,7 +535,7 @@ func (s *Store) daySeries(node uint8, dayB, liveDay int64, liveKwh float64, live
 
 // dayTotal = SUM of the day's per-hour increments (robust to a mid-day reset; see
 // aggregateOneDay).
-func (s *Store) dayTotal(node uint8, dayB int64) (float64, int64) {
+func (s *Store) dayTotal(node int64, dayB int64) (float64, int64) {
 	var y sql.NullFloat64
 	var p sql.NullInt64
 	_ = s.db.QueryRow(
@@ -545,7 +545,7 @@ func (s *Store) dayTotal(node uint8, dayB int64) (float64, int64) {
 	return y.Float64, p.Int64
 }
 
-func (s *Store) monthSeries(node uint8, monthB, liveDay int64, liveKwh float64, livePump int64, hasLive bool) SolarSeries {
+func (s *Store) monthSeries(node int64, monthB, liveDay int64, liveKwh float64, livePump int64, hasLive bool) SolarSeries {
 	ser := SolarSeries{Bucket: monthB, Label: s.solarLabel("month", monthB, 0)}
 	isThisMonth := hasLive && sameLocalMonth(liveDay, monthB, s.loc)
 
@@ -585,7 +585,7 @@ func (s *Store) monthSeries(node uint8, monthB, liveDay int64, liveKwh float64, 
 // monthThroughCompleteDays = month_yield/month_pump of the last solar_daily row in the
 // month strictly before `beforeDay` (i.e. complete days only). When not this month,
 // beforeDay is ignored by the caller.
-func (s *Store) monthThroughCompleteDays(node uint8, monthB, beforeDay int64, thisMonth bool) (float64, int64) {
+func (s *Store) monthThroughCompleteDays(node int64, monthB, beforeDay int64, thisMonth bool) (float64, int64) {
 	upper := s.nextMonth(monthB)
 	if thisMonth {
 		upper = beforeDay // exclude today
@@ -599,7 +599,7 @@ func (s *Store) monthThroughCompleteDays(node uint8, monthB, beforeDay int64, th
 	return y.Float64, p.Int64
 }
 
-func (s *Store) monthTotal(node uint8, monthB int64) (float64, int64) {
+func (s *Store) monthTotal(node int64, monthB int64) (float64, int64) {
 	var y sql.NullFloat64
 	var p sql.NullInt64
 	_ = s.db.QueryRow(
@@ -611,7 +611,7 @@ func (s *Store) monthTotal(node uint8, monthB int64) (float64, int64) {
 
 // yearSeries: bars = months of the year (month totals). The current month bar and the
 // year total are composed live (complete days this month + today's raw tail).
-func (s *Store) yearSeries(node uint8, year int, liveDay int64, liveKwh float64, livePump int64, hasLive bool) SolarSeries {
+func (s *Store) yearSeries(node int64, year int, liveDay int64, liveKwh float64, livePump int64, hasLive bool) SolarSeries {
 	yearB := time.Date(year, 1, 1, 0, 0, 0, 0, s.loc).Unix()
 	ser := SolarSeries{Bucket: yearB, Label: s.solarLabel("year", yearB, 0)}
 	isThisYear := hasLive && s.local(liveDay).Year() == year
@@ -656,7 +656,7 @@ func (s *Store) yearSeries(node uint8, year int, liveDay int64, liveKwh float64,
 
 // yearThroughCompleteMonths = year_yield/year_pump of the last solar_monthly row this
 // year strictly before beforeMonth (complete months only).
-func (s *Store) yearThroughCompleteMonths(node uint8, yearB, beforeMonth int64) (float64, int64) {
+func (s *Store) yearThroughCompleteMonths(node int64, yearB, beforeMonth int64) (float64, int64) {
 	var y sql.NullFloat64
 	var p sql.NullInt64
 	_ = s.db.QueryRow(
@@ -666,7 +666,7 @@ func (s *Store) yearThroughCompleteMonths(node uint8, yearB, beforeMonth int64) 
 	return y.Float64, p.Int64
 }
 
-func (s *Store) yearTotal(node uint8, yearB int64) (float64, int64) {
+func (s *Store) yearTotal(node int64, yearB int64) (float64, int64) {
 	var y sql.NullFloat64
 	var p sql.NullInt64
 	_ = s.db.QueryRow(
@@ -677,7 +677,7 @@ func (s *Store) yearTotal(node uint8, yearB int64) (float64, int64) {
 }
 
 // totalSeries: one bar per year (year totals), current year composed live.
-func (s *Store) totalSeries(node uint8, firstYear, curYear int, liveDay int64, liveKwh float64, livePump int64, hasLive bool) SolarSeries {
+func (s *Store) totalSeries(node int64, firstYear, curYear int, liveDay int64, liveKwh float64, livePump int64, hasLive bool) SolarSeries {
 	firstB := time.Date(firstYear, 1, 1, 0, 0, 0, 0, s.loc).Unix()
 	ser := SolarSeries{Bucket: firstB, Label: s.solarLabel("total", firstB, int64(curYear))}
 	for y := firstYear; y <= curYear; y++ {

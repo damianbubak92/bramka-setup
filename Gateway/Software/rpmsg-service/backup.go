@@ -51,12 +51,12 @@ var backupTriggerSQL = []string{
 	// node
 	`CREATE TRIGGER IF NOT EXISTS bq_node_i AFTER INSERT ON node BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('node','upsert',
-			json_object('node_id',NEW.node_id,'node_type',NEW.node_type,'name',NEW.name,
+			json_object('node_id',NEW.node_id,'address',NEW.address,'node_type',NEW.node_type,'name',NEW.name,
 				'factory_id',NEW.factory_id,'status',NEW.status,'provisioned_at',NEW.provisioned_at,
 				'last_seen',NEW.last_seen,'room',NEW.room)); END`,
 	`CREATE TRIGGER IF NOT EXISTS bq_node_u AFTER UPDATE ON node BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('node','upsert',
-			json_object('node_id',NEW.node_id,'node_type',NEW.node_type,'name',NEW.name,
+			json_object('node_id',NEW.node_id,'address',NEW.address,'node_type',NEW.node_type,'name',NEW.name,
 				'factory_id',NEW.factory_id,'status',NEW.status,'provisioned_at',NEW.provisioned_at,
 				'last_seen',NEW.last_seen,'room',NEW.room)); END`,
 	`CREATE TRIGGER IF NOT EXISTS bq_node_d AFTER DELETE ON node BEGIN
@@ -105,9 +105,19 @@ var backupTriggerNames = []string{
 // the triggers build their payload with it, and a trigger that errors at fire time
 // would abort the very INSERT/UPDATE that fired it (i.e. break telemetry). If JSON1 is
 // missing we refuse to install (backup stays off) rather than risk the writes.
+//
+// Drops every trigger before recreating it: a plain CREATE TRIGGER IF NOT EXISTS would
+// silently keep an OLDER definition already in the DB, so a changed payload (e.g. adding
+// a new column to the mirrored row) would never take effect. Drop-then-create guarantees
+// the live triggers always match the current code.
 func (s *Store) InstallBackupTriggers() error {
 	if _, err := s.db.Exec(`SELECT json_object('probe', 1)`); err != nil {
 		return fmt.Errorf("SQLite JSON1 unavailable, backup disabled: %w", err)
+	}
+	for _, n := range backupTriggerNames {
+		if _, err := s.db.Exec("DROP TRIGGER IF EXISTS " + n); err != nil {
+			return fmt.Errorf("refresh backup trigger %s: %w", n, err)
+		}
 	}
 	for _, q := range backupTriggerSQL {
 		if _, err := s.db.Exec(q); err != nil {
@@ -138,7 +148,7 @@ func (s *Store) SeedBackupFromCurrentState() error {
 		{"config", `INSERT INTO backup_queue(kind,op,payload) SELECT 'config','upsert',
 			json_object('key',key,'value',value) FROM config WHERE key NOT LIKE 'backup%'`},
 		{"node", `INSERT INTO backup_queue(kind,op,payload) SELECT 'node','upsert',
-			json_object('node_id',node_id,'node_type',node_type,'name',name,'factory_id',factory_id,
+			json_object('node_id',node_id,'address',address,'node_type',node_type,'name',name,'factory_id',factory_id,
 				'status',status,'provisioned_at',provisioned_at,'last_seen',last_seen,'room',room) FROM node`},
 		{"node_param", `INSERT INTO backup_queue(kind,op,payload) SELECT 'node_param','upsert',
 			json_object('node_id',node_id,'param_key',param_key,'value_num',value_num,'ts',ts) FROM node_param`},
@@ -318,7 +328,7 @@ func (s *Store) RestoreFromMirror(restoreURL, key string, insecure bool) error {
 	}
 	targets := []target{
 		{"config", []string{"key", "value"}, dump.Config},
-		{"node", []string{"node_id", "node_type", "name", "factory_id", "status", "provisioned_at", "last_seen", "room"}, dump.Node},
+		{"node", []string{"node_id", "address", "node_type", "name", "factory_id", "status", "provisioned_at", "last_seen", "room"}, dump.Node},
 		{"node_param", []string{"node_id", "param_key", "value_num", "ts"}, dump.NodeParam},
 		{"solar_hourly", []string{"node_id", "bucket", "hour_yield", "hour_pump", "day_yield", "day_pump"}, dump.SolarHourly},
 		{"solar_daily", []string{"node_id", "bucket", "day_yield", "month_yield", "month_pump"}, dump.SolarDaily},

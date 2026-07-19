@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS gw_config (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS gw_node (
-  node_id        INT NOT NULL,
+  node_id        INT NOT NULL,      -- stable logical id (not the RF address)
+  address        INT,               -- current RF address, NULL when detached
   node_type      INT NOT NULL,
   name           VARCHAR(128),
   factory_id     VARCHAR(32),
