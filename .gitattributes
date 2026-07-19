@@ -1,3 +1,8 @@
 *.sh text eol=lf
 *.py text eol=lf
 Makefile text eol=lf
+# systemd units + udev rules must be LF (deployed to the gateway verbatim).
+*.service text eol=lf
+*.path text eol=lf
+*.mount text eol=lf
+*.rules text eol=lf
