@@ -422,6 +422,22 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-21 (cd.2) — DIAGNOZA automatyzacji: gen1 type-based, do przebudowy per-node (⭐ PROJEKT NA 2026-07-22)
+- **Mechanizm reguł DZIAŁA** (push apka→Go→M4F, ewaluacja TIME+PARAMETER/DELTA, fire SET_RELAY/SEND_MESSAGE — kiedyś
+  zweryfikowane), **ale MODEL jest gen1-owy (jeden node na TYP), niekompatybilny z multi-node** (stały `node_id`,
+  reużywalne adresy, wiele nodów tego samego typu). To odłożony §9.
+- **Dlaczego psuje się przy multi-node** (pliki): `engine.c:106 engine_update_node` foldiuje całą telemetrię typu w JEDEN
+  globalny `g_nodes` → gen1 solar 241 i gen2 solar nadpisują się (last-wins, niedeterministyczne); `engine.c:192
+  getDeviceParameterValue` **IGNORUJE `device`**, switch tylko po parametrze → wybór urządzenia w regule kosmetyczny;
+  reguła wskazuje **TYP** (uint8 `d`/`p`, akcja `target`), nie `node_id` (`rulesjson.go`, `AutoFormat.kt` `AutoDevices`/
+  `AutoTargets` = stringi typów). Akcja przekaźnika też po typie → niejednoznaczna.
+- **⭐ PLAN NA 2026-07-22**: (1) rozpisać PEŁNY model automatyzacji dla obecnego stanu projektu (z `node_id`/adresy/
+  multi-node/gen1-sniff), potem (2) implementacja WSZYSTKIE WARSTWY: **M4F** stan per-node (tablica po tożsamości noda,
+  nie jeden `g_nodes`) + `getDeviceParameterValue` per-node; **protokół** (`automation.h`) reguła niesie `node_id`; **Go**
+  mapuje id→slot/routing przy pushu (`rules.go`/`PushRules`); **apka** edytor wybiera konkretny node z realnej listy, nie typ.
+  Uwaga: gen1 (241/242) wypadnie przy reflashu → znika konflikt gen1↔gen2, ale per-node w silniku i tak konieczne.
+  [[automation-engine-type-based]]
+
 ### 2026-07-21 (cd.) — purge gateway-driven na mirror (`purge_node`) — koniec crona serwerowego ✅ (zweryfikowane)
 - **Bramka steruje purge na OBU bazach** (pomysł usera, czystsze niż osobny cron): `bq_node_d` (odpala się tylko na
   purge — jedyny `DELETE FROM node`, bo soft-delete to UPDATE) słał `archive_node`, co **resetowało zegar retencji na
