@@ -77,8 +77,11 @@ class GatewayClient(
 
     // --- Komendy wysokopoziomowe ---
 
-    suspend fun pump(on: Boolean): Boolean =
-        command(if (on) "PUMP_ON" else "PUMP_OFF").trim().equals("OK", ignoreCase = true)
+    /** Pompa dodatkowa. address = konkretny node (null → domyślny solar na bramce). */
+    suspend fun pump(on: Boolean, address: Int? = null): Boolean {
+        val a = address?.let { "&address=$it" } ?: ""
+        return command((if (on) "PUMP_ON" else "PUMP_OFF") + a).trim().equals("OK", ignoreCase = true)
+    }
 
     suspend fun listNodes(): List<NodeInfoDto> = json.decodeFromString(command("listnodes"))
 

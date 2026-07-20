@@ -142,8 +142,8 @@ class GatewayStore(
 
     // --- Akcje (zawsze do bramki) ---
 
-    suspend fun pump(on: Boolean): Result<Unit> = runCatching {
-        if (!client.pump(on)) error("Bramka odrzuciła komendę pompy")
+    suspend fun pump(on: Boolean, address: Int? = null): Result<Unit> = runCatching {
+        if (!client.pump(on, address)) error("Bramka odrzuciła komendę pompy")
     }
 
     suspend fun approveJoin(factoryHex: String, name: String): Result<ApproveResultDto> = runCatching {
@@ -230,9 +230,9 @@ class GatewayStore(
         refresh()
     }
 
-    /** Wykresy uzysku solarnego (day|month|year|total). Osobne żądanie, nie część live-state. */
-    suspend fun solarHistory(range: String, count: Int = 0): Result<List<SolarSeriesDto>> =
-        runCatching { client.solarHistory(range, count) }
+    /** Wykresy uzysku solarnego (day|month|year|total). node = konkretny solar (null → domyślny). */
+    suspend fun solarHistory(range: String, count: Int = 0, node: Long? = null): Result<List<SolarSeriesDto>> =
+        runCatching { client.solarHistory(range, count, node) }
 
     /** Dzisiejsze słupki godzinowe danego noda solarnego jako (bucket unix s, uzysk kWh) —
      * do mini-wykresu na karcie (bucket pozwala wyciąć ostatnie N godzin do „teraz"). */

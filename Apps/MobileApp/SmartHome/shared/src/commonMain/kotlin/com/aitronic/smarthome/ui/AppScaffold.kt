@@ -35,6 +35,7 @@ import com.aitronic.smarthome.ui.dashboard.DashboardScreen
 import com.aitronic.smarthome.ui.devices.DevicesRoot
 import com.aitronic.smarthome.ui.icons.ShIcons
 import com.aitronic.smarthome.ui.solar.SolarScreen
+import com.aitronic.smarthome.ui.solar.SolarSelection
 import com.aitronic.smarthome.ui.theme.Sh
 
 private enum class Tab(val label: String, val icon: ImageVector) {
@@ -53,6 +54,8 @@ private enum class Detail { None, Climate, Solar }
 fun AppScaffold(store: GatewayStore? = null, repo: SmartHomeRepository = SampleRepository) {
     var tab by remember { mutableStateOf(Tab.Dashboard) }
     var detail by remember { mutableStateOf(Detail.None) }
+    // Który node solar otwarto z dashboardu (per-node detal); null = agregat (fallback).
+    var solarSel by remember { mutableStateOf<SolarSelection?>(null) }
     // Nowy JOIN (z WS) → przenieś użytkownika na Urządzenia i otwórz popup dodawania/wymiany,
     // z dowolnego ekranu. Flaga żyje TU (AppScaffold przeżywa zmianę zakładki, DevicesRoot nie),
     // a DevicesRoot kasuje ją przez onJoinConsumed po otwarciu — dzięki temu zwykłe wejście na
@@ -70,12 +73,12 @@ fun AppScaffold(store: GatewayStore? = null, repo: SmartHomeRepository = SampleR
         Box(Modifier.weight(1f)) {
             when (detail) {
                 Detail.Climate -> ClimateScreen(repo) { detail = Detail.None }
-                Detail.Solar -> SolarScreen(repo, store) { detail = Detail.None }
+                Detail.Solar -> SolarScreen(repo, store, solarSel) { detail = Detail.None }
                 Detail.None -> when (tab) {
                     Tab.Dashboard -> DashboardScreen(
                         data = repo.dashboard(),
                         store = store,
-                        onOpenSolar = { detail = Detail.Solar },
+                        onOpenSolar = { sel -> solarSel = sel; detail = Detail.Solar },
                         onOpenClimate = { detail = Detail.Climate },
                     )
                     Tab.Automations -> AutomationsRoot(repo, store)

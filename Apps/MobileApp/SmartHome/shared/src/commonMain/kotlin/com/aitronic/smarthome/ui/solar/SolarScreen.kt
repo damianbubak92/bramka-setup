@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.SmartHomeRepository
 import com.aitronic.smarthome.data.solarState
+import com.aitronic.smarthome.data.solarStateFor
 import com.aitronic.smarthome.data.toPeriods
 import com.aitronic.smarthome.domain.model.SolarPeriod
 import com.aitronic.smarthome.domain.model.SolarRange
@@ -54,14 +55,16 @@ private val NO_SOLAR_DATA = SolarState(
     auxPumpOn = false,
 )
 
+/** Który node solar otwarto z dashboardu (per-node detal). null = tryb agregatu (fallback). */
+data class SolarSelection(val name: String, val address: Int, val nodeId: Long, val legacy: Boolean)
+
 @Composable
-fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: () -> Unit) {
+fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, sel: SolarSelection? = null, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val gw = store?.state?.collectAsState()?.value
-    // Live z bramki (snapshot z bazy przy starcie + push WS). Gdy bramka nie ma telemetrii
-    // tego noda — pokazujemy "—" i pompy STOJĄ. Żadnych danych przykładowych: udawanie
-    // pracującej pompy byłoby mylące.
-    val live = gw?.solarState()
+    // Live z bramki (snapshot z bazy przy starcie + push WS). Per-node gdy znamy wybrany node
+    // (dashboard), inaczej agregat. Brak telemetrii → "—", pompy STOJĄ (bez danych przykładowych).
+    val live = if (sel != null) gw?.solarStateFor(sel.address, injectAux = sel.legacy) else gw?.solarState()
     val solar = live ?: NO_SOLAR_DATA
     var tab by remember { mutableStateOf(SolarRange.Day) }
     // Wykresy z bramki (command=history). Przy podglądzie bez bramki (store==null)
@@ -74,7 +77,7 @@ fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: 
     LaunchedEffect(tab, store) {
         val s = store ?: return@LaunchedEffect
         loadingChart = true
-        val res = s.solarHistory(tab.wire)
+        val res = s.solarHistory(tab.wire, node = sel?.nodeId)
         periods = res.getOrNull()?.toPeriods(tab).orEmpty()
         loadingChart = false
         periodIndex = periods.lastIndex.coerceAtLeast(0)
@@ -82,11 +85,11 @@ fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: 
     // LIVE: telemetria zmienia TYLKO bieżący (najnowszy) okres. Gdy go oglądamy,
     // dociągamy sam ostatni okres (count=1, ~1KB) zamiast całej historii — ostatni
     // słupek rośnie na żywo, a przeglądanie starszych okresów nic nie kosztuje.
-    val solarTs = gw?.firstOfType(com.aitronic.smarthome.data.net.NodeTypes.SOLAR)?.ts ?: 0L
+    val solarTs = (if (sel != null) gw?.telemetry?.get(sel.address) else gw?.firstOfType(com.aitronic.smarthome.data.net.NodeTypes.SOLAR))?.ts ?: 0L
     LaunchedEffect(solarTs) {
         val s = store ?: return@LaunchedEffect
         if (periods.isEmpty() || periodIndex != periods.lastIndex) return@LaunchedEffect
-        s.solarHistory(tab.wire, count = 1).getOrNull()?.toPeriods(tab)?.lastOrNull()?.let { newest ->
+        s.solarHistory(tab.wire, count = 1, node = sel?.nodeId).getOrNull()?.toPeriods(tab)?.lastOrNull()?.let { newest ->
             periods = periods.dropLast(1) + newest
         }
     }
@@ -95,6 +98,9 @@ fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: 
     // natychmiast po wykonaniu komendy (SEND_PUMP_STATUS), więc nie czekamy 2 min.
     // `pending` = wartość zadana, trzymana do czasu potwierdzenia (wtedy toggle jest już
     // przestawiony i widać spinner). Brak potwierdzenia w [PUMP_CONFIRM_MS] -> powrót.
+    // gen1 (legacy) jest tylko podsłuchiwana — nie sterujemy jej pompą (nod słucha własnego
+    // koncentratora gen1, nasze komendy ignoruje). Pompa = tylko podgląd stanu.
+    val pumpReadOnly = sel?.legacy == true
     val confirmed = solar.auxPumpOn
     var pending by remember { mutableStateOf<Boolean?>(null) }
     var pumpError by remember { mutableStateOf<String?>(null) }
@@ -135,7 +141,7 @@ fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: 
             ) { Icon(ShIcons.ChevronLeft, "Wstecz", tint = Color.White, modifier = Modifier.size(24.dp)) }
             Icon(ShIcons.Sun, null, tint = Color.White, modifier = Modifier.size(24.dp))
             Spacer(Modifier.width(6.dp))
-            Text("System solarny", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.W500)
+            Text(sel?.name ?: "System solarny", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.W500)
         }
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
@@ -156,16 +162,21 @@ fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: 
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(if (auxOn) "ON" else "OFF", color = Color.White.copy(alpha = 0.9f), fontSize = 14.sp, fontWeight = FontWeight.W600)
                             Spacer(Modifier.width(8.dp))
-                            PumpToggle(auxOn, enabled = pending == null) {
-                                val target = !auxOn
-                                pumpError = null
-                                pending = target
-                                // Prawdziwa komenda: bramka -> M4F -> SPI -> CC1310 -> RF -> node.
-                                // Trójkąt ruszy dopiero, gdy node odeśle pumpState (potwierdzenie).
-                                scope.launch {
-                                    store?.pump(target)?.onFailure {
-                                        pending = null
-                                        pumpError = "Bramka nie przyjęła komendy"
+                            if (pumpReadOnly) {
+                                // gen1 — bez sterowania, tylko kłódka (podgląd stanu).
+                                Icon(ShIcons.Lock, "tylko podgląd", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(15.dp))
+                            } else {
+                                PumpToggle(auxOn, enabled = pending == null) {
+                                    val target = !auxOn
+                                    pumpError = null
+                                    pending = target
+                                    // Prawdziwa komenda: bramka -> M4F -> SPI -> CC1310 -> RF -> node.
+                                    // Trójkąt ruszy dopiero, gdy node odeśle pumpState (potwierdzenie).
+                                    scope.launch {
+                                        store?.pump(target, sel?.address)?.onFailure {
+                                            pending = null
+                                            pumpError = "Bramka nie przyjęła komendy"
+                                        }
                                     }
                                 }
                             }

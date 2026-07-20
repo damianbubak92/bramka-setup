@@ -422,6 +422,16 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-20 (cd.5) — detal solar PER-NODE (tytuł/dane/wykresy/pompa) + gen1 pompa read-only ✅
+- **Detal solar (okno po kliknięciu karty) jest teraz per-node**, nie agregatowy. `SolarSelection(name,address,nodeId,
+  legacy)` z karty → `AppScaffold` (`solarSel`) → `SolarScreen(sel)`. Tytuł = nazwa noda; dane = `solarStateFor(address)`;
+  wykresy = `history&node=<nodeId>`; pompa = `PUMP_ON/OFF&address=<address>`; `solarTs` z telemetrii tego noda. Fallback
+  sel=null = stary agregat. `solarHistory`/`pump` w kliencie+store dostały param `node`/`address`.
+- **gen1 (legacy) = pompa READ-ONLY** (kłódka zamiast toggle): gen1 jest podsłuchiwana, nod słucha własnego koncentratora
+  i ignoruje nasze komendy → sterowanie dawało fałszywe „nie potwierdzono". Teraz tylko podgląd stanu. gen2 steruje realnie.
+- **Klimat (ClimateScreen) — na jutro**: przyjeżdżają customowe płytki rev2 T&H z fabryki → detal klimatu zrobimy na
+  realnym nodzie, nie na atrapie. [[rev2-th-node-protos-ordered]]
+
 ### 2026-07-20 (cd.4) — dostrajanie kart: realne mini-wykresy solar (ostatnie 8h) + nowy pomarańcz #F5A207 ✅
 - **Mini-wykresy słupkowe na kartach solar = REALNE dane** (były atrapy 1:1 z handoffu). `GatewayClient.solarHistory`
   dostał `node` (per-node), `GatewayStore.solarDayBars(nodeId)` → `history&range=day&count=1&node=` → (bucket, kWh)

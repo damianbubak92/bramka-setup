@@ -35,6 +35,7 @@ import com.aitronic.smarthome.domain.model.ClimateState
 import com.aitronic.smarthome.domain.model.DashboardData
 import com.aitronic.smarthome.domain.model.SolarState
 import com.aitronic.smarthome.ui.icons.ShIcons
+import com.aitronic.smarthome.ui.solar.SolarSelection
 import com.aitronic.smarthome.ui.theme.Sh
 import com.aitronic.smarthome.ui.theme.deviceColor
 
@@ -42,7 +43,7 @@ import com.aitronic.smarthome.ui.theme.deviceColor
 fun DashboardScreen(
     data: DashboardData,
     store: com.aitronic.smarthome.data.GatewayStore? = null,
-    onOpenSolar: () -> Unit,
+    onOpenSolar: (SolarSelection) -> Unit,
     onOpenClimate: () -> Unit,
 ) {
     val gw = store?.state?.collectAsState()?.value
@@ -89,7 +90,7 @@ fun DashboardScreen(
 
 /** Wybór karty wg typu noda. gen1 i gen2 tego samego typu = osobne karty (per-node). */
 @Composable
-private fun NodeCard(gw: GatewayState, n: NodeInfoDto, store: GatewayStore?, onOpenSolar: () -> Unit, onOpenClimate: () -> Unit) {
+private fun NodeCard(gw: GatewayState, n: NodeInfoDto, store: GatewayStore?, onOpenSolar: (SolarSelection) -> Unit, onOpenClimate: () -> Unit) {
     val name = n.name.ifBlank { NodeTypes.label(n.type) }
     when (n.type) {
         NodeTypes.SOLAR -> SolarNodeCard(
@@ -98,7 +99,7 @@ private fun NodeCard(gw: GatewayState, n: NodeInfoDto, store: GatewayStore?, onO
             state = gw.solarStateFor(n.address, injectAux = n.status == "legacy"),
             dailyYield = gw.solarDailyYieldKwhFor(n.address)?.let { "${fmt1(it)} kWh" },
             store = store, nodeId = n.id, telemetryTs = gw.telemetry[n.address]?.ts ?: 0L,
-            onClick = onOpenSolar,
+            onClick = { onOpenSolar(SolarSelection(name, n.address, n.id, n.status == "legacy")) },
         )
         NodeTypes.TH_SENSOR -> ClimateNodeCard(name, gw.climateStateFor(n.address), onOpenClimate)
         NodeTypes.BUFOR -> BufferNodeCard(name, gw.telemetry[n.address]?.params?.get(Params.SBUF_TEMP))
