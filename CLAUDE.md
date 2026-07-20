@@ -422,6 +422,18 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-20 (cd.4) — dostrajanie kart: realne mini-wykresy solar (ostatnie 8h) + nowy pomarańcz #F5A207 ✅
+- **Mini-wykresy słupkowe na kartach solar = REALNE dane** (były atrapy 1:1 z handoffu). `GatewayClient.solarHistory`
+  dostał `node` (per-node), `GatewayStore.solarDayBars(nodeId)` → `history&range=day&count=1&node=` → (bucket, kWh)
+  godzinowe. Karta pobiera przez `produceState` (re-fetch na nową telemetrię, bez pollingu). **Okno: ostatnie (do) 8
+  godzin kończące się na bieżącej godzinie** (`bucket <= now`, now z telemetrii `ts`); wcześnie w dniu mniej niż 8 →
+  wykres „zapełnia się". Normalizacja do maksimum widocznego, wyższe słupki jaśniejsze; brak danych → płaskie przygaszone.
+  (Wcześniejszy pomysł „10 słupków wycentrowanych na 13-14h" odrzucony — user wolał prostsze ostatnie-8h.)
+- **Nowy odcień pomarańczu `#F5A207`** wszędzie (był `#E1850B`): karta solar (gradient `#F5A207→#DD8E04`) + cień, akcent
+  solar w „Urządzeniach", `SolarSchematic`, `AutomationsScreen` (JEŚLI/Bolt), **detal solar** — tło całego ekranu to teraz
+  ten sam gradient co karta (spójność), `Surface` solid `#F5A207` na akcenty.
+- **NASTĘPNIE**: poprawki wewnątrz kart (okna po kliknięciu — detale solar itd.).
+
 ### 2026-07-20 (cd.3) — dashboard NODE-DRIVEN: jedna karta na noda, pojawia/znika z parowaniem ✅ (zweryfikowane na żywo)
 - **Dashboard sterowany realnymi nodami** (był statyczny: jedna karta „System solarny" z agregatu `firstOfType(SOLAR)` +
   atrapy). Teraz **jedna karta na noda**, `gen1` i `gen2` tego samego typu = **osobne karty** (tytuł = nazwa noda).

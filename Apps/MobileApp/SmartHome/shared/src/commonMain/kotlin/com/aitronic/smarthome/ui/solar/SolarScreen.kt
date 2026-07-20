@@ -18,6 +18,7 @@ import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -32,7 +33,9 @@ import com.aitronic.smarthome.domain.model.SolarState
 import com.aitronic.smarthome.ui.icons.ShIcons
 import kotlinx.coroutines.launch
 
-private val Surface = Color(0xFFE1850B)
+private val Surface = Color(0xFFF5A207)
+// Tło ekranu = ten sam gradient co karta solarna na dashboardzie (spójność).
+private val SurfaceBrush = Brush.linearGradient(listOf(Color(0xFFF5A207), Color(0xFFDD8E04)))
 
 /** Ile czekamy na potwierdzenie z noda (SEND_PUMP_STATUS) zanim uznamy próbę za nieudaną. */
 private const val PUMP_CONFIRM_MS = 6_000L
@@ -119,7 +122,7 @@ fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, onBack: 
     val period = periods.getOrNull(periodIndex.coerceAtLeast(0))
         ?: SolarPeriod(if (loadingChart) "Ładowanie…" else "Brak danych", emptyList(), emptyList(), "kWh", "—", "—")
 
-    Column(Modifier.fillMaxSize().background(Surface).windowInsetsPadding(WindowInsets.safeDrawing)) {
+    Column(Modifier.fillMaxSize().background(SurfaceBrush).windowInsetsPadding(WindowInsets.safeDrawing)) {
         // Top bar
         Row(
             Modifier.fillMaxWidth().padding(start = 2.dp, end = 14.dp, top = 2.dp, bottom = 12.dp),

@@ -85,10 +85,12 @@ class GatewayClient(
     /** Ostatnia znana telemetria wszystkich nodów (z bazy) — do zasiania stanu przy starcie. */
     suspend fun state(): List<NodeStateDto> = json.decodeFromString(command("state"))
 
-    /** Wykresy uzysku solarnego. range = day|month|year|total; count = ile okresów wstecz. */
-    suspend fun solarHistory(range: String, count: Int = 0): List<SolarSeriesDto> {
+    /** Wykresy uzysku solarnego. range = day|month|year|total; count = ile okresów wstecz;
+     * node = node_id konkretnego solara (null → domyślny na bramce). */
+    suspend fun solarHistory(range: String, count: Int = 0, node: Long? = null): List<SolarSeriesDto> {
         val c = if (count > 0) "&count=$count" else ""
-        return json.decodeFromString(command("history&range=$range$c"))
+        val n = node?.let { "&node=$it" } ?: ""
+        return json.decodeFromString(command("history&range=$range$c$n"))
     }
 
     suspend fun listJoins(): List<PendingJoinDto> = json.decodeFromString(command("listjoins"))

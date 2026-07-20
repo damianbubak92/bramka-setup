@@ -234,6 +234,13 @@ class GatewayStore(
     suspend fun solarHistory(range: String, count: Int = 0): Result<List<SolarSeriesDto>> =
         runCatching { client.solarHistory(range, count) }
 
+    /** Dzisiejsze słupki godzinowe danego noda solarnego jako (bucket unix s, uzysk kWh) —
+     * do mini-wykresu na karcie (bucket pozwala wyciąć ostatnie N godzin do „teraz"). */
+    suspend fun solarDayBars(nodeId: Long): Result<List<Pair<Long, Double>>> = runCatching {
+        client.solarHistory("day", count = 1, node = nodeId)
+            .firstOrNull()?.bars?.map { it.bucket to it.energyKwh } ?: emptyList()
+    }
+
     suspend fun rulesJson(): Result<String> = runCatching { client.getRulesJson() }
 
     suspend fun saveRulesJson(json: String): Result<Unit> = runCatching {

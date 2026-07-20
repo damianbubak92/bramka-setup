@@ -175,7 +175,7 @@ private fun AutoList(
 
             if (rules.isEmpty()) {
                 EmptyState(
-                    iconBg = Color(0xFFFDF0D0), icon = ShIcons.Bolt, iconTint = Color(0xFFE1850B),
+                    iconBg = Color(0xFFFDF0D0), icon = ShIcons.Bolt, iconTint = Color(0xFFF5A207),
                     title = "Brak automatyzacji",
                     desc = "Twórz reguły, które automatycznie sterują urządzeniami — np. włącz pompę, gdy kolektor jest cieplejszy od bufora.",
                     action = "Nowa automatyzacja", onAction = onNew,
@@ -473,12 +473,12 @@ private fun RulePreview(draft: EditDraft) {
             .background(Sh.surface).border(1.dp, Sh.divider, RoundedCornerShape(20.dp)).padding(horizontal = 18.dp, vertical = 16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(ShIcons.Bolt, null, tint = Color(0xFFE1850B), modifier = Modifier.size(16.dp))
+            Icon(ShIcons.Bolt, null, tint = Color(0xFFF5A207), modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(8.dp))
             Text("PODGLĄD REGUŁY", color = Sh.textMuted, fontSize = 11.sp, fontWeight = FontWeight.W600, letterSpacing = 0.6.sp)
         }
         Spacer(Modifier.height(14.dp))
-        Text("JEŚLI", color = Color(0xFFE1850B), fontSize = 12.sp, fontWeight = FontWeight.W700, letterSpacing = 0.4.sp)
+        Text("JEŚLI", color = Color(0xFFF5A207), fontSize = 12.sp, fontWeight = FontWeight.W700, letterSpacing = 0.4.sp)
         FlowRow(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             draft.conds.forEachIndexed { i, c ->
                 if (i > 0) AndText()

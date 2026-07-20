@@ -41,11 +41,11 @@ object Sh {
 
     // --- Device-themed surfaces (pełny ekran szczegółów) ---
     val climateSurface = Color(0xFF0E7E95) // turkus
-    val solarSurface = Color(0xFFE1850B)   // pomarańcz
+    val solarSurface = Color(0xFFF5A207)   // pomarańcz
 
     // Kafle na dashboardzie: gradient 135deg
     val climateTile = Brush.linearGradient(listOf(Color(0xFF22B0C6), Color(0xFF0E7E95)))
-    val solarTile = Brush.linearGradient(listOf(Color(0xFFF6A21E), Color(0xFFE1850B)))
+    val solarTile = Brush.linearGradient(listOf(Color(0xFFF5A207), Color(0xFFDD8E04)))
 
     // Nakładki na device-themed surface (białe alfy)
     fun onSurfaceDivider() = Color.White.copy(alpha = 0.20f)
@@ -64,7 +64,7 @@ data class DeviceColor(
 
 /** Stała mapa kolorów typów urządzeń (klucz = typ). */
 val DeviceColors: Map<String, DeviceColor> = mapOf(
-    "solar" to DeviceColor(Color(0xFFE1850B), Color(0xFFFDF0D0), Color(0xFF8A5A00), Color(0xFFFBEBCB)),
+    "solar" to DeviceColor(Color(0xFFF5A207), Color(0xFFFDF0D0), Color(0xFF8A5A00), Color(0xFFFBEBCB)),
     "buffer" to DeviceColor(Color(0xFFA15C2B), Color(0xFFEFE1D3), Color(0xFF7A4A1E), Color(0xFFEEDFCF)),
     "pv" to DeviceColor(Color(0xFFC0392B), Color(0xFFF7DDD9), Color(0xFF8E2A20), Color(0xFFF5DAD5)),
     "climate" to DeviceColor(Color(0xFF0E7E95), Color(0xFFD8ECF1), Color(0xFF0A5A6B), Color(0xFFD6EBF0)),

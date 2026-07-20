@@ -24,7 +24,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
 import com.aitronic.smarthome.domain.model.SolarState
 
-private val Orange = Color(0xFFE1850B)
+private val Orange = Color(0xFFF5A207)
 // Górny margines viewBox (0..YSHIFT) był pusty — obcinamy go, przesuwając treść do góry.
 private const val YSHIFT = 40f
 

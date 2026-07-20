@@ -22,6 +22,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.GatewayState
 import com.aitronic.smarthome.data.climateStateFor
 import com.aitronic.smarthome.data.solarDailyYieldKwhFor
@@ -76,7 +78,7 @@ fun DashboardScreen(
                     Spacer(Modifier.height(12.dp))
                     roomNodes.forEachIndexed { i, n ->
                         if (i > 0) Spacer(Modifier.height(12.dp))
-                        NodeCard(gw, n, onOpenSolar, onOpenClimate)
+                        NodeCard(gw, n, store, onOpenSolar, onOpenClimate)
                     }
                     Spacer(Modifier.height(18.dp))
                 }
@@ -87,7 +89,7 @@ fun DashboardScreen(
 
 /** Wybór karty wg typu noda. gen1 i gen2 tego samego typu = osobne karty (per-node). */
 @Composable
-private fun NodeCard(gw: GatewayState, n: NodeInfoDto, onOpenSolar: () -> Unit, onOpenClimate: () -> Unit) {
+private fun NodeCard(gw: GatewayState, n: NodeInfoDto, store: GatewayStore?, onOpenSolar: () -> Unit, onOpenClimate: () -> Unit) {
     val name = n.name.ifBlank { NodeTypes.label(n.type) }
     when (n.type) {
         NodeTypes.SOLAR -> SolarNodeCard(
@@ -95,6 +97,7 @@ private fun NodeCard(gw: GatewayState, n: NodeInfoDto, onOpenSolar: () -> Unit, 
             // aux (2. bufor) wstrzykujemy tylko dla gen1 (legacy); gen2 → "—" (źródło w settings później)
             state = gw.solarStateFor(n.address, injectAux = n.status == "legacy"),
             dailyYield = gw.solarDailyYieldKwhFor(n.address)?.let { "${fmt1(it)} kWh" },
+            store = store, nodeId = n.id, telemetryTs = gw.telemetry[n.address]?.ts ?: 0L,
             onClick = onOpenSolar,
         )
         NodeTypes.TH_SENSOR -> ClimateNodeCard(name, gw.climateStateFor(n.address), onOpenClimate)
@@ -137,8 +140,17 @@ private fun Header(name: String, status: String) {
 }
 
 @Composable
-private fun SolarNodeCard(name: String, state: SolarState?, dailyYield: String?, onClick: () -> Unit) {
-    HeroCard(brush = Sh.solarTile, shadow = Color(0xFFE1850B).copy(alpha = 0.32f), onClick = onClick) {
+private fun SolarNodeCard(
+    name: String, state: SolarState?, dailyYield: String?,
+    store: GatewayStore?, nodeId: Long, telemetryTs: Long,
+    onClick: () -> Unit,
+) {
+    // Dzisiejsze słupki godzinowe (bucket, kWh) z bramki. Re-fetch przy nowej telemetrii
+    // (telemetryTs) i zmianie noda — bez pollingu.
+    val bars by produceState(initialValue = emptyList<Pair<Long, Double>>(), nodeId, telemetryTs, store) {
+        value = store?.solarDayBars(nodeId)?.getOrNull() ?: emptyList()
+    }
+    HeroCard(brush = Sh.solarTile, shadow = Color(0xFFF5A207).copy(alpha = 0.32f), onClick = onClick) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(ShIcons.Sun, null, tint = Color.White, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(10.dp))
@@ -153,7 +165,7 @@ private fun SolarNodeCard(name: String, state: SolarState?, dailyYield: String?,
                 Text("Uzysk dzienny", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
             }
             Spacer(Modifier.width(20.dp))
-            SolarBars(Modifier.weight(1f).height(52.dp))
+            SolarBars(last8(bars, telemetryTs), Modifier.weight(1f).height(52.dp))
         }
         DetailsRow(
             listOf(
@@ -283,19 +295,37 @@ private fun ColumnScope.DetailsRow(items: List<Pair<String, String>>) {
 @Composable
 private fun Divider() = Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.25f)))
 
+/**
+ * Ostatnie (do) 8 godzin uzysku, kończące się na BIEŻĄCEJ godzinie (bucket <= now; now z
+ * telemetrii). Wcześnie w dniu jest ich mniej niż 8 (wykres „zapełnia się" w ciągu dnia).
+ */
+private fun last8(bars: List<Pair<Long, Double>>, now: Long): List<Double> {
+    if (bars.isEmpty()) return emptyList()
+    val nowRef = if (now > 0) now else bars.last().first
+    var end = bars.indexOfLast { it.first <= nowRef }
+    if (end < 0) end = bars.size - 1
+    val start = (end - 7).coerceAtLeast(0)
+    return bars.subList(start, end + 1).map { it.second }
+}
+
 @Composable
-private fun SolarBars(modifier: Modifier = Modifier) {
-    // Wysokości i przezroczystości 1:1 z handoffu (8 słupków).
-    val bars = listOf(
-        0.24f to 0.55f, 0.48f to 0.55f, 0.70f to 0.70f, 0.92f to 1f,
-        0.80f to 0.70f, 0.88f to 1f, 0.60f to 0.55f, 0.34f to 0.40f,
-    )
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
-        bars.forEach { (h, a) ->
-            Box(
-                Modifier.weight(1f).fillMaxHeight(h).clip(RoundedCornerShape(3.dp))
-                    .background(Color.White.copy(alpha = a)),
-            )
+private fun SolarBars(values: List<Double>, modifier: Modifier = Modifier) {
+    // Ostatnie ~8 godzin uzysku (history day). Normalizacja do maksimum widocznego; wyższe
+    // słupki jaśniejsze. Brak danych → płaskie, przygaszone (nie atrapa).
+    val maxV = values.maxOrNull() ?: 0.0
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Bottom) {
+        if (values.isEmpty() || maxV <= 0.0) {
+            repeat(8) {
+                Box(Modifier.weight(1f).fillMaxHeight(0.10f).clip(RoundedCornerShape(3.dp)).background(Color.White.copy(alpha = 0.22f)))
+            }
+        } else {
+            values.forEach { v ->
+                val frac = (v / maxV).toFloat()
+                Box(
+                    Modifier.weight(1f).fillMaxHeight(frac.coerceIn(0.06f, 1f)).clip(RoundedCornerShape(3.dp))
+                        .background(Color.White.copy(alpha = (0.5f + 0.5f * frac).coerceIn(0.4f, 1f))),
+                )
+            }
         }
     }
 }
