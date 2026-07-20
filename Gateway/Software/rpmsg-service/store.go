@@ -731,7 +731,7 @@ func (s *Store) ListNodes() ([]NodeInfo, error) {
 		        COALESCE(status,'active'), COALESCE(last_seen,0), COALESCE(provisioned_at,0),
 		        COALESCE(room,'')
 		 FROM node
-		 WHERE COALESCE(status,'active') <> 'legacy' AND archived_at IS NULL
+		 WHERE archived_at IS NULL
 		 ORDER BY node_id`)
 	if err != nil {
 		return nil, err

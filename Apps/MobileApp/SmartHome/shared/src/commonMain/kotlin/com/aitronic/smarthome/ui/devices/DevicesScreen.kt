@@ -77,7 +77,9 @@ fun DevicesRoot(
 
     val devices: List<Device> = if (gw == null) remember { repo.devices() } else {
         val nowS = gw.telemetry.values.maxOfOrNull { it.ts } ?: 0L
-        gw.nodes.map { n ->
+        // Legacy (gen1 sniff 241/242) NIE podlega zarządzaniu (brak JOIN) — pokazujemy je tylko
+        // na dashboardzie, nie w tej liście. Reszta: active + detached.
+        gw.nodes.filter { it.status != "legacy" }.map { n ->
             val detached = n.status == "detached" || n.address == 0
             Device(
                 id = n.address.toLong(),

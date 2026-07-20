@@ -422,6 +422,22 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-20 (cd.3) — dashboard NODE-DRIVEN: jedna karta na noda, pojawia/znika z parowaniem ✅ (zweryfikowane na żywo)
+- **Dashboard sterowany realnymi nodami** (był statyczny: jedna karta „System solarny" z agregatu `firstOfType(SOLAR)` +
+  atrapy). Teraz **jedna karta na noda**, `gen1` i `gen2` tego samego typu = **osobne karty** (tytuł = nazwa noda).
+  Karty pojawiają się/znikają z parowaniem/usunięciem — za darmo, bo źródło to live `gw.nodes` (trash → node znika → karta
+  znika). Grupowane po pokoju.
+- **`LiveMappers` per-node** (po adresie RF): `solarStateFor(addr, injectAux)`, `solarDailyYieldKwhFor(addr)`,
+  `climateStateFor(addr)` — zamiast agregującego `firstOfType`. **`injectAux` tylko dla gen1 (legacy)**: 2. bufor z
+  sniffowanego bufora 242, wtopiony w kartę gen1-solara (242 nie ma własnej karty). gen2 → aux = `NaN` → UI „—" (źródło
+  2. bufora będzie konfigurowalne w **settings karty** — TODO).
+- **gen1 też data-driven** (decyzja z userem, „bezbolesne sprzątanie"): 241/242 są w bazie jako `legacy` i sniffują →
+  produkują karty z danych. Retirement gen1 = **usuń nody z bazy** → karty znikają same, zero zmian w kodzie (zamiast
+  hardcode w UI). `listnodes` wpuszcza teraz `legacy`; **lista „Urządzenia" filtruje legacy** (gen1 bez JOIN, nie do
+  zarządzania — tylko dashboard).
+- **Wyleciało**: karta PV + siatka „Pokoje" (atrapy) — tylko realne node-karty; brak nodów → „Brak sparowanych urządzeń".
+- **NASTĘPNIE**: dostrajanie szczegółów na kartach + settings karty (per-user, np. źródło 2. bufora, ukrywanie pól).
+
 ### 2026-07-20 (cd.2) — KOSZ LOKALNY (soft-delete) + UI detached + usuwanie detached po node_id ✅ (zweryfikowane na żywo)
 - **🔑 Kosz przeniesiony na LOKALNY soft-delete** (był mirror-only → działa teraz na KAŻDYM tierze, też economy/standard
   bez zewn. bazy). `node.archived_at` (migracja `ALTER ADD COLUMN`, additywna). **DeleteNode → soft-delete**
