@@ -857,14 +857,65 @@ func (s *Store) PurgeExpiredTrash(maxAge time.Duration) (int, error) {
 		return 0, err
 	}
 	for _, id := range ids {
-		if _, err := s.db.Exec(`DELETE FROM node WHERE node_id = ?`, id); err != nil {
-			return len(ids), err
-		}
-		if err := s.dropSolarNode(id); err != nil {
+		if err := s.dropNode(id); err != nil {
 			return len(ids), err
 		}
 	}
 	return len(ids), nil
+}
+
+// dropNode PERMANENTLY removes a node and every trace of it: it deletes the node's rows
+// from EVERY table that has a node_id column (node, node_param, and whatever per-type
+// history it left - e.g. solar_*). The tables are discovered from the schema, so a new
+// node type with its own history table is cleaned automatically, with no per-type code.
+// A node that kept no history simply leaves node + node_param, which is all this removes.
+// (param_def is keyed by node_type, not node_id, so the shared catalog is never touched.)
+func (s *Store) dropNode(id int64) error {
+	rows, err := s.db.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
+	if err != nil {
+		return err
+	}
+	var tables []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			rows.Close()
+			return err
+		}
+		tables = append(tables, t)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, t := range tables {
+		if !s.tableHasColumn(t, "node_id") {
+			continue
+		}
+		if _, err := s.db.Exec("DELETE FROM "+t+" WHERE node_id = ?", id); err != nil {
+			return fmt.Errorf("dropNode %d from %s: %w", id, t, err)
+		}
+	}
+	return nil
+}
+
+// tableHasColumn reports whether table has a column named col. The table name comes from
+// the schema (sqlite_master), never user input, so the PRAGMA string build is safe.
+func (s *Store) tableHasColumn(table, col string) bool {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk) == nil && name == col {
+			return true
+		}
+	}
+	return false
 }
 
 // allocAddr returns the lowest free pool address (freed addresses are reused).

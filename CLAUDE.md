@@ -422,6 +422,17 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-21 — purge: generyczny dropNode (koniec sierot node_param) ✅ (zweryfikowane wymuszonym purge)
+- **`dropSolarNode` → `dropNode(id)` generyczny**: purge 60-dniowy kasował `node` + `solar_*`, ale **NIE `node_param`**
+  (przeciek → sieroty adres-0/typ−1 w snapshot `state`). Nowy `dropNode` **odkrywa ze schematu** (`sqlite_master` +
+  `PRAGMA table_info`) wszystkie tabele z kolumną `node_id` i kasuje z każdej → komplet: `node`+`node_param`+`solar_*`,
+  a **przyszły typ z własną tabelą historii jest sprzątany automatycznie** (zero per-typowego kodu). `param_def`
+  (kluczowane po `node_type`) i VIEW nietknięte. `dropSolarNode` usunięty (miał jedynego callera — purge).
+- **Zweryfikowane wymuszonym purge**: node 247 przed = `node_param`10/`solar_history`61/`hourly`3/`daily`1; cofnięto
+  `archived_at` o 62 dni → restart serve → `[Trash] purged 1` → wszystkie liczniki **0** (przed fixem `node_param`
+  zostałoby 10). Test: `UPDATE node SET archived_at = strftime('%s','now')-62*86400` + restart (purge = goroutine na
+  starcie+24h, NIE cron).
+
 ### 2026-07-20 (cd.5) — detal solar PER-NODE (tytuł/dane/wykresy/pompa) + gen1 pompa read-only ✅
 - **Detal solar (okno po kliknięciu karty) jest teraz per-node**, nie agregatowy. `SolarSelection(name,address,nodeId,
   legacy)` z karty → `AppScaffold` (`solarSel`) → `SolarScreen(sel)`. Tytuł = nazwa noda; dane = `solarStateFor(address)`;

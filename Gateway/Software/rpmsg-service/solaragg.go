@@ -335,15 +335,6 @@ func (s *Store) pruneSolarRaw(tx *sql.Tx, node int64, ts int64) error {
 	return err
 }
 
-// dropSolarNode removes a node's raw + all aggregates (used when a node is removed).
-func (s *Store) dropSolarNode(node int64) error {
-	for _, t := range []string{"solar_history", "solar_hourly", "solar_daily", "solar_monthly"} {
-		if _, err := s.db.Exec("DELETE FROM "+t+" WHERE node_id = ?", node); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 // AggregateAllSolarOnStartup rolls up any hours that completed while the service was
 // down (the 2h buffer may hold a finished hour). Cheap; not a full rebuild.
