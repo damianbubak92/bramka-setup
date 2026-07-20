@@ -112,6 +112,9 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, c
 	case strings.Contains(req, "command=approvejoin"):
 		handleApproveJoin(p, store, joins, hub, req, w, r)
 
+	case strings.Contains(req, "command=rejectjoin"):
+		handleRejectJoin(joins, req, w, r)
+
 	case strings.Contains(req, "command=replacenode"):
 		handleReplaceNode(p, store, joins, hub, req, w, r)
 
@@ -333,6 +336,17 @@ func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, hub *WSHu
 	})
 	log.Printf("[HTTP] approvejoin: factory %s (type %d) -> addr 0x%02X name %q, JOIN_ACCEPT sent",
 		factory, pj.NodeType, addr, name)
+}
+
+// handleRejectJoin drops a pending JOIN from the registry ("Odrzuć" - the button was
+// pressed by accident / the user doesn't want this device). The node stays whatever it
+// was (unprovisioned); a fresh JOIN re-adds it. Request: "command=rejectjoin&factory=<hex>".
+func handleRejectJoin(joins *joinRegistry, req string, w http.ResponseWriter, r *http.Request) {
+	vals, _ := url.ParseQuery(req)
+	factory := strings.ToLower(strings.TrimSpace(vals.Get("factory")))
+	joins.Remove(factory)
+	io.WriteString(w, "OK\n")
+	log.Printf("[HTTP] rejectjoin: factory %s dropped from pending", factory)
 }
 
 // handleReplaceNode swaps a damaged node for a fresh chip while KEEPING the old

@@ -422,6 +422,29 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-20 (cd.) — provisioning UX: auto-popup event-driven + klasyfikacja JOINa po factory_id ✅ (wymiana+przywracanie zweryfikowane na żywo)
+- **Auto-popup po JOIN (z dowolnego ekranu)**: WS `join_pending` → `GatewayStore._newJoin` (SharedFlow, jednorazowy) →
+  `AppScaffold` zamyka detal, przełącza na Urządzenia, ustawia flagę → `DevicesRoot` otwiera popup i kasuje flagę
+  (`onJoinConsumed`, żeby zwykłe wejście na zakładkę nie otwierało go ponownie). **Kolejka**: popup sterowany
+  `joins.firstOrNull()`, po obsłużeniu jednego NIE zamyka — `joinCtx` przechodzi do następnego, pusta kolejka → znika;
+  `key(factory)` resetuje pola per-nod. Dedup podwójnego JOINa: bramka (rejestr po factory) + apka (`isNew`).
+- **🔑 Klasyfikacja JOINa po `factory_id` (F)** — 3 przypadki: **aktywny** → bramka **wycisza** (zero pending/eventu,
+  `FactoryStatus` w `main.go`); **detached/kosz** (własny chip wraca) → tryb **„Przywróć"** (nazwa read-only) + „Odrzuć";
+  **nowy** → **„Dodaj nowe"** (nazwa auto z typu, numerowana gdy zajęta) + **„Wymień istniejące"** (gdy jest zgodny) +
+  „Odrzuć". Klasyfikację robi **apka** (`detachedMatch` z `gw.nodes.factory`, `trashMatch` z `listtrash.factory`),
+  bramka daje tylko ciszę-aktywnych + dane.
+- **„Wymień" dropdown** = wszystkie nie-usunięte-trwale tego typu: **aktywne** (`replacenode`) + **detached** (`repairnode`)
+  + **kosz** (`restorenode`+`repairnode`, `restoreAndRepair`). **„Odrzuć"** = `rejectjoin` (kasuje pending). Tło = odłóż.
+- **Zmiany bramki**: `FactoryStatus` (cisza-aktywnych), `rejectjoin` endpoint, **kosz niesie `factory`**
+  (`ArchivedNode.Factory`), **restore ZACHOWUJE `factory_id`** (detached pamięta chip → własny chip robi „Przywróć";
+  inny chip = „nowy" → Wymień). Klasyfikacja apki nie wisi na mirrorze (tylko trash-match/trash-cele wymagają `-restore-url`,
+  degradują się cicho).
+- **Zweryfikowane na żywo**: wymiana (podmiana `factory_id` aktywnego na lewy → JOIN realnym chipem → „Wymień" → replace,
+  historia została) + przywracanie z kosza. **Lekcja UX**: błędy bramki muszą być widoczne (`NoticeDialog`) — cichy
+  `runCatching` w `scope.launch` maskował odrzucenia (`UNIQUE`/„not detached").
+- **NASTĘPNIE (do decyzji)**: kosz **lokalnie + mirror** (soft-delete `archived_at` w lokalnym SQLite) — żeby kosz działał
+  dla pakietów **economy/standard bez zewnętrznej bazy** (dziś kosz = tylko mirror). [[gen2-backup-mirror]]
+
 ### 2026-07-20 — §12.3 apka: dodaj/wymień po JOIN + kosz/przywracanie + re-pair detached (repairnode) ✅
 - **Apka `SmartHome` (KMP) — komplet zarządzania nodami** (ZWERYFIKOWANE NA ŻYWO, re-pair działa): po JOIN dialog
   **„Utwórz nowe" / „Wymień istniejące"**; „Wymień" listuje zgodne nody **`active`** (replace po adresie) **oraz

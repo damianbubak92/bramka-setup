@@ -766,12 +766,20 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 						log.Printf("[Serve] JOIN_REQUEST undecodable (%d bytes)", len(ev.Payload))
 						break
 					}
+					factoryHex := hex.EncodeToString(fid[:])
+					// Silence a JOIN from an ALREADY-ACTIVE node: the user pressed the button
+					// on a working device by accident. No pending, no event -> total silence in
+					// the app. (detached/trash/new all still surface for the add/restore flow.)
+					if st, ok := store.FactoryStatus(factoryHex); ok && st == "active" {
+						log.Printf("[Serve] JOIN from active node (factory %s) - ignored", factoryHex)
+						break
+					}
 					if joins.Add(fid, nt, time.Now().Unix()) {
-						log.Printf("[Serve] JOIN request: node type %d factory %x (awaiting approval)", nt, fid)
+						log.Printf("[Serve] JOIN request: node type %d factory %s (awaiting approval)", nt, factoryHex)
 					}
 					// Publish on EVERY JOIN (not just first-seen) so a user who pressed
 					// JOIN again while on the devices screen always re-pops the dialog.
-					hub.PublishJoinPending(hex.EncodeToString(fid[:]), nt)
+					hub.PublishJoinPending(factoryHex, nt)
 					break
 				}
 				if cok && cmd == CmdRemove {

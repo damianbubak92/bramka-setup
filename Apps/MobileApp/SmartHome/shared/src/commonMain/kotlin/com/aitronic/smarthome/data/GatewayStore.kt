@@ -2,8 +2,11 @@ package com.aitronic.smarthome.data
 
 import com.aitronic.smarthome.data.net.*
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -58,6 +61,11 @@ class GatewayStore(
 ) {
     private val _state = MutableStateFlow(GatewayState())
     val state: StateFlow<GatewayState> = _state.asStateFlow()
+
+    /** Puls „pojawił się NOWY oczekujący JOIN" (z WS). Jednorazowe zdarzenie — UI reaguje
+     * raz (przeskok na Urządzenia + auto-popup), nie na każdą rekompozycję. */
+    private val _newJoin = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    val newJoin: SharedFlow<Unit> = _newJoin.asSharedFlow()
 
     /** Start: pierwsze pobranie + nasłuch live. Wołać raz (np. z AppScaffold). */
     fun start() {
@@ -121,9 +129,13 @@ class GatewayStore(
                 // status zmieniony po stronie bramki -> odśwież listę nodów
                 scope.launch { refresh() }
             }
-            is GatewayEvent.JoinPending -> _state.update { s ->
-                if (s.joins.any { it.factory == ev.factory }) s
-                else s.copy(joins = s.joins + PendingJoinDto(factory = ev.factory, type = ev.nodeType))
+            is GatewayEvent.JoinPending -> {
+                // onEvent leci sekwencyjnie z jednego collecta, więc value-read jest bezpieczny.
+                val isNew = _state.value.joins.none { it.factory == ev.factory }
+                if (isNew) {
+                    _state.update { s -> s.copy(joins = s.joins + PendingJoinDto(factory = ev.factory, type = ev.nodeType)) }
+                    _newJoin.tryEmit(Unit) // przenieś użytkownika do Urządzeń + otwórz popup
+                }
             }
         }
     }
@@ -178,7 +190,26 @@ class GatewayStore(
         r
     }
 
-    /** Załaduj kosz (soft-usunięte nody) do stanu — na otwarcie ekranu Kosz. */
+    /** „Odrzuć" oczekujący JOIN (przypadkowy przycisk): usuń z rejestru bramki i z kolejki. */
+    suspend fun rejectJoin(factoryHex: String): Result<Unit> = runCatching {
+        client.rejectJoin(factoryHex)
+        _state.update { s -> s.copy(joins = s.joins.filterNot { it.factory == factoryHex }) }
+    }
+
+    /** „Przywróć/Wymień" celujące w node w KOSZU: wyjmij z kosza → detached, potem re-paruj
+     * chip (repair). Historia (po node_id) wraca, nazwa zachowana. */
+    suspend fun restoreAndRepair(factoryHex: String, nodeId: Long): Result<ReplaceResultDto> = runCatching {
+        client.restoreNode(nodeId)
+        val r = client.repairNode(factoryHex, nodeId)
+        _state.update { s -> s.copy(
+            joins = s.joins.filterNot { it.factory == factoryHex },
+            trash = s.trash.filterNot { it.id == nodeId },
+        ) }
+        refresh()
+        r
+    }
+
+    /** Załaduj kosz (soft-usunięte nody) do stanu — na otwarcie ekranu Kosz / popupu JOIN. */
     suspend fun loadTrash(): Result<Unit> = runCatching {
         val t = client.listTrash()
         _state.update { s -> s.copy(trash = t) }

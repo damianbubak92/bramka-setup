@@ -9,6 +9,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.SampleRepository
+import kotlinx.coroutines.flow.collect
 import com.aitronic.smarthome.data.SmartHomeRepository
 import com.aitronic.smarthome.ui.auto.AutomationsRoot
 import com.aitronic.smarthome.ui.climate.ClimateScreen
@@ -51,6 +53,18 @@ private enum class Detail { None, Climate, Solar }
 fun AppScaffold(store: GatewayStore? = null, repo: SmartHomeRepository = SampleRepository) {
     var tab by remember { mutableStateOf(Tab.Dashboard) }
     var detail by remember { mutableStateOf(Detail.None) }
+    // Nowy JOIN (z WS) → przenieś użytkownika na Urządzenia i otwórz popup dodawania/wymiany,
+    // z dowolnego ekranu. Flaga żyje TU (AppScaffold przeżywa zmianę zakładki, DevicesRoot nie),
+    // a DevicesRoot kasuje ją przez onJoinConsumed po otwarciu — dzięki temu zwykłe wejście na
+    // zakładkę Urządzenia NIE otwiera popupu ponownie.
+    var autoOpenJoin by remember { mutableStateOf(false) }
+    LaunchedEffect(store) {
+        store?.newJoin?.collect {
+            detail = Detail.None
+            tab = Tab.Devices
+            autoOpenJoin = true
+        }
+    }
 
     Column(Modifier.fillMaxSize().background(Sh.bg)) {
         Box(Modifier.weight(1f)) {
@@ -65,7 +79,7 @@ fun AppScaffold(store: GatewayStore? = null, repo: SmartHomeRepository = SampleR
                         onOpenClimate = { detail = Detail.Climate },
                     )
                     Tab.Automations -> AutomationsRoot(repo, store)
-                    Tab.Devices -> DevicesRoot(repo, store)
+                    Tab.Devices -> DevicesRoot(repo, store, autoOpenJoin = autoOpenJoin, onJoinConsumed = { autoOpenJoin = false })
                 }
             }
         }

@@ -557,6 +557,18 @@ func (s *Store) UpdateNode(address uint8, name, room string) error {
 	return err
 }
 
+// FactoryStatus returns the lifecycle status of the node currently bound to a chip
+// (factory_id hex), or ok=false if no node has that chip. Used to silence a JOIN from
+// an already-active node (user pressed the button on a working device by accident).
+func (s *Store) FactoryStatus(factoryID string) (status string, ok bool) {
+	var st sql.NullString
+	e := s.db.QueryRow(`SELECT COALESCE(status,'active') FROM node WHERE factory_id = ?`, factoryID).Scan(&st)
+	if e != nil {
+		return "", false
+	}
+	return st.String, true
+}
+
 func (s *Store) NodeStatus(address uint8) (status, factoryID string, nodeType uint8, exists bool, err error) {
 	var st, fid sql.NullString
 	var nt int

@@ -105,6 +105,7 @@ data class TrashNodeDto(
     val type: Int = 0,
     val name: String = "",
     val room: String = "",
+    val factory: String = "",   // chip który był na nim przy usunięciu (do dopasowania JOIN po factory_id)
     val lastSeen: Long = 0,
     val archivedAt: Long = 0,   // unix s — kiedy trafił do kosza
 )

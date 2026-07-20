@@ -52,9 +52,11 @@ private fun deviceIcon(type: String): ImageVector = when (type) {
 
 private data class DevDraft(val id: Long?, val name: String, val type: String, val room: String, val joining: Boolean)
 private data class ConfirmReq(val title: String, val msg: String, val onOk: () -> Unit)
-/** Kandydat do "Wymień istniejące" — node tego samego typu. Aktywny (przez adres,
- * `replacenode`) albo detached z kosza (przez node_id, `repairnode` → odzysk historii). */
-private data class ReplaceTarget(val nodeId: Long, val address: Int, val name: String, val detached: Boolean)
+/** Źródło celu wymiany → decyduje o komendzie: ACTIVE=replacenode (po adresie),
+ * DETACHED=repairnode (po node_id), TRASH=restorenode+repairnode. */
+private enum class TargetKind { ACTIVE, DETACHED, TRASH }
+/** Kandydat do "Wymień istniejące" — node tego samego typu, nieusunięty trwale. */
+private data class ReplaceTarget(val nodeId: Long, val address: Int, val name: String, val kind: TargetKind)
 
 /**
  * Urządzenia = **nody zarejestrowane w bramce** (`command=listnodes` → tabela `node`).
@@ -62,7 +64,12 @@ private data class ReplaceTarget(val nodeId: Long, val address: Int, val name: S
  * (node żyje, jeśli odezwał się w ciągu [ONLINE_WINDOW_S] — telemetria leci co ~2 min).
  */
 @Composable
-fun DevicesRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
+fun DevicesRoot(
+    repo: SmartHomeRepository,
+    store: GatewayStore? = null,
+    autoOpenJoin: Boolean = false,
+    onJoinConsumed: () -> Unit = {},
+) {
     val scope = rememberCoroutineScope()
     val gw = store?.state?.collectAsState()?.value
     val typeNames = remember { repo.deviceTypes().associate { it.id to it.name } }
@@ -94,19 +101,58 @@ fun DevicesRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
     var showJoin by remember { mutableStateOf(false) }
     var showTrash by remember { mutableStateOf(false) }
     var replacePick by remember { mutableStateOf(false) }
-    var replaceName by remember { mutableStateOf("") }
     var notice by remember { mutableStateOf<String?>(null) }
     // Błąd z bramki niesie tekst w treści; obcinamy prefiks "HTTP 400: " dla czytelności.
     fun fail(t: Throwable) { notice = t.message?.substringAfter(": ")?.ifBlank { null } ?: "Operacja nie powiodła się" }
 
-    // Pierwszy oczekujący JOIN + zgodne cele wymiany: aktywne nody tego samego typu
-    // (replace po adresie) oraz detached z kosza (repair po node_id — odzysk historii).
     val joinCtx = gw?.joins?.firstOrNull()
     val nowS = gw?.telemetry?.values?.maxOfOrNull { it.ts } ?: 0L
-    val replaceTargets = remember(gw?.nodes, joinCtx?.type) {
-        gw?.nodes.orEmpty()
-            .filter { it.type == (joinCtx?.type ?: -1) && (it.status == "active" && it.address > 0 || it.status == "detached") }
-            .map { ReplaceTarget(it.id, it.address, it.name.ifBlank { NodeTypes.label(it.type) }, detached = it.status == "detached") }
+
+    // Cele "Wymień istniejące": kompatybilne (ten sam typ) i nieusunięte trwale —
+    // aktywne (replace) + detached (repair) + w koszu (restore+repair).
+    val replaceTargets = remember(gw?.nodes, gw?.trash, joinCtx?.type) {
+        val t = joinCtx?.type ?: -1
+        val fromNodes = gw?.nodes.orEmpty()
+            .filter { it.type == t && (it.status == "active" && it.address > 0 || it.status == "detached") }
+            .map { ReplaceTarget(it.id, it.address, it.name.ifBlank { NodeTypes.label(it.type) },
+                if (it.status == "detached") TargetKind.DETACHED else TargetKind.ACTIVE) }
+        val fromTrash = gw?.trash.orEmpty()
+            .filter { it.type == t }
+            .map { ReplaceTarget(it.id, 0, it.name.ifBlank { NodeTypes.label(it.type) }, TargetKind.TRASH) }
+        fromNodes + fromTrash
+    }
+
+    // Klasyfikacja JOINa po factory_id: jeśli chip pasuje do noda detached albo w koszu
+    // (jego WŁASNY chip wraca) → tryb "Przywróć". Inaczej → "Dodaj nowe / Wymień".
+    // (Aktywne bramka wycisza — do apki taki JOIN nie dochodzi.)
+    val detachedMatch = joinCtx?.let { j -> gw?.nodes?.firstOrNull { it.status == "detached" && it.factory.equals(j.factory, true) } }
+    val trashMatch = joinCtx?.let { j -> gw?.trash?.firstOrNull { it.factory.equals(j.factory, true) } }
+    val typeLabel = joinCtx?.let { NodeTypes.label(it.type) } ?: "Urządzenie"
+    val restoreName = detachedMatch?.name?.ifBlank { typeLabel } ?: trashMatch?.name?.ifBlank { typeLabel }
+    val isRestore = detachedMatch != null || trashMatch != null
+
+    // Auto-propozycja nazwy dla "Dodaj nowe": etykieta typu, numerowana gdy zajęta.
+    val nameSuggestion = remember(gw?.nodes, joinCtx?.type) {
+        val base = joinCtx?.let { NodeTypes.label(it.type) } ?: "Urządzenie"
+        val taken = gw?.nodes.orEmpty().map { it.name.trim() }
+        if (taken.none { it.equals(base, true) }) base
+        else generateSequence(2) { it + 1 }.map { "$base $it" }.first { s -> taken.none { it.equals(s, true) } }
+    }
+
+    // Auto-popup po nowym JOINie (sygnał z AppScaffold): wyjdź z edytora/kosza na czystą
+    // listę i otwórz dialog. onJoinConsumed kasuje flagę u rodzica.
+    LaunchedEffect(autoOpenJoin) {
+        if (autoOpenJoin) {
+            editing = null
+            showTrash = false
+            showJoin = true
+            onJoinConsumed()
+        }
+    }
+    // Kosz potrzebny do klasyfikacji (trashMatch) i do celów wymiany — dociągnij gdy popup
+    // pokazuje JOIN (tanie, raz na otwarcie/zmianę joina).
+    LaunchedEffect(showJoin, joinCtx?.factory) {
+        if (showJoin && joinCtx != null) store?.loadTrash()
     }
 
     Box(Modifier.fillMaxSize().background(Sh.bg)) {
@@ -196,33 +242,54 @@ fun DevicesRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
         confirm?.let { c -> ConfirmDialog(c.title, c.msg, "Usuń", c.onOk) { confirm = null } }
         notice?.let { m -> NoticeDialog("Nie udało się", m) { notice = null } }
 
-        // Nowy node wykryty → utwórz nowe / wymień istniejące.
-        if (showJoin && joinCtx != null) {
-            JoinDialog(
-                factory = joinCtx.factory, type = joinCtx.type,
-                hasTargets = replaceTargets.isNotEmpty(),
-                onCreate = { name ->
-                    scope.launch { store?.approveJoin(joinCtx.factory, name)?.onFailure(::fail) }
-                    showJoin = false
-                },
-                onReplace = { name -> replaceName = name; replacePick = true },
-                onDismiss = { showJoin = false },
-            )
+        // Popup JOIN sterowany KOLEJKĄ: joinCtx = pierwszy oczekujący. Po obsłużeniu jednego
+        // (approve/repair/restore/reject) NIE zamykamy — bramka usuwa go z joins, joinCtx
+        // przechodzi do następnego; pusta kolejka (joinCtx == null) → dialog znika sam.
+        // key(factory) resetuje stan dialogu przy każdej zmianie noda.
+        val jc = joinCtx
+        if (showJoin && jc != null) {
+            key(jc.factory) {
+                JoinDialog(
+                    factory = jc.factory, type = jc.type,
+                    isRestore = isRestore, restoreName = restoreName ?: "",
+                    nameSuggestion = nameSuggestion, hasReplaceTargets = replaceTargets.isNotEmpty(),
+                    onRestore = {
+                        scope.launch {
+                            val res = when {
+                                detachedMatch != null -> store?.repairNode(jc.factory, detachedMatch.id)
+                                trashMatch != null -> store?.restoreAndRepair(jc.factory, trashMatch.id)
+                                else -> null
+                            }
+                            res?.onFailure(::fail)
+                        }
+                    },
+                    onCreate = { name -> scope.launch { store?.approveJoin(jc.factory, name)?.onFailure(::fail) } },
+                    onReplace = { replacePick = true },
+                    onReject = { scope.launch { store?.rejectJoin(jc.factory) } },
+                    onDismiss = { showJoin = false },
+                )
+            }
         }
-        // Wybór noda do wymiany: aktywny → replace (przejmuje adres+historię),
-        // detached → repair (świeży adres, odzysk historii po node_id).
-        if (replacePick && joinCtx != null) {
+        // "Wymień istniejące": aktywny → replace, detached → repair, kosz → restore+repair.
+        if (replacePick && jc != null) {
             SheetPicker(
                 title = "Wymień / odzyskaj urządzenie",
                 options = replaceTargets.map { t ->
-                    val label = if (t.detached) "${t.name} · z kosza (odzyska historię)" else t.name
-                    PickerOption(label, selected = false, onPick = {
+                    val suffix = when (t.kind) {
+                        TargetKind.ACTIVE -> ""
+                        TargetKind.DETACHED -> " · odłączony"
+                        TargetKind.TRASH -> " · z kosza (odzyska historię)"
+                    }
+                    PickerOption(t.name + suffix, selected = false, onPick = {
                         scope.launch {
-                            val res = if (t.detached) store?.repairNode(joinCtx.factory, t.nodeId, replaceName)
-                            else store?.replaceNode(joinCtx.factory, t.address, replaceName)
+                            val res = when (t.kind) {
+                                TargetKind.ACTIVE -> store?.replaceNode(jc.factory, t.address)
+                                TargetKind.DETACHED -> store?.repairNode(jc.factory, t.nodeId)
+                                TargetKind.TRASH -> store?.restoreAndRepair(jc.factory, t.nodeId)
+                            }
                             res?.onFailure(::fail)
                         }
-                        replacePick = false; showJoin = false
+                        replacePick = false   // showJoin zostaje → kolejka jedzie dalej
                     })
                 },
                 onDismiss = { replacePick = false },
@@ -402,20 +469,37 @@ private fun DevEditor(
     }
 }
 
-// ---------------- JOIN (utwórz nowe / wymień) ----------------
+// ---------------- JOIN (dodaj / wymień / przywróć) ----------------
+
+@Composable
+private fun PrimaryBtn(text: String, onClick: () -> Unit) {
+    Box(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).background(Sh.graphiteBtn)
+            .clickable(noRipple(), null) { onClick() }.padding(vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) { Text(text, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.W500) }
+}
 
 /**
- * Node zgłosił się przez JOIN. Dwie ścieżki (model tożsamości §12):
- *  - **Utwórz nowe** → approvejoin: nowy `id`, przydział wolnego adresu, świeża historia.
- *  - **Wymień istniejące** → replacenode: nowy chip przejmuje adres i historię wskazanego
- *    aktywnego noda (naprawa po wymianie sprzętu). Dostępne tylko gdy jest zgodny cel.
+ * Popup po JOIN. Klasyfikacja wg factory_id chipa (aktywne bramka wycisza — tu nie docierają):
+ *  - **isRestore** (chip należy do noda z kosza/detached): nazwa noda read-only + „Przywróć" / „Odrzuć".
+ *  - inaczej (nowy chip): krok 1 przyciski „Dodaj nowe" / „Wymień istniejące"(gdy jest cel) / „Odrzuć";
+ *    „Dodaj nowe" → krok 2 z nazwą (auto-propozycja, edytowalna).
+ * Tło (poza kartą) = odłóż (banner dalej pokazuje kolejkę). „Odrzuć" = skasuj żądanie.
  */
 @Composable
 private fun JoinDialog(
-    factory: String, type: Int, hasTargets: Boolean,
-    onCreate: (String) -> Unit, onReplace: (String) -> Unit, onDismiss: () -> Unit,
+    factory: String, type: Int,
+    isRestore: Boolean, restoreName: String,
+    nameSuggestion: String, hasReplaceTargets: Boolean,
+    onRestore: () -> Unit,
+    onCreate: (String) -> Unit,
+    onReplace: () -> Unit,
+    onReject: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
-    var name by remember { mutableStateOf("") }
+    var naming by remember { mutableStateOf(false) }         // tryb "new": krok 2 (nazwa)
+    var name by remember { mutableStateOf(nameSuggestion) }
     val uiType = NodeTypes.toUiType(type)
     val col = deviceColor(uiType)
     Box(
@@ -433,27 +517,40 @@ private fun JoinDialog(
                     Icon(deviceIcon(uiType), null, tint = col.c, modifier = Modifier.size(26.dp))
                 }
                 Column(Modifier.padding(start = 14.dp)) {
-                    Text("Nowe urządzenie", color = Sh.textPrimary, fontSize = 19.sp, fontWeight = FontWeight.W500)
+                    Text(if (isRestore) "Wykryto znane urządzenie" else "Nowe urządzenie", color = Sh.textPrimary, fontSize = 19.sp, fontWeight = FontWeight.W500)
                     Text("${NodeTypes.label(type)} · ${factory.takeLast(6).uppercase()}", color = Sh.textMuted, fontSize = 12.sp)
                 }
             }
             Spacer(Modifier.height(18.dp))
-            InputField("Nazwa", name, { name = it }, placeholder = "np. Solar dach")
-            Spacer(Modifier.height(16.dp))
-            Box(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).background(Sh.graphiteBtn)
-                    .clickable(noRipple(), null) { onCreate(name.trim().ifBlank { NodeTypes.label(type) }) }
-                    .padding(vertical = 14.dp),
-                contentAlignment = Alignment.Center,
-            ) { Text("Utwórz nowe", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.W500) }
-            if (hasTargets) {
-                Spacer(Modifier.height(10.dp))
-                OutlineButton("Wymień istniejące", Modifier.fillMaxWidth()) { onReplace(name.trim()) }
-                Text(
-                    "Nowy chip przejmie historię wybranego urządzenia (wymiana sprzętu lub odzysk z kosza). " +
-                        "Nazwę zmieni tylko, jeśli ją tu wpiszesz.",
-                    color = Sh.textMuted, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(top = 8.dp),
-                )
+
+            when {
+                isRestore -> {
+                    Text("Ten chip należał do usuniętego urządzenia:", color = Sh.textMuted, fontSize = 12.sp)
+                    Spacer(Modifier.height(6.dp))
+                    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Sh.fieldBg).border(1.dp, Sh.divider, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 13.dp)) {
+                        Text(restoreName.ifBlank { NodeTypes.label(type) }, color = Sh.textPrimary, fontSize = 16.sp)
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    PrimaryBtn("Przywróć") { onRestore() }
+                    Spacer(Modifier.height(10.dp))
+                    OutlineButton("Odrzuć", Modifier.fillMaxWidth()) { onReject() }
+                }
+                naming -> {
+                    InputField("Nazwa", name, { name = it })
+                    Spacer(Modifier.height(16.dp))
+                    PrimaryBtn("Dodaj") { onCreate(name.trim().ifBlank { nameSuggestion }) }
+                    Spacer(Modifier.height(10.dp))
+                    OutlineButton("Wstecz", Modifier.fillMaxWidth()) { naming = false }
+                }
+                else -> {
+                    PrimaryBtn("Dodaj nowe") { naming = true }
+                    if (hasReplaceTargets) {
+                        Spacer(Modifier.height(10.dp))
+                        OutlineButton("Wymień istniejące", Modifier.fillMaxWidth()) { onReplace() }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlineButton("Odrzuć", Modifier.fillMaxWidth()) { onReject() }
+                }
             }
         }
     }

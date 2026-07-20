@@ -96,6 +96,10 @@ class GatewayClient(
     suspend fun approveJoin(factoryHex: String, name: String): ApproveResultDto =
         json.decodeFromString(command("approvejoin&factory=$factoryHex&name=${name.urlEncode()}"))
 
+    /** „Odrzuć" — usuń oczekujący JOIN z rejestru bramki (przypadkowy przycisk). */
+    suspend fun rejectJoin(factoryHex: String): Boolean =
+        command("rejectjoin&factory=$factoryHex").trim().equals("OK", ignoreCase = true)
+
     suspend fun removeNode(address: Int): String = command("removenode&address=$address")
 
     /** Zmiana etykiet noda: nazwa + pokój (tylko baza — node o nich nie wie). */

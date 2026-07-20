@@ -397,6 +397,7 @@ type ArchivedNode struct {
 	Type       int    `json:"type"`
 	Name       string `json:"name"`
 	Room       string `json:"room"`
+	Factory    string `json:"factory"` // chip that was on it when deleted (for JOIN factory-match)
 	LastSeen   int64  `json:"lastSeen"`
 	ArchivedAt int64  `json:"archivedAt"` // unix s the node went to the trash
 }
@@ -427,6 +428,7 @@ func (s *Store) ListArchivedNodes(restoreURL, key string, insecure bool) ([]Arch
 			Type:       int(asInt64(r["node_type"])),
 			Name:       asString(r["name"]),
 			Room:       asString(r["room"]),
+			Factory:    asString(r["factory_id"]),
 			LastSeen:   asInt64(r["last_seen"]),
 			ArchivedAt: asInt64(r["archived_at"]),
 		})
@@ -435,10 +437,12 @@ func (s *Store) ListArchivedNodes(restoreURL, key string, insecure bool) ([]Arch
 }
 
 // RestoreNodeFromMirror brings one soft-deleted node back from the trash: pulls its
-// row + full history from the mirror and re-inserts locally as `detached` (address and
-// factory_id cleared - it keeps its stable id and all history, and awaits re-pairing
-// to a chip, §6.4). The local insert's triggers re-push the node with archived_at=NULL,
-// which un-archives it on the mirror (self-healing, no separate op).
+// row + full history from the mirror and re-inserts locally as `detached` (no address
+// yet). It KEEPS the factory_id it had when deleted, so the node remembers its chip: if
+// that same chip presses JOIN, the app matches it and offers "Przywróć" (one-tap re-pair
+// with its own chip). A different chip can still take it over via "Wymień" (repairnode
+// overwrites factory_id). The local insert's triggers re-push with archived_at=NULL,
+// un-archiving it on the mirror (self-healing, no separate op).
 func (s *Store) RestoreNodeFromMirror(restoreURL, key string, insecure bool, id int64) error {
 	client := httpClient(insecure)
 	resp, err := client.Get(fmt.Sprintf("%s?key=%s&node_id=%d", restoreURL, key, id))
@@ -464,13 +468,18 @@ func (s *Store) RestoreNodeFromMirror(restoreURL, key string, insecure bool, id 
 	}
 	defer tx.Rollback()
 
-	// Node row: keep identity + labels, but force detached (no address/chip yet).
+	// Node row: keep identity + labels + factory_id (its chip), but detached (no address).
 	n := dump.Node[0]
+	factory := asString(n["factory_id"])
+	var factoryVal any
+	if factory != "" {
+		factoryVal = factory
+	} // else nil -> NULL
 	if _, err := tx.Exec(
 		`INSERT OR REPLACE INTO node
 		     (node_id, address, factory_id, node_type, name, room, status, provisioned_at, last_seen)
-		 VALUES (?, NULL, NULL, ?, ?, ?, 'detached', ?, ?)`,
-		id, asInt64(n["node_type"]), asString(n["name"]), asString(n["room"]),
+		 VALUES (?, NULL, ?, ?, ?, ?, 'detached', ?, ?)`,
+		id, factoryVal, asInt64(n["node_type"]), asString(n["name"]), asString(n["room"]),
 		asInt64(n["provisioned_at"]), asInt64(n["last_seen"])); err != nil {
 		return fmt.Errorf("restore node row: %w", err)
 	}
