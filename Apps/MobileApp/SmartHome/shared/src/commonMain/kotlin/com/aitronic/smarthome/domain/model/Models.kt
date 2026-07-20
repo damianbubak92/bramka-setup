@@ -88,6 +88,12 @@ data class Device(
     val room: String,   // nazwa pokoju lub "Bez pokoju"
     val online: Boolean,
     val sync: SyncState = SyncState.Synced,
+    /** Node `detached` (przywrócony z kosza, bez adresu/chipa) — nie działa, dopóki
+     * użytkownik nie zrobi re-JOIN. UI pokazuje go na szaro z adnotacją "wymaga JOIN". */
+    val needsPairing: Boolean = false,
+    /** Stała tożsamość logiczna (node_id z bramki). Do operacji na detached (usuwanie),
+     * które nie mają adresu RF. 0 = brak (dane przykładowe). */
+    val nodeId: Long = 0,
 )
 
 data class DeviceType(val id: String, val name: String)

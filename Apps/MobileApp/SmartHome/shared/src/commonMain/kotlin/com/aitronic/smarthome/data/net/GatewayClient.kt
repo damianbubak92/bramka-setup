@@ -102,6 +102,9 @@ class GatewayClient(
 
     suspend fun removeNode(address: Int): String = command("removenode&address=$address")
 
+    /** Usuń noda po stałym node_id (dla detached — nie ma adresu; nic do powiadomienia). */
+    suspend fun removeNodeById(nodeId: Long): String = command("removenode&id=$nodeId")
+
     /** Zmiana etykiet noda: nazwa + pokój (tylko baza — node o nich nie wie). */
     suspend fun updateNode(address: Int, name: String, room: String): Boolean =
         command("updatenode&address=$address&name=${name.urlEncode()}&room=${room.urlEncode()}")

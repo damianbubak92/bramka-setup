@@ -158,6 +158,12 @@ class GatewayStore(
         refresh()
     }
 
+    /** Usuń noda po node_id — dla detached (bez adresu). Trafia do kosza. */
+    suspend fun removeNodeById(nodeId: Long): Result<Unit> = runCatching {
+        client.removeNodeById(nodeId)
+        refresh()
+    }
+
     suspend fun updateNode(address: Int, name: String, room: String): Result<Unit> = runCatching {
         if (!client.updateNode(address, name, room)) error("Bramka odrzuciła zmianę")
         refresh()

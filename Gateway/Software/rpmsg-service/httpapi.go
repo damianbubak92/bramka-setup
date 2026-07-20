@@ -128,10 +128,10 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, c
 		handleRemoveNode(p, store, hub, req, w, r)
 
 	case strings.Contains(req, "command=listtrash"):
-		handleListTrash(store, cfg, w, r)
+		handleListTrash(store, w, r)
 
 	case strings.Contains(req, "command=restorenode"):
-		handleRestoreNode(store, cfg, req, w, r)
+		handleRestoreNode(store, req, w, r)
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -485,6 +485,29 @@ func handleUpdateNode(store *Store, req string, w http.ResponseWriter, r *http.R
 // the online case. Request: "command=removenode&address=<dec>".
 func handleRemoveNode(p *Protocol, store *Store, hub *WSHub, req string, w http.ResponseWriter, r *http.Request) {
 	vals, _ := url.ParseQuery(req)
+	// Detached nodes have no RF address -> delete by stable node_id (nothing to notify;
+	// they aren't bound to a chip). Without this a never-re-paired detached node would be
+	// an undeletable corpse.
+	if idStr := strings.TrimSpace(vals.Get("id")); idStr != "" {
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, "bad id\n")
+			return
+		}
+		if err := store.DeleteNodeByID(id); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, "DB error\n")
+			log.Printf("[HTTP] removenode id %d failed: %v", id, err)
+			return
+		}
+		hub.PublishNodeStatus(0, "removed") // live: nudge the app to refresh the list
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"id": id, "status": "removed"})
+		log.Printf("[HTTP] removenode id %d -> trashed (detached, no node to notify)", id)
+		return
+	}
+
 	addr64, err := strconv.ParseUint(strings.TrimSpace(vals.Get("address")), 10, 8)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -527,45 +550,27 @@ func handleRemoveNode(p *Protocol, store *Store, hub *WSHub, req string, w http.
 	log.Printf("[HTTP] removenode 0x%02X (factory %s) -> deleted (address freed, mirror archived)", addr, factory)
 }
 
-// handleListTrash returns the soft-deleted nodes (trash) from the mirror as a JSON
-// array, so the app can offer restore within the retention window. Request:
-// "command=listtrash". Needs the restore endpoint configured (serve -restore-url).
-func handleListTrash(store *Store, cfg HTTPConfig, w http.ResponseWriter, r *http.Request) {
-	if cfg.RestoreURL == "" {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		io.WriteString(w, "restore endpoint not configured\n")
-		log.Printf("[HTTP] listtrash: no -restore-url configured")
-		return
-	}
-	list, err := store.ListArchivedNodes(cfg.RestoreURL, cfg.RestoreKey, cfg.RestoreInsecure)
+// handleListTrash returns the LOCAL soft-deleted nodes (trash) as a JSON array, so the
+// app can offer restore within the 60-day window. Request: "command=listtrash". Local
+// now (no mirror needed) - trash works on every tier.
+func handleListTrash(store *Store, w http.ResponseWriter, r *http.Request) {
+	list, err := store.ListTrashLocal()
 	if err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		io.WriteString(w, "mirror unreachable\n")
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "trash query failed\n")
 		log.Printf("[HTTP] listtrash failed: %v", err)
 		return
 	}
-	b, err := json.Marshal(list)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		io.WriteString(w, "marshal error\n")
-		return
-	}
+	b, _ := json.Marshal(list)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
 	log.Printf("[HTTP] listtrash -> %d archived", len(list))
 }
 
-// handleRestoreNode brings one node back from the mirror trash as `detached` (keeps
-// its stable id + history, awaits re-pair). Request: "command=restorenode&id=<node_id>".
-// The app refreshes its device list after the call (the restored node reappears there
-// awaiting a chip). Needs the restore endpoint configured (serve -restore-url).
-func handleRestoreNode(store *Store, cfg HTTPConfig, req string, w http.ResponseWriter, r *http.Request) {
-	if cfg.RestoreURL == "" {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		io.WriteString(w, "restore endpoint not configured\n")
-		log.Printf("[HTTP] restorenode: no -restore-url configured")
-		return
-	}
+// handleRestoreNode brings one node back from the LOCAL trash as `detached` (keeps its
+// stable id + history + chip, awaits re-pair). Request: "command=restorenode&id=<node_id>".
+// The upsert trigger un-archives it on the mirror too (self-healing).
+func handleRestoreNode(store *Store, req string, w http.ResponseWriter, r *http.Request) {
 	vals, _ := url.ParseQuery(req)
 	id, err := strconv.ParseInt(strings.TrimSpace(vals.Get("id")), 10, 64)
 	if err != nil {
@@ -573,9 +578,9 @@ func handleRestoreNode(store *Store, cfg HTTPConfig, req string, w http.Response
 		io.WriteString(w, "bad id\n")
 		return
 	}
-	if err := store.RestoreNodeFromMirror(cfg.RestoreURL, cfg.RestoreKey, cfg.RestoreInsecure, id); err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		io.WriteString(w, "restore failed\n")
+	if err := store.RestoreNodeLocal(id); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, err.Error()+"\n")
 		log.Printf("[HTTP] restorenode %d failed: %v", id, err)
 		return
 	}

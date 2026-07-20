@@ -50,22 +50,22 @@ var backupTriggerSQL = []string{
 	`CREATE TRIGGER IF NOT EXISTS bq_config_d AFTER DELETE ON config WHEN OLD.key NOT LIKE 'backup%' BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('config','delete',
 			json_object('key',OLD.key)); END`,
-	// node. The upsert carries archived_at = NULL: the local DB only ever holds LIVE
-	// nodes (the trash exists only on the mirror), so every push of a node row asserts
-	// "this node is live" and clears any archive on the mirror. That makes restore
-	// self-healing - re-inserting a node locally (or its next telemetry) un-archives it
-	// without a separate op. A local DELETE = removal -> the mirror soft-deletes
-	// (archive_node sets archived_at), keeping the row + history for the trash/restore.
+	// node. The upsert carries the REAL archived_at (NULL = live, ts = trashed): the local
+	// DB now holds the trash too (soft-delete), so the mirror mirrors it 1:1 as a backup.
+	// A local soft-delete is an UPDATE (archived_at=ts) -> bq_node_u pushes it; a restore is
+	// an UPDATE (archived_at=NULL) -> un-archives on the mirror. bq_node_d now fires only on
+	// the 60-day purge (the sole hard-delete); it re-asserts archive on the mirror (harmless -
+	// the mirror's own retention cron drops it).
 	`CREATE TRIGGER IF NOT EXISTS bq_node_i AFTER INSERT ON node BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('node','upsert',
 			json_object('node_id',NEW.node_id,'address',NEW.address,'node_type',NEW.node_type,'name',NEW.name,
 				'factory_id',NEW.factory_id,'status',NEW.status,'provisioned_at',NEW.provisioned_at,
-				'last_seen',NEW.last_seen,'room',NEW.room,'archived_at',NULL)); END`,
+				'last_seen',NEW.last_seen,'room',NEW.room,'archived_at',NEW.archived_at)); END`,
 	`CREATE TRIGGER IF NOT EXISTS bq_node_u AFTER UPDATE ON node BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('node','upsert',
 			json_object('node_id',NEW.node_id,'address',NEW.address,'node_type',NEW.node_type,'name',NEW.name,
 				'factory_id',NEW.factory_id,'status',NEW.status,'provisioned_at',NEW.provisioned_at,
-				'last_seen',NEW.last_seen,'room',NEW.room,'archived_at',NULL)); END`,
+				'last_seen',NEW.last_seen,'room',NEW.room,'archived_at',NEW.archived_at)); END`,
 	`CREATE TRIGGER IF NOT EXISTS bq_node_d AFTER DELETE ON node BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('archive_node','archive',
 			json_object('node_id',OLD.node_id,'archived_at',CAST(strftime('%s','now') AS INTEGER))); END`,
@@ -156,7 +156,7 @@ func (s *Store) SeedBackupFromCurrentState() error {
 			json_object('key',key,'value',value) FROM config WHERE key NOT LIKE 'backup%'`},
 		{"node", `INSERT INTO backup_queue(kind,op,payload) SELECT 'node','upsert',
 			json_object('node_id',node_id,'address',address,'node_type',node_type,'name',name,'factory_id',factory_id,
-				'status',status,'provisioned_at',provisioned_at,'last_seen',last_seen,'room',room,'archived_at',NULL) FROM node`},
+				'status',status,'provisioned_at',provisioned_at,'last_seen',last_seen,'room',room,'archived_at',archived_at) FROM node`},
 		{"node_param", `INSERT INTO backup_queue(kind,op,payload) SELECT 'node_param','upsert',
 			json_object('node_id',node_id,'param_key',param_key,'value_num',value_num,'ts',ts) FROM node_param`},
 		{"solar_hourly", `INSERT INTO backup_queue(kind,op,payload) SELECT 'solar_hourly','upsert',

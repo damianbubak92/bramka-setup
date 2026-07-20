@@ -717,6 +717,25 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 	// may hold a finished hour). Cheap; not a full rebuild.
 	store.AggregateAllSolarOnStartup()
 
+	// Local trash retention: purge nodes soft-deleted > 60 days ago (the sole hard
+	// delete of a node + its history). Run once now, then daily.
+	const trashRetention = 60 * 24 * time.Hour
+	purgeTrash := func() {
+		if n, err := store.PurgeExpiredTrash(trashRetention); err != nil {
+			log.Printf("[Trash] purge failed: %v", err)
+		} else if n > 0 {
+			log.Printf("[Trash] purged %d expired node(s)", n)
+		}
+	}
+	purgeTrash()
+	go func() {
+		t := time.NewTicker(24 * time.Hour)
+		defer t.Stop()
+		for range t.C {
+			purgeTrash()
+		}
+	}()
+
 	// Live backup: capture every change via triggers and drain to the mirror with
 	// retry. Seed the queue with the current DB once so the mirror starts complete
 	// (triggers only catch future changes). Disabled => remove triggers so the queue

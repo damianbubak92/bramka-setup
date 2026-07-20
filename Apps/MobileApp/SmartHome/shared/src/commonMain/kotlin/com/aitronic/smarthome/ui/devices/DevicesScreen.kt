@@ -52,6 +52,7 @@ private fun deviceIcon(type: String): ImageVector = when (type) {
 
 private data class DevDraft(val id: Long?, val name: String, val type: String, val room: String, val joining: Boolean)
 private data class ConfirmReq(val title: String, val msg: String, val onOk: () -> Unit)
+private data class Notice(val title: String, val msg: String)
 /** Źródło celu wymiany → decyduje o komendzie: ACTIVE=replacenode (po adresie),
  * DETACHED=repairnode (po node_id), TRASH=restorenode+repairnode. */
 private enum class TargetKind { ACTIVE, DETACHED, TRASH }
@@ -77,12 +78,16 @@ fun DevicesRoot(
     val devices: List<Device> = if (gw == null) remember { repo.devices() } else {
         val nowS = gw.telemetry.values.maxOfOrNull { it.ts } ?: 0L
         gw.nodes.map { n ->
+            val detached = n.status == "detached" || n.address == 0
             Device(
                 id = n.address.toLong(),
                 name = n.name.ifBlank { NodeTypes.label(n.type) },
                 type = NodeTypes.toUiType(n.type),
                 room = n.room.ifBlank { NO_ROOM },
-                online = n.lastSeen > 0 && (nowS - n.lastSeen) <= ONLINE_WINDOW_S,
+                // Detached (bez adresu/chipa) nie może być online, choćby last_seen był świeży.
+                online = !detached && n.lastSeen > 0 && (nowS - n.lastSeen) <= ONLINE_WINDOW_S,
+                needsPairing = detached,
+                nodeId = n.id,
             )
         }
     }
@@ -101,9 +106,9 @@ fun DevicesRoot(
     var showJoin by remember { mutableStateOf(false) }
     var showTrash by remember { mutableStateOf(false) }
     var replacePick by remember { mutableStateOf(false) }
-    var notice by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<Notice?>(null) }
     // Błąd z bramki niesie tekst w treści; obcinamy prefiks "HTTP 400: " dla czytelności.
-    fun fail(t: Throwable) { notice = t.message?.substringAfter(": ")?.ifBlank { null } ?: "Operacja nie powiodła się" }
+    fun fail(t: Throwable) { notice = Notice("Nie udało się", t.message?.substringAfter(": ")?.ifBlank { null } ?: "Operacja nie powiodła się") }
 
     val joinCtx = gw?.joins?.firstOrNull()
     val nowS = gw?.telemetry?.values?.maxOfOrNull { it.ts } ?: 0L
@@ -173,7 +178,20 @@ fun DevicesRoot(
                     if (gw?.joins?.isNotEmpty() == true) showJoin = true
                 },
                 onTrash = { scope.launch { store?.loadTrash() }; showTrash = true },
-                onOpen = { d -> editing = DevDraft(d.id, d.name, d.type, d.room, joining = false) },
+                onOpen = { d ->
+                    // Detached (bez adresu) — edycja po adresie byłaby no-opem. Zamiast edytora:
+                    // instrukcja sparowania + możliwość USUNIĘCIA po node_id (żeby nie zostawały
+                    // nieusuwalne trupy, gdy ktoś nigdy nie wciśnie JOIN).
+                    if (d.needsPairing) {
+                        confirm = ConfirmReq(
+                            "Wymaga sparowania",
+                            "„${d.name}\" czeka na sparowanie — wciśnij JOIN na urządzeniu, aby dokończyć. Jeśli już go nie potrzebujesz, usuń je (trafi do kosza).",
+                        ) {
+                            d.nodeId.takeIf { it > 0 }?.let { nid -> scope.launch { store?.removeNodeById(nid) } }
+                            confirm = null
+                        }
+                    } else editing = DevDraft(d.id, d.name, d.type, d.room, joining = false)
+                },
             )
         } else {
             DevEditor(
@@ -240,7 +258,7 @@ fun DevicesRoot(
             )
         }
         confirm?.let { c -> ConfirmDialog(c.title, c.msg, "Usuń", c.onOk) { confirm = null } }
-        notice?.let { m -> NoticeDialog("Nie udało się", m) { notice = null } }
+        notice?.let { n -> NoticeDialog(n.title, n.msg) { notice = null } }
 
         // Popup JOIN sterowany KOLEJKĄ: joinCtx = pierwszy oczekujący. Po obsłużeniu jednego
         // (approve/repair/restore/reject) NIE zamykamy — bramka usuwa go z joins, joinCtx
@@ -379,19 +397,33 @@ private fun FilterChip(label: String, active: Boolean, onClick: () -> Unit) {
 @Composable
 private fun DevRow(d: Device, typeName: String, onClick: () -> Unit) {
     val col = deviceColor(d.type)
+    // Detached = przywrócony z kosza, bez adresu/chipa → wyszarzony + adnotacja "wymaga JOIN".
+    val np = d.needsPairing
     Row(
         Modifier.fillMaxWidth().clickable(noRipple(), null) { onClick() }.padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(col.bg), contentAlignment = Alignment.Center) {
-            Icon(deviceIcon(d.type), null, tint = col.c, modifier = Modifier.size(22.dp))
+        Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(if (np) Sh.fieldBg else col.bg), contentAlignment = Alignment.Center) {
+            Icon(deviceIcon(d.type), null, tint = if (np) Sh.andMuted else col.c, modifier = Modifier.size(22.dp))
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(d.name, color = Sh.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.W500)
-            Text("$typeName · ${if (d.online) "online" else "offline"}", color = Sh.textMuted, fontSize = 12.sp)
+            Text(d.name, color = if (np) Sh.textMuted else Sh.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.W500)
+            if (np) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 1.dp)) {
+                Icon(ShIcons.JoinRing, null, tint = Sh.warn, modifier = Modifier.size(12.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Wymaga sparowania — wciśnij JOIN", color = Sh.warn, fontSize = 12.sp)
+            } else {
+                Text("$typeName · ${if (d.online) "online" else "offline"}", color = Sh.textMuted, fontSize = 12.sp)
+            }
         }
-        Box(Modifier.size(8.dp).clip(CircleShape).background(if (d.online) Sh.online else Sh.dangerAlt))
+        if (np) {
+            Box(Modifier.clip(RoundedCornerShape(8.dp)).background(Sh.warnBg).padding(horizontal = 8.dp, vertical = 4.dp)) {
+                Text("JOIN", color = Sh.warn, fontSize = 11.sp, fontWeight = FontWeight.W600, letterSpacing = 0.4.sp)
+            }
+        } else {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(if (d.online) Sh.online else Sh.dangerAlt))
+        }
         Spacer(Modifier.width(10.dp))
         Icon(ShIcons.ChevronRight, null, tint = Sh.andMuted, modifier = Modifier.size(18.dp))
     }

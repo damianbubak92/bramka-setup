@@ -422,6 +422,26 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-20 (cd.2) — KOSZ LOKALNY (soft-delete) + UI detached + usuwanie detached po node_id ✅ (zweryfikowane na żywo)
+- **🔑 Kosz przeniesiony na LOKALNY soft-delete** (był mirror-only → działa teraz na KAŻDYM tierze, też economy/standard
+  bez zewn. bazy). `node.archived_at` (migracja `ALTER ADD COLUMN`, additywna). **DeleteNode → soft-delete**
+  (`archived_at=now`, `address=NULL`, wiersz+historia+chip ZOSTAJĄ). `listtrash`/`restorenode` **lokalne** (koniec
+  zależności od `-restore-url`). **Purge 60 dni** (`PurgeExpiredTrash`, jedyny hard-delete) na starcie + co 24h.
+  **Sweep**: wszystkie zapytania „żywych nodów" filtrują `archived_at IS NULL` (`ListNodes`, `FactoryStatus`,
+  `ProvisionNode`, `RepairNode`, snapshot `state`); adres-owane omijają trash naturalnie (adres NULL). Triggery mirrora
+  pchają **realny** `archived_at` (soft-delete/restore syncują się) — `gw-backup.php` już miał kolumnę, **zero zmian
+  serwera i apki-kontraktu**. Mirror = backup/DR. **`archived_at` = jedyny znacznik kosza** (status zostaje jaki był —
+  gate'ujemy po archived_at, nie rozsmarowujemy na 2 kolumny). [[gen2-backup-mirror]]
+- **UI detached (przywrócony z kosza, bez adresu/chipa)**: **wyszarzony** + amber „Wymaga sparowania — wciśnij JOIN" +
+  badge „JOIN" zamiast zielonej kropki (`online` wymuszony `false`). Bez tego zielona ikona kłamała „wszystko OK", a nikt
+  by się nie domyślił że trzeba re-JOIN. Tap → dialog z instrukcją + **„Usuń"**.
+- **🔑 Usuwanie detached po `node_id`** (`DeleteNodeByID` + `removenode&id=`, `Device.nodeId`, `removeNodeById`) — bez tego
+  detached bez re-JOINa = **nieusuwalny trup** (remove/update szły po adresie, którego detached nie ma). Usunięcie
+  detached → z powrotem do kosza (soft-delete), chip zapamiętany → własny chip dalej robi „Przywróć".
+- **⚠️ Jednorazowa nieciągłość**: nody wrzucone do kosza PRZED tą zmianą siedzą tylko na mirrorze (lokalnie były
+  hard-deleted) → nie pokażą się w nowym lokalnym `listtrash` (dalej na mirrorze do purge). Od teraz wszystko lokalnie.
+- **NASTĘPNIE**: porządki z dashboardem (user doprecyzuje).
+
 ### 2026-07-20 (cd.) — provisioning UX: auto-popup event-driven + klasyfikacja JOINa po factory_id ✅ (wymiana+przywracanie zweryfikowane na żywo)
 - **Auto-popup po JOIN (z dowolnego ekranu)**: WS `join_pending` → `GatewayStore._newJoin` (SharedFlow, jednorazowy) →
   `AppScaffold` zamyka detal, przełącza na Urządzenia, ustawia flagę → `DevicesRoot` otwiera popup i kasuje flagę

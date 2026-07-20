@@ -255,6 +255,14 @@ func initNodeSchema(db *sql.DB) error {
 	if err := migrateNodeIdentity(db); err != nil {
 		return err
 	}
+	// migrate: node.archived_at - LOCAL trash (soft-delete). NULL = live; a unix ts = in
+	// the trash (kept row + history, address freed) awaiting restore or the 60-day purge.
+	// Makes trash/restore work without the external mirror (economy/standard tiers); the
+	// mirror stays a backup that reflects archived_at via the upsert triggers.
+	if _, err := db.Exec(`ALTER TABLE node ADD COLUMN archived_at INTEGER`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
 	// migrate: tag the gen1 sniff controllers (solar 0xF1, buffer 0xF2) as `legacy`.
 	// Keyed by their fixed gen1 addresses - the reliable signal (factory_id is unreliable
 	// here: these got one from manual registration, while the 0xF3 dev sim node has none).
@@ -443,9 +451,10 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) 
 	}
 	defer tx.Rollback()
 
-	// Known chip -> reuse its logical node + address (idempotent re-approve / rejoin).
+	// Known LIVE chip -> reuse its logical node + address (idempotent re-approve / rejoin).
+	// Archived (trashed) chips are excluded: those come back via restore/repair, not approve.
 	var addr sql.NullInt64
-	err = tx.QueryRow(`SELECT address FROM node WHERE factory_id = ?`, factoryID).Scan(&addr)
+	err = tx.QueryRow(`SELECT address FROM node WHERE factory_id = ? AND archived_at IS NULL`, factoryID).Scan(&addr)
 	if err != nil && err != sql.ErrNoRows {
 		return 0, err
 	}
@@ -508,12 +517,16 @@ func (s *Store) RepairNode(nodeID int64, newFactoryID string, ts int64) (uint8, 
 	defer tx.Rollback()
 
 	var status string
-	err = tx.QueryRow(`SELECT COALESCE(status,'active') FROM node WHERE node_id = ?`, nodeID).Scan(&status)
+	var archivedAt sql.NullInt64
+	err = tx.QueryRow(`SELECT COALESCE(status,'active'), archived_at FROM node WHERE node_id = ?`, nodeID).Scan(&status, &archivedAt)
 	if err == sql.ErrNoRows {
 		return 0, fmt.Errorf("no node with id %d", nodeID)
 	}
 	if err != nil {
 		return 0, err
+	}
+	if archivedAt.Valid {
+		return 0, fmt.Errorf("node %d is in trash - restore it first", nodeID)
 	}
 	if status != "detached" {
 		return 0, fmt.Errorf("node %d is %s, not detached (use replace for an active node)", nodeID, status)
@@ -524,7 +537,7 @@ func (s *Store) RepairNode(nodeID int64, newFactoryID string, ts int64) (uint8, 
 	var otherID int64
 	var otherName sql.NullString
 	switch e := tx.QueryRow(
-		`SELECT node_id, name FROM node WHERE factory_id = ? AND node_id <> ?`,
+		`SELECT node_id, name FROM node WHERE factory_id = ? AND node_id <> ? AND archived_at IS NULL`,
 		newFactoryID, nodeID).Scan(&otherID, &otherName); e {
 	case nil:
 		return 0, fmt.Errorf("chip already assigned to node %d (%s) - remove it first or use a new chip",
@@ -562,7 +575,9 @@ func (s *Store) UpdateNode(address uint8, name, room string) error {
 // an already-active node (user pressed the button on a working device by accident).
 func (s *Store) FactoryStatus(factoryID string) (status string, ok bool) {
 	var st sql.NullString
-	e := s.db.QueryRow(`SELECT COALESCE(status,'active') FROM node WHERE factory_id = ?`, factoryID).Scan(&st)
+	e := s.db.QueryRow(
+		`SELECT COALESCE(status,'active') FROM node WHERE factory_id = ? AND archived_at IS NULL`,
+		factoryID).Scan(&st)
 	if e != nil {
 		return "", false
 	}
@@ -640,6 +655,7 @@ func (s *Store) ListState() ([]NodeState, error) {
 		        COALESCE(p.value_num, 0), p.ts
 		 FROM node_param p
 		 LEFT JOIN node n ON n.node_id = p.node_id
+		 WHERE n.archived_at IS NULL
 		 ORDER BY p.node_id, p.param_key`)
 	if err != nil {
 		return nil, err
@@ -715,7 +731,7 @@ func (s *Store) ListNodes() ([]NodeInfo, error) {
 		        COALESCE(status,'active'), COALESCE(last_seen,0), COALESCE(provisioned_at,0),
 		        COALESCE(room,'')
 		 FROM node
-		 WHERE COALESCE(status,'active') <> 'legacy'
+		 WHERE COALESCE(status,'active') <> 'legacy' AND archived_at IS NULL
 		 ORDER BY node_id`)
 	if err != nil {
 		return nil, err
@@ -756,9 +772,11 @@ func (s *Store) GetNode(address uint8) (factoryID string, nodeType uint8, ok boo
 // overwrites). On the MIRROR the row + history are kept (the bq_node_d trigger
 // enqueues archive_node = soft-delete): that is the trash, from which RestoreNode
 // can bring the node back within the retention window.
+// DeleteNode SOFT-deletes: the node goes to the LOCAL trash (archived_at set), its
+// row + history are kept for restore, and its RF address is freed (NULL) for reuse.
+// factory_id is kept so the node remembers its chip (own chip -> "Przywróć"). The
+// history is dropped only by the 60-day purge (PurgeExpiredTrash), the one hard-delete.
 func (s *Store) DeleteNode(address uint8) error {
-	// Resolve to the stable node_id first: history/aggregates are keyed by it, and it
-	// is needed for the cascade after the node row (holding the address) is gone.
 	id, ok, err := s.nodeIDForAddress(address)
 	if err != nil {
 		return err
@@ -766,10 +784,87 @@ func (s *Store) DeleteNode(address uint8) error {
 	if !ok {
 		return nil // already gone
 	}
-	if _, err := s.db.Exec(`DELETE FROM node WHERE node_id = ?`, id); err != nil {
+	return s.DeleteNodeByID(id)
+}
+
+// DeleteNodeByID SOFT-deletes by the stable node_id. Needed for DETACHED nodes (no RF
+// address, so DeleteNode's address lookup can't reach them) - without this a detached
+// node that never gets re-paired would be an undeletable corpse. Moves it to the local
+// trash (history + chip kept for restore/purge).
+func (s *Store) DeleteNodeByID(id int64) error {
+	_, err := s.db.Exec(
+		`UPDATE node SET archived_at = ?, address = NULL WHERE node_id = ? AND archived_at IS NULL`,
+		time.Now().Unix(), id)
+	return err
+}
+
+// ListTrashLocal returns the LOCAL trash (soft-deleted nodes). Works without the mirror,
+// so the trash feature is available to every tier. Shape matches the app's TrashNodeDto.
+func (s *Store) ListTrashLocal() ([]ArchivedNode, error) {
+	rows, err := s.db.Query(
+		`SELECT node_id, node_type, COALESCE(name,''), COALESCE(room,''), COALESCE(factory_id,''),
+		        COALESCE(last_seen,0), COALESCE(archived_at,0)
+		 FROM node WHERE archived_at IS NOT NULL ORDER BY archived_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ArchivedNode{}
+	for rows.Next() {
+		var a ArchivedNode
+		if err := rows.Scan(&a.NodeID, &a.Type, &a.Name, &a.Room, &a.Factory, &a.LastSeen, &a.ArchivedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// RestoreNodeLocal brings a node back from the LOCAL trash as `detached` (keeps its stable
+// id, history and factory_id; awaits re-pair). The upsert trigger re-pushes archived_at=NULL,
+// un-archiving it on the mirror too (self-healing).
+func (s *Store) RestoreNodeLocal(id int64) error {
+	res, err := s.db.Exec(
+		`UPDATE node SET archived_at = NULL, status = 'detached' WHERE node_id = ? AND archived_at IS NOT NULL`, id)
+	if err != nil {
 		return err
 	}
-	return s.dropSolarNode(id)
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("node %d not in trash", id)
+	}
+	return nil
+}
+
+// PurgeExpiredTrash hard-deletes trashed nodes older than maxAge (60-day retention) and
+// drops their history. This is the ONLY hard delete of a node. Returns how many were purged.
+func (s *Store) PurgeExpiredTrash(maxAge time.Duration) (int, error) {
+	cutoff := time.Now().Add(-maxAge).Unix()
+	rows, err := s.db.Query(`SELECT node_id FROM node WHERE archived_at IS NOT NULL AND archived_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		if _, err := s.db.Exec(`DELETE FROM node WHERE node_id = ?`, id); err != nil {
+			return len(ids), err
+		}
+		if err := s.dropSolarNode(id); err != nil {
+			return len(ids), err
+		}
+	}
+	return len(ids), nil
 }
 
 // allocAddr returns the lowest free pool address (freed addresses are reused).

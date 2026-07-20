@@ -24,6 +24,8 @@ object Sh {
     val online = Color(0xFF2E9E6B)        // status online / pompa pracuje / przełączniki ON
     val danger = Color(0xFFC0392B)        // usuwanie / potwierdzenie
     val dangerAlt = Color(0xFFC0492B)     // błąd synchronizacji
+    val warn = Color(0xFFC98A2B)          // wymaga akcji (np. detached — wymaga JOIN)
+    val warnBg = Color(0xFFF6E9CF)        // tło ostrzeżenia (ikona detached)
 
     // --- Formularze (jasny motyw) ---
     val fieldBorder = Color(0xFFE7E1D6)
