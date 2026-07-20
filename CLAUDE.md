@@ -422,6 +422,19 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-21 (cd.) — purge gateway-driven na mirror (`purge_node`) — koniec crona serwerowego ✅ (zweryfikowane)
+- **Bramka steruje purge na OBU bazach** (pomysł usera, czystsze niż osobny cron): `bq_node_d` (odpala się tylko na
+  purge — jedyny `DELETE FROM node`, bo soft-delete to UPDATE) słał `archive_node`, co **resetowało zegar retencji na
+  mirrorze** (archived_at=teraz) → mirror nie purge'ował przez 60 dni. Teraz `bq_node_d` wrzuca **`purge_node`** do
+  `backup_queue` → worker → serwer **hard-deletuje komplet** `gw_node`+`gw_node_param`+`gw_solar_*`. Offline → op czeka
+  w kolejce i retryuje. Serwerowy handler `purge_node` **już był** w `gw-backup.php` (dodany „na przyszłość").
+- **`gw-purge-cron.php` = zbędny** (bramka jest jedynym źródłem prawdy o czasie purge). Można usunąć z hostingu; opcjonalny
+  backstop tylko na wypadek trwale martwej bramki. [[gen2-backup-mirror]]
+- **Model spójny**: soft-delete → `bq_node_u` upsert(archived_at) archiwizuje mirror; restore → upsert(archived_at=NULL)
+  od-archiwizowuje; purge → `bq_node_d` `purge_node` hard-deletuje. Zweryfikowane: usuwa też z mirrora.
+- **Jednorazowo do ręcznego czyszczenia**: node 247 (dostał archived_at starym triggerem, lokalnie go nie ma → bramka nie
+  re-purge'uje) + stary kosz na mirrorze sprzed lokalnego kosza — ręczny `DELETE FROM gw_*` albo jedno odpalenie starego crona.
+
 ### 2026-07-21 — purge: generyczny dropNode (koniec sierot node_param) ✅ (zweryfikowane wymuszonym purge)
 - **`dropSolarNode` → `dropNode(id)` generyczny**: purge 60-dniowy kasował `node` + `solar_*`, ale **NIE `node_param`**
   (przeciek → sieroty adres-0/typ−1 w snapshot `state`). Nowy `dropNode` **odkrywa ze schematu** (`sqlite_master` +

@@ -53,9 +53,10 @@ var backupTriggerSQL = []string{
 	// node. The upsert carries the REAL archived_at (NULL = live, ts = trashed): the local
 	// DB now holds the trash too (soft-delete), so the mirror mirrors it 1:1 as a backup.
 	// A local soft-delete is an UPDATE (archived_at=ts) -> bq_node_u pushes it; a restore is
-	// an UPDATE (archived_at=NULL) -> un-archives on the mirror. bq_node_d now fires only on
-	// the 60-day purge (the sole hard-delete); it re-asserts archive on the mirror (harmless -
-	// the mirror's own retention cron drops it).
+	// an UPDATE (archived_at=NULL) -> un-archives on the mirror. bq_node_d fires only on the
+	// 60-day purge (the sole hard-delete of a node) -> `purge_node`, which hard-deletes the
+	// node everywhere on the mirror too. So the GATEWAY drives purge on both sides (offline
+	// -> the op waits in backup_queue and retries); no separate server-side retention cron.
 	`CREATE TRIGGER IF NOT EXISTS bq_node_i AFTER INSERT ON node BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('node','upsert',
 			json_object('node_id',NEW.node_id,'address',NEW.address,'node_type',NEW.node_type,'name',NEW.name,
@@ -67,8 +68,8 @@ var backupTriggerSQL = []string{
 				'factory_id',NEW.factory_id,'status',NEW.status,'provisioned_at',NEW.provisioned_at,
 				'last_seen',NEW.last_seen,'room',NEW.room,'archived_at',NEW.archived_at)); END`,
 	`CREATE TRIGGER IF NOT EXISTS bq_node_d AFTER DELETE ON node BEGIN
-		INSERT INTO backup_queue(kind,op,payload) VALUES('archive_node','archive',
-			json_object('node_id',OLD.node_id,'archived_at',CAST(strftime('%s','now') AS INTEGER))); END`,
+		INSERT INTO backup_queue(kind,op,payload) VALUES('purge_node','purge',
+			json_object('node_id',OLD.node_id)); END`,
 	// node_param (current state)
 	`CREATE TRIGGER IF NOT EXISTS bq_np_i AFTER INSERT ON node_param BEGIN
 		INSERT INTO backup_queue(kind,op,payload) VALUES('node_param','upsert',

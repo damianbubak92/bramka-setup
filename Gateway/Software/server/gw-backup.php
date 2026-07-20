@@ -66,9 +66,10 @@ try {
             continue;
         }
 
-        // Special: hard-wipe one node everywhere (kept for disaster/manual use; the
-        // gateway itself uses archive_node now, and the retention cron does the real
-        // purge server-side).
+        // Special: hard-wipe one node everywhere. The GATEWAY drives the 60-day purge:
+        // when a trashed node ages out, dropNode deletes it locally and its DELETE trigger
+        // enqueues this purge_node op -> the node is hard-deleted here too. Offline-safe
+        // (the op waits in backup_queue and retries). No separate server-side retention cron.
         if ($kind === 'purge_node') {
             $nid = (int)($data['node_id'] ?? -1);
             foreach (['gw_node','gw_node_param','gw_solar_hourly','gw_solar_daily','gw_solar_monthly'] as $t) {
