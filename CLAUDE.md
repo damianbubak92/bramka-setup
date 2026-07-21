@@ -427,6 +427,26 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-22 (cd.) — firmware rev2 czujnika klimatu PRZYGOTOWANY (JOIN + MCP3421 SoC + telemetria) — bring-up jutro
+- **Cel**: customowy czujnik klimatu (CC1310 + SHT35 + MCP3421 + LFP 18500 + USB charge) jako **gen2 sensor-only**
+  (`capabilities=0` — tylko mierzy/raportuje; w automatyzacjach jako **źródło warunku**, np. sprzężenie zwrotne dla
+  ogrzewania, nigdy cel akcji). SHT35 był już sprawdzony (rev1); dochodziło: JOIN, odczyt napięcia z MCP3421 po I2C,
+  estymacja SoC, wysyłka telemetrii.
+- **Nowe pliki `Nodes/TempHumNode/Firmware/rev2/`** (nie ruszają rev1): `mcp3421.{c,h}` (18-bit ΔΣ one-shot, 0x68,
+  15.625 µV/LSB, dzielnik ÷2 + 1-pkt cal → mV), `battery_soc.{c,h}` (LUT krzywej LFP, gruby plateau / ostre kolana,
+  **do kalibracji** realną krzywą spoczynkową), `th_sense.{c,h}` (fasada I2C + PERIPH_EN: SHT35 sprawdzony + MCP3421 +
+  SoC), `node_identity.{c,h}` (port z solara, `NODE_CAPABILITIES=0`, magic „THN1"), `th_sensor_task.c` (okresowy pomiar
+  → thData → wyślij jak provisioned; RX JOIN_ACCEPT/REMOVE/UNREGISTERED), `README-rev2.md` (integracja + pin map + plan
+  bring-upu + kalibracja).
+- **Reużycie RF**: `rfEchoTx.c` z SolarControllerNode ('E'+factory_id+JOIN+ACK). 3 edycje udokumentowane: JOIN
+  `type=NODE_TH_SENSOR`, routing RX na `thNodeQueue`/`thNodeEventHandle`, caps=0 (już z `node_identity.h`).
+- **Telemetria bez zmiany drutu**: przemapowanie `thData` — `batt_mv`=mV z MCP3421, **`soh_pct`=SoC %** (LUT), `acc_uah`=0.
+  Komentarz w `node_protocol.h` zaktualizowany (rev1 BQ35100 vs rev2). Gateway/DB/apka bez zmian (typ 6 już dekodowany).
+- **Do zrobienia jutro (bring-up)**: flash → log UART T/RH/batt → **kalibracja `MCP3421_CAL`** multimetrem → JOIN →
+  approve → telemetria w `node_param` → reguła warunkowa w apce (widoczny jako źródło, nie cel) → **kalibracja SoC LUT**.
+  Deep-standby (RTC-wake) i status ładowania = follow-up po weryfikacji telemetrii. [[rev2-battery-architecture]]
+  [[rev2-th-node-protos-ordered]]
+
 ### 2026-07-22 — AUTOMATYZACJE PER-WĘZEŁ: implementacja Layers 1-4 ✅ (ZWERYFIKOWANE NA ŻYWO E2E)
 - **Przebudowa całego modelu automatyzacji z gen1-type-based na per-węzeł** (diagnoza z 21.07 cd.2). Reguły kluczują
   **`node_id`** (stała tożsamość) w apce/DB/Go; Go rozwiązuje `node_id → adres RF` dopiero **przy pushu** do silnika;

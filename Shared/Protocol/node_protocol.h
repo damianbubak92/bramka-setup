@@ -108,9 +108,9 @@ typedef struct {
         struct {
             float    temperature;   /* deg C  */
             float    humidity;      /* %RH    */
-            uint16_t batt_mv;       /* BQ35100 Voltage(), mV (0 = n/a)              */
-            uint8_t  soh_pct;       /* BQ35100 StateOfHealth, % (SOH mode; 0 = n/a) */
-            int32_t  acc_uah;       /* BQ35100 AccumulatedCapacity, cumulative used uAh (ACC mode) */
+            uint16_t batt_mv;       /* battery mV (rev-1 BQ35100 Voltage(); rev-2 MCP3421 + 1:2 divider; 0 = n/a) */
+            uint8_t  soh_pct;       /* rev-1 BQ35100 StateOfHealth %; rev-2 REPURPOSED as SoC % (voltage LUT); 0 = n/a */
+            int32_t  acc_uah;       /* rev-1 BQ35100 AccumulatedCapacity (used uAh); rev-2 unused (0) */
         } thData;
 
         /* provisioning: node -> gateway (CMD_JOIN_REQUEST). The node's type is in
