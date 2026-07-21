@@ -114,9 +114,14 @@ typedef struct {
         } thData;
 
         /* provisioning: node -> gateway (CMD_JOIN_REQUEST). The node's type is in
-         * MessageStruct.type; factory_id identifies the physical chip pre-address. */
+         * MessageStruct.type; factory_id identifies the physical chip pre-address.
+         * capabilities = bitmask of node-executable actions the node supports (bit =
+         * NODE_CAP(ACTION_*), see automation.h). Stored on approve as node.capabilities
+         * and drives the app's Action editor; opaque here (bit meanings live in
+         * automation.h). 0 = a sensor-only node (no actions). */
         struct {
-            uint8_t factory_id[NODE_FACTORY_ID_LEN];
+            uint8_t  factory_id[NODE_FACTORY_ID_LEN];
+            uint32_t capabilities;
         } joinData;
 
         /* provisioning: gateway -> node (CMD_JOIN_ACCEPT), sent to ADDR_UNPROVISIONED;

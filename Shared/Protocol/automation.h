@@ -31,18 +31,29 @@
  * CODES (wire-stable values; stored in uint8_t fields, NOT as C enums)
  * ========================================================================= */
 
-/* Devices (condition sources / action targets) */
-#define DEV_SOLAR_CONTROLLER   0u
-#define DEV_BUFFER_CONTROLLER  1u
-#define DEV_SMARTPHONE         2u
+/* Node references. A condition source / action target is an RF node ADDRESS
+ * (0x10-0xEF), NOT a device-type code. The app + DB + Go key rules by the stable
+ * node_id; Go resolves node_id -> the node's current address at push time, so the
+ * M4F engine works purely in address space (per-node telemetry keyed by address,
+ * actions routed to an address). address 0 in an action target = "no node" (e.g.
+ * ACTION_SEND_MESSAGE). (gen1's DEV_SOLAR/BUFFER/SMARTPHONE codes are gone.) */
 
-/* Parameters (sensor values) */
-#define PARAM_T1         0u
-#define PARAM_T2         1u
-#define PARAM_T3         2u
-#define PARAM_T4         3u
-#define PARAM_SBUF_TEMP  4u
-#define PARAM_UNKNOWN    5u
+/* Parameters (condition sources) - full telemetry set + room for future node types.
+ * The engine reads the addressed node's field by this code; the app offers only the
+ * params valid for the selected node's type. */
+#define PARAM_T1          0u
+#define PARAM_T2          1u
+#define PARAM_T3          2u
+#define PARAM_T4          3u
+#define PARAM_SBUF_TEMP   4u
+#define PARAM_TCOL        5u
+#define PARAM_ENERGY_GAIN 6u
+#define PARAM_FLOW_RATE   7u
+#define PARAM_PUMP_STATE  8u
+#define PARAM_TEMPERATURE 9u   /* TH sensor */
+#define PARAM_HUMIDITY    10u  /* TH sensor */
+#define PARAM_BATT_MV     11u
+#define PARAM_UNKNOWN     255u
 
 /* Condition types */
 #define COND_TIME             0u
@@ -54,11 +65,20 @@
 #define OP_MORE_THAN  1u
 #define OP_BETWEEN    2u
 
-/* Action types */
-#define ACTION_SET_RELAY     0u
-#define ACTION_SEND_MESSAGE  1u
+/* Action types - EXTENSIBLE. A node-executable action's code doubles as its bit
+ * index in node.capabilities (a node declares which it supports at JOIN, see
+ * node_protocol.h joinData.capabilities). SEND_MESSAGE is a SYSTEM action (app
+ * notification, no node) and is never a node capability bit. Adding an action =
+ * new ACTION_* code + engine dispatch case + app catalog entry; no struct change. */
+#define ACTION_SET_RELAY     0u  /* node action: relay/pump on-off; value 0/1        */
+#define ACTION_SEND_MESSAGE  1u  /* system action: app notification; nodeAddr unused */
+/* future node actions, declared via NODE_CAP(ACTION_*):
+ *   #define ACTION_SET_PUMP_SPEED 2u   // value 0-100 (%) */
 
-/* Relay values */
+/* Node capability bit for a node-executable action code. */
+#define NODE_CAP(action)  (1u << (action))
+
+/* Relay values (SET_RELAY value is a float; these are the 0/1 semantics). */
 #define VALUE_OFF  0u
 #define VALUE_ON   1u
 
@@ -74,7 +94,7 @@ typedef struct {
 } TimeCondition;
 
 typedef struct {
-    uint8_t device;     /* DEV_*   */
+    uint8_t nodeAddr;   /* RF address of the source node (Go resolves from node_id) */
     uint8_t parameter;  /* PARAM_* */
     uint8_t op;         /* OP_*    */
     uint8_t _pad;       /* align floats to 4 */
@@ -83,9 +103,9 @@ typedef struct {
 } ParameterCondition;
 
 typedef struct {
-    uint8_t device1;
+    uint8_t nodeAddr1;
     uint8_t parameter1;
-    uint8_t device2;
+    uint8_t nodeAddr2;
     uint8_t parameter2;
     uint8_t deltaOp;    /* OP_* on (value1 - value2) */
     uint8_t _pad[3];    /* align floats to 4 */
@@ -108,15 +128,11 @@ typedef struct {
  * ========================================================================= */
 typedef struct {
     uint8_t actionType;  /* ACTION_* */
-    uint8_t target;      /* DEV_* (target node) */
+    uint8_t nodeAddr;    /* target node RF address; 0 = none (e.g. SEND_MESSAGE) */
     uint8_t _pad[2];
     union {
-        struct {
-            uint8_t value;   /* VALUE_* */
-        } relay;
-        struct {
-            char message[MAX_MESSAGE_LEN];
-        } sendMessage;
+        float value;                    /* node actions: SET_RELAY 0/1, SET_PUMP_SPEED 0-100, ... */
+        char  message[MAX_MESSAGE_LEN]; /* SEND_MESSAGE */
     } data;
 } RuleAction;
 

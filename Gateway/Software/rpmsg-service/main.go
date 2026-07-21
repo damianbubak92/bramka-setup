@@ -612,7 +612,7 @@ func runFireSmokeTest(p *Protocol) {
 	rules := []Rule{{
 		Name:       "SmokeFire",
 		Conditions: []Condition{{Type: CondTime, Time: TimeCond{HourStart: 10, MinStart: 0, HourEnd: 14, MinEnd: 0}}},
-		Action:     Action{Type: ActionSendMessage, Target: DevSmartphone, Message: "SMOKE"},
+		Action:     Action{Type: ActionSendMessage, Message: "SMOKE"},
 	}}
 	if err := p.PushRules(rules); err != nil {
 		log.Printf("[Test] rule push FAILED: %v", err)
@@ -780,7 +780,7 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 				// Provisioning frames ride the telemetry path; demux by cmd.
 				cmd, cok := NodeMsgCmd(ev.Payload)
 				if cok && cmd == CmdJoinRequest {
-					fid, nt, ok := DecodeJoinRequest(ev.Payload)
+					fid, nt, caps, ok := DecodeJoinRequest(ev.Payload)
 					if !ok {
 						log.Printf("[Serve] JOIN_REQUEST undecodable (%d bytes)", len(ev.Payload))
 						break
@@ -793,8 +793,8 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 						log.Printf("[Serve] JOIN from active node (factory %s) - ignored", factoryHex)
 						break
 					}
-					if joins.Add(fid, nt, time.Now().Unix()) {
-						log.Printf("[Serve] JOIN request: node type %d factory %s (awaiting approval)", nt, factoryHex)
+					if joins.Add(fid, nt, caps, time.Now().Unix()) {
+						log.Printf("[Serve] JOIN request: node type %d factory %s caps 0x%X (awaiting approval)", nt, factoryHex, caps)
 					}
 					// Publish on EVERY JOIN (not just first-seen) so a user who pressed
 					// JOIN again while on the devices screen always re-pops the dialog.
@@ -892,7 +892,7 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 
 	// Define the engine ruleset on connect from the DB (source of truth): makes
 	// M4F state deterministic and stops stale rules from a prior session firing.
-	rules, err := store.GetRules()
+	rules, err := store.RulesForPush()
 	if err != nil {
 		log.Printf("[Serve] load rules from DB failed: %v (pushing empty)", err)
 		rules = []Rule{}

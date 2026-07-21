@@ -263,6 +263,26 @@ func initNodeSchema(db *sql.DB) error {
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return err
 	}
+	// migrate: node.capabilities - bitmask of node-executable actions the node declared at
+	// JOIN (NODE_CAP(ACTION_*), automation.h). Drives the app's Action editor; NULL/0 =
+	// sensor-only node. Populated on approve from joinData.capabilities.
+	if _, err := db.Exec(`ALTER TABLE node ADD COLUMN capabilities INTEGER`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	// One-time: automations moved from device-TYPE codes to per-node (node_id). Old
+	// type-based rules are incompatible with the new format, so clear them once. A marker
+	// keeps rules created in the new format from being wiped on later restarts.
+	var rulesV2 int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM config WHERE key = 'rules_v2'`).Scan(&rulesV2)
+	if rulesV2 == 0 {
+		if _, err := db.Exec(`DELETE FROM config WHERE key = 'rules'`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`INSERT OR REPLACE INTO config(key, value) VALUES('rules_v2', '1')`); err != nil {
+			return err
+		}
+	}
 	// migrate: tag the gen1 sniff controllers (solar 0xF1, buffer 0xF2) as `legacy`.
 	// Keyed by their fixed gen1 addresses - the reliable signal (factory_id is unreliable
 	// here: these got one from manual registration, while the 0xF3 dev sim node has none).
@@ -444,7 +464,7 @@ const (
 // address, recorded with the node's type/name/factory id. It is idempotent per
 // factory id - re-approving (or a known chip rejoining) reuses the same address
 // instead of consuming a new one. Returns the assigned address. ts is unix s.
-func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) (uint8, error) {
+func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, capabilities uint32, ts int64) (uint8, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -463,9 +483,9 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) 
 		// A node mid-removal is revived to active; a detached node needs a fresh
 		// address (handled by the replace/re-pair path, not here).
 		if _, err := tx.Exec(
-			`UPDATE node SET name = ?, node_type = ?, provisioned_at = ?, last_seen = ?,
+			`UPDATE node SET name = ?, node_type = ?, capabilities = ?, provisioned_at = ?, last_seen = ?,
 			     status = CASE WHEN status = 'pending_remove' THEN 'active' ELSE status END
-			 WHERE factory_id = ?`, name, nodeType, ts, ts, factoryID); err != nil {
+			 WHERE factory_id = ?`, name, nodeType, capabilities, ts, ts, factoryID); err != nil {
 			return 0, err
 		}
 		return uint8(addr.Int64), tx.Commit()
@@ -478,8 +498,8 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) 
 	// New logical node: node_id is AUTOINCREMENT (a stable id, distinct from the
 	// reusable RF address). pending_join until it confirms under the assigned address.
 	if _, err := tx.Exec(
-		`INSERT INTO node (address, node_type, name, factory_id, provisioned_at, last_seen, status)
-		 VALUES (?, ?, ?, ?, ?, ?, 'pending_join')`, newAddr, nodeType, name, factoryID, ts, ts); err != nil {
+		`INSERT INTO node (address, node_type, name, factory_id, capabilities, provisioned_at, last_seen, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_join')`, newAddr, nodeType, name, factoryID, capabilities, ts, ts); err != nil {
 		return 0, err
 	}
 	return newAddr, tx.Commit()
@@ -491,10 +511,10 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, ts int64) 
 // new chip then gets JOIN_ACCEPT with this same address and starts reporting under it.
 // status -> pending_join until the new chip confirms. Returns an error if the target
 // address is not a provisioned node.
-func (s *Store) ReplaceNode(targetAddr uint8, newFactoryID string, ts int64) error {
+func (s *Store) ReplaceNode(targetAddr uint8, newFactoryID string, capabilities uint32, ts int64) error {
 	res, err := s.db.Exec(
-		`UPDATE node SET factory_id = ?, status = 'pending_join', provisioned_at = ?, last_seen = ?
-		 WHERE address = ?`, newFactoryID, ts, ts, targetAddr)
+		`UPDATE node SET factory_id = ?, capabilities = ?, status = 'pending_join', provisioned_at = ?, last_seen = ?
+		 WHERE address = ?`, newFactoryID, capabilities, ts, ts, targetAddr)
 	if err != nil {
 		return err
 	}
@@ -509,7 +529,7 @@ func (s *Store) ReplaceNode(targetAddr uint8, newFactoryID string, ts int64) err
 // still-live address of an active node), a detached node has no address, so a fresh
 // one is allocated. status -> pending_join until the new chip confirms. Returns the
 // newly allocated RF address, or an error if the node is not detached.
-func (s *Store) RepairNode(nodeID int64, newFactoryID string, ts int64) (uint8, error) {
+func (s *Store) RepairNode(nodeID int64, newFactoryID string, capabilities uint32, ts int64) (uint8, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -552,9 +572,9 @@ func (s *Store) RepairNode(nodeID int64, newFactoryID string, ts int64) (uint8, 
 		return 0, err
 	}
 	if _, err := tx.Exec(
-		`UPDATE node SET address = ?, factory_id = ?, status = 'pending_join',
+		`UPDATE node SET address = ?, factory_id = ?, capabilities = ?, status = 'pending_join',
 		     provisioned_at = ?, last_seen = ? WHERE node_id = ?`,
-		newAddr, newFactoryID, ts, ts, nodeID); err != nil {
+		newAddr, newFactoryID, capabilities, ts, ts, nodeID); err != nil {
 		return 0, err
 	}
 	return newAddr, tx.Commit()
@@ -618,6 +638,7 @@ type NodeInfo struct {
 	LastSeen      int64  `json:"lastSeen"`     // unix s of last telemetry (0 = never)
 	ProvisionedAt int64  `json:"provisionedAt"` // unix s
 	Room          string `json:"room"`         // user grouping ("" = Bez pokoju)
+	Capabilities  uint32 `json:"capabilities"` // bitmask NODE_CAP(ACTION_*): actions the app may target on this node
 }
 
 // NodeState is the LAST KNOWN telemetry of one node, as stored in node_param.
@@ -729,7 +750,7 @@ func (s *Store) ListNodes() ([]NodeInfo, error) {
 	rows, err := s.db.Query(
 		`SELECT node_id, COALESCE(address,0), node_type, COALESCE(name,''), COALESCE(factory_id,''),
 		        COALESCE(status,'active'), COALESCE(last_seen,0), COALESCE(provisioned_at,0),
-		        COALESCE(room,'')
+		        COALESCE(room,''), COALESCE(capabilities,0)
 		 FROM node
 		 WHERE archived_at IS NULL
 		 ORDER BY node_id`)
@@ -741,7 +762,7 @@ func (s *Store) ListNodes() ([]NodeInfo, error) {
 	for rows.Next() {
 		var n NodeInfo
 		if err := rows.Scan(&n.NodeID, &n.Address, &n.Type, &n.Name, &n.FactoryID,
-			&n.Status, &n.LastSeen, &n.ProvisionedAt, &n.Room); err != nil {
+			&n.Status, &n.LastSeen, &n.ProvisionedAt, &n.Room, &n.Capabilities); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -1108,24 +1129,29 @@ func (s *Store) GetRulesJSON() (string, error) {
 	return v, nil
 }
 
-// GetRules parses the stored ruleset into the Rule model (for the engine push).
-func (s *Store) GetRules() ([]Rule, error) {
+// RulesForPush returns the ENABLED, address-resolved ruleset to push to the M4F engine.
+// (node_id -> current RF address; rules with an unresolvable node are dropped.)
+func (s *Store) RulesForPush() ([]Rule, error) {
 	j, err := s.GetRulesJSON()
 	if err != nil {
 		return nil, err
 	}
-	return parseAppRules(j)
+	in, err := parseAppRules(j)
+	if err != nil {
+		return nil, err
+	}
+	return appRulesToWire(in, s), nil
 }
 
-// SetRules persists the ruleset (stored canonicalized, so getrules round-trips
-// cleanly regardless of how the app formatted the request).
-func (s *Store) SetRules(rules []Rule) error {
-	j, err := marshalAppRules(rules)
-	if err != nil {
+// SetRulesJSON validates and stores the RAW app JSON blob (node_id-based). getrules
+// returns it verbatim; resolution to RF addresses happens only at push (RulesForPush),
+// so the stored rules survive address reuse / re-pair.
+func (s *Store) SetRulesJSON(raw string) error {
+	if _, err := parseAppRules(raw); err != nil {
 		return err
 	}
-	_, err = s.db.Exec(
+	_, err := s.db.Exec(
 		`INSERT INTO config(key, value) VALUES('rules', ?)
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, j)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, raw)
 	return err
 }

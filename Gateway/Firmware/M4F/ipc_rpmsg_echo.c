@@ -523,7 +523,12 @@ static void drainEngineOutbox(void)
     while (xQueueReceive(gOutboxQueue, &out, 0) == pdTRUE) {
         if (out.kind == OUTBOX_RULE_FIRED) {
             engine_rpmsg_report_rule_fired(out.ruleIndex, &out.action);
-            nodeTxSink(&out.msg);
+            /* Node action -> send the command to the target node. A system action
+             * (SEND_MESSAGE, nodeAddr 0) only reports RULE_FIRED (Go turns it into an
+             * app notification); no bogus RF send to address 0. */
+            if (out.action.nodeAddr != 0u) {
+                nodeTxSink(&out.msg);
+            }
         } else {
             engine_rpmsg_report_telemetry(&out.msg);
         }

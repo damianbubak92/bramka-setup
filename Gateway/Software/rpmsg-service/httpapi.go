@@ -140,6 +140,22 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, c
 	}
 }
 
+// repushRules rebuilds + pushes the active ruleset to the engine. Call after any change
+// that alters node addresses (approve/repair/remove) so rules referencing those nodes
+// resolve to the CURRENT address (or drop out when a node loses its address). Best-effort.
+func repushRules(p *Protocol, store *Store) {
+	rules, err := store.RulesForPush()
+	if err != nil {
+		log.Printf("[rules] re-push: build failed: %v", err)
+		return
+	}
+	if err := p.PushRules(rules); err != nil {
+		log.Printf("[rules] re-push failed: %v", err)
+	} else {
+		log.Printf("[rules] re-pushed %d active rule(s) after node change", len(rules))
+	}
+}
+
 // handleSetRules parses the app's "rules=<json>" field, persists it, and pushes
 // the ruleset to the M4F engine. The app posts a text/plain body shaped
 // "command=setrules&rules=<JSON array>&authToken=<token>" (rules= NOT url-encoded).
@@ -151,17 +167,19 @@ func handleSetRules(p *Protocol, store *Store, body string, w http.ResponseWrite
 		log.Printf("[HTTP] setrules: no rules= field")
 		return
 	}
-	rules, err := parseAppRules(rulesJSON)
-	if err != nil {
+	// Store the RAW app JSON (node_id-based) after validation; resolution to RF
+	// addresses + enabled-filtering happens at push time (RulesForPush).
+	if err := store.SetRulesJSON(rulesJSON); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		io.WriteString(w, "bad rules JSON\n")
-		log.Printf("[HTTP] setrules: parse failed: %v", err)
+		log.Printf("[HTTP] setrules: validate/persist failed: %v", err)
 		return
 	}
-	if err := store.SetRules(rules); err != nil {
+	rules, err := store.RulesForPush()
+	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		io.WriteString(w, "DB error\n")
-		log.Printf("[HTTP] setrules: persist failed: %v", err)
+		log.Printf("[HTTP] setrules: build push set failed: %v", err)
 		return
 	}
 	if err := p.PushRules(rules); err != nil {
@@ -169,12 +187,12 @@ func handleSetRules(p *Protocol, store *Store, body string, w http.ResponseWrite
 		// start (or retry) re-pushes from the DB.
 		w.WriteHeader(http.StatusServiceUnavailable)
 		io.WriteString(w, "saved, engine push failed\n")
-		log.Printf("[HTTP] setrules: saved %d rules but push failed: %v", len(rules), err)
+		log.Printf("[HTTP] setrules: saved but push failed: %v", err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain")
 	io.WriteString(w, "OK")
-	log.Printf("[HTTP] setrules from %s: %d rules saved + pushed", r.RemoteAddr, len(rules))
+	log.Printf("[HTTP] setrules from %s: saved + pushed %d active rule(s)", r.RemoteAddr, len(rules))
 }
 
 // extractRulesField pulls the raw JSON after "rules=" up to "&authToken=" (or end).
@@ -311,7 +329,7 @@ func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, hub *WSHu
 		return
 	}
 
-	addr, err := store.ProvisionNode(pj.NodeType, name, factory, time.Now().Unix())
+	addr, err := store.ProvisionNode(pj.NodeType, name, factory, pj.Capabilities, time.Now().Unix())
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		io.WriteString(w, "provision failed\n")
@@ -371,7 +389,7 @@ func handleReplaceNode(p *Protocol, store *Store, joins *joinRegistry, hub *WSHu
 		io.WriteString(w, "bad factory id\n")
 		return
 	}
-	if err := store.ReplaceNode(target, factory, time.Now().Unix()); err != nil {
+	if err := store.ReplaceNode(target, factory, pj.Capabilities, time.Now().Unix()); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		io.WriteString(w, err.Error()+"\n")
 		log.Printf("[HTTP] replacenode: %v", err)
@@ -419,7 +437,7 @@ func handleRepairNode(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub
 		io.WriteString(w, "bad factory id\n")
 		return
 	}
-	addr, err := store.RepairNode(nodeID, factory, time.Now().Unix())
+	addr, err := store.RepairNode(nodeID, factory, pj.Capabilities, time.Now().Unix())
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		io.WriteString(w, err.Error()+"\n")
@@ -434,6 +452,7 @@ func handleRepairNode(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub
 	}
 	joins.Remove(factory)
 	hub.PublishNodeStatus(addr, "pending_join")
+	repushRules(p, store) // node gained an address -> rules referencing it now resolve
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -502,6 +521,7 @@ func handleRemoveNode(p *Protocol, store *Store, hub *WSHub, req string, w http.
 			return
 		}
 		hub.PublishNodeStatus(0, "removed") // live: nudge the app to refresh the list
+		repushRules(p, store)               // node gone -> its rules drop out of the engine
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"id": id, "status": "removed"})
 		log.Printf("[HTTP] removenode id %d -> trashed (detached, no node to notify)", id)
@@ -544,6 +564,7 @@ func handleRemoveNode(p *Protocol, store *Store, hub *WSHub, req string, w http.
 		return
 	}
 	hub.PublishNodeStatus(addr, "removed") // live: device drops from the list
+	repushRules(p, store)                  // node gone -> its rules drop out of the engine
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"address": addr, "status": "removed"})

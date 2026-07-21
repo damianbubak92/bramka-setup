@@ -21,11 +21,12 @@ const (
 // pendingJoin is a node that pressed JOIN and awaits user approval. JSON tags
 // shape the listjoins response the phone reads in step 4.
 type pendingJoin struct {
-	FactoryID string `json:"factory"`   // hex of the 8-byte CC1310 factory id (the chip identity)
-	NodeType  uint8  `json:"type"`      // NODE_* (node_protocol.h)
-	FirstSeen int64  `json:"firstSeen"` // unix s
-	LastSeen  int64  `json:"lastSeen"`
-	Count     int    `json:"count"` // JOINs seen (the node retransmits until provisioned)
+	FactoryID    string `json:"factory"`      // hex of the 8-byte CC1310 factory id (the chip identity)
+	NodeType     uint8  `json:"type"`         // NODE_* (node_protocol.h)
+	Capabilities uint32 `json:"capabilities"` // bitmask NODE_CAP(ACTION_*) the node declared at JOIN
+	FirstSeen    int64  `json:"firstSeen"`    // unix s
+	LastSeen     int64  `json:"lastSeen"`
+	Count        int    `json:"count"` // JOINs seen (the node retransmits until provisioned)
 }
 
 // joinRegistry holds JOIN requests awaiting approval, keyed by factory id.
@@ -40,17 +41,18 @@ func newJoinRegistry() *joinRegistry {
 
 // Add records a JOIN (dedup by factory id). Returns true the first time a given
 // chip is seen, so the caller notifies the user only once per node.
-func (r *joinRegistry) Add(factoryID [8]byte, nodeType uint8, ts int64) (first bool) {
+func (r *joinRegistry) Add(factoryID [8]byte, nodeType uint8, capabilities uint32, ts int64) (first bool) {
 	key := hex.EncodeToString(factoryID[:])
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if p := r.pending[key]; p != nil {
 		p.LastSeen = ts
 		p.Count++
+		p.Capabilities = capabilities // refresh in case the node's declaration changed
 		return false
 	}
 	r.pending[key] = &pendingJoin{
-		FactoryID: key, NodeType: nodeType, FirstSeen: ts, LastSeen: ts, Count: 1,
+		FactoryID: key, NodeType: nodeType, Capabilities: capabilities, FirstSeen: ts, LastSeen: ts, Count: 1,
 	}
 	return true
 }

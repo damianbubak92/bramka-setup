@@ -9,14 +9,38 @@
  * STATE
  * ========================================================================= */
 
-/* Authoritative live snapshot. gen1 init: temps -20, sBuforTemp -20, rest 0.
- * The negative sBuforTemp seeds the "buffer not reporting yet" guard below. */
-static NodesData g_nodes = {
-    .Tin = -20.0f, .Tout = -20.0f, .T4 = -20.0f, .T3 = -20.0f,
-    .T2 = -20.0f, .T1 = -20.0f, .Tcol = -20.0f,
-    .energyGain = 0, .flowRate = 0, .sBuforTemp = -20.0f,
-    .pumpState = 0, ._pad = {0, 0, 0},
-};
+/* PER-NODE live state, keyed by RF address (0x10-0xEF). gen2 multi-node: each node
+ * has its own record, so two nodes of the SAME type (e.g. gen1 solar 0xF1 + a gen2
+ * solar) no longer overwrite each other. Rules reference a node by address (Go
+ * resolves node_id -> address at push). `inUse` = the node has reported at least once;
+ * a condition on a node that hasn't reported yet is fail-safe (treated as not met),
+ * so rules never fire on absent/stale data. Direct-indexed by address for O(1); ~12 KB,
+ * placed in DDR alongside g_rules (same section). */
+typedef struct {
+    uint8_t inUse;
+    uint8_t type;       /* NODE_* */
+    union {             /* only the node's own type's fields (saves ~1/4 the RAM) */
+        struct {
+            float   T1, T2, T3, T4, Tcol;
+            int32_t energyGain, flowRate;
+            uint8_t pumpState;
+        } solar;
+        struct {
+            float sBuforTemp;
+        } bufor;
+        struct {
+            float    temperature, humidity;
+            uint16_t batt_mv;
+        } th;
+    } d;
+} NodeRec;   /* 36 B; x256 = 9 KB in DDR (fits alongside g_rules in .bss.engine_rules) */
+
+static NodeRec g_node[256]
+    __attribute__((section(".bss.engine_rules")));  /* DDR (see g_rules note) */
+
+/* Vestigial: engine_get_state()/MSG_NODE_STATE is no longer sent (Go reads telemetry
+ * from the raw NODE_TELEMETRY path -> DB). Kept zeroed so the .h symbol still links. */
+static const NodesData g_state_stub = { 0 };
 
 static EngineActionFn g_action_fn  = NULL;
 static void          *g_action_ctx = NULL;
@@ -108,26 +132,39 @@ bool engine_update_node(const MessageStruct *msg)
     if (msg == NULL) {
         return false;
     }
+    NodeRec *nd = &g_node[msg->id];   /* per-node record, keyed by RF address */
 
     if (msg->type == NODE_SOLAR_CONTROLLER && msg->cmd == CMD_SEND_DATA_TO_DB) {
-        g_nodes.Tin        = msg->payload.solarData.Tin;
-        g_nodes.Tout       = msg->payload.solarData.Tout;
-        g_nodes.T4         = msg->payload.solarData.T4;
-        g_nodes.T3         = msg->payload.solarData.T3;
-        g_nodes.T2         = msg->payload.solarData.T2;
-        g_nodes.T1         = msg->payload.solarData.T1;
-        g_nodes.Tcol       = msg->payload.solarData.Tcol;
-        g_nodes.energyGain = msg->payload.solarData.energyGain;
-        g_nodes.flowRate   = msg->payload.solarData.flowRate;
-        g_nodes.pumpState  = msg->payload.solarData.pumpState;
+        nd->type            = NODE_SOLAR_CONTROLLER;
+        nd->d.solar.T4         = msg->payload.solarData.T4;
+        nd->d.solar.T3         = msg->payload.solarData.T3;
+        nd->d.solar.T2         = msg->payload.solarData.T2;
+        nd->d.solar.T1         = msg->payload.solarData.T1;
+        nd->d.solar.Tcol       = msg->payload.solarData.Tcol;
+        nd->d.solar.energyGain = msg->payload.solarData.energyGain;
+        nd->d.solar.flowRate   = msg->payload.solarData.flowRate;
+        nd->d.solar.pumpState  = msg->payload.solarData.pumpState;
+        nd->inUse           = 1u;
         return true;
     }
     if (msg->type == NODE_SOLAR_CONTROLLER && msg->cmd == CMD_SEND_PUMP_STATUS) {
-        g_nodes.pumpState = msg->payload.pumpData.pumpState;
+        nd->type              = NODE_SOLAR_CONTROLLER;
+        nd->d.solar.pumpState = msg->payload.pumpData.pumpState;
+        nd->inUse             = 1u;
         return true;
     }
     if (msg->type == NODE_BUFOR_CONTROLLER) {
-        g_nodes.sBuforTemp = msg->payload.buforData.sBuforTemp;
+        nd->type             = NODE_BUFOR_CONTROLLER;
+        nd->d.bufor.sBuforTemp = msg->payload.buforData.sBuforTemp;
+        nd->inUse            = 1u;
+        return true;
+    }
+    if (msg->type == NODE_TH_SENSOR) {
+        nd->type           = NODE_TH_SENSOR;
+        nd->d.th.temperature = msg->payload.thData.temperature;
+        nd->d.th.humidity    = msg->payload.thData.humidity;
+        nd->d.th.batt_mv     = msg->payload.thData.batt_mv;
+        nd->inUse          = 1u;
         return true;
     }
     return false;
@@ -135,7 +172,7 @@ bool engine_update_node(const MessageStruct *msg)
 
 const NodesData *engine_get_state(void)
 {
-    return &g_nodes;
+    return &g_state_stub;  /* vestigial - see g_state_stub note */
 }
 
 /* Current wall time, advancing the last sync by the monotonic delta.
@@ -189,18 +226,38 @@ uint32_t engine_ms_to_next_minute(void)
  * EVALUATOR - port of gen1 evaluateAutomationRules()
  * ========================================================================= */
 
-/* gen1 getDeviceParameterValue(): ignores device, switches on parameter.
- * D6 parity. (TODO: honor `device` once the node model is generalized.) */
-static float getDeviceParameterValue(uint8_t device, uint8_t parameter)
+/* Read one parameter of the node at `addr` from its per-node record. The app offers
+ * only params valid for the selected node's type, so a solar param on a solar node etc.
+ * Absent/unknown -> 0 (callers gate on g_node[addr].inUse first, so this isn't reached
+ * for a node that never reported). */
+static float getNodeParam(uint8_t addr, uint8_t parameter)
 {
-    (void)device;
-    switch (parameter) {
-        case PARAM_T1: return g_nodes.T1;
-        case PARAM_T2: return g_nodes.T2;
-        case PARAM_T3: return g_nodes.T3;
-        case PARAM_T4: return g_nodes.T4;
-        default:       return g_nodes.sBuforTemp;  /* PARAM_SBUF_TEMP / unknown */
+    const NodeRec *nd = &g_node[addr];
+    if (nd->type == NODE_SOLAR_CONTROLLER) {
+        switch (parameter) {
+            case PARAM_T1:          return nd->d.solar.T1;
+            case PARAM_T2:          return nd->d.solar.T2;
+            case PARAM_T3:          return nd->d.solar.T3;
+            case PARAM_T4:          return nd->d.solar.T4;
+            case PARAM_TCOL:        return nd->d.solar.Tcol;
+            case PARAM_ENERGY_GAIN: return (float)nd->d.solar.energyGain;
+            case PARAM_FLOW_RATE:   return (float)nd->d.solar.flowRate;
+            case PARAM_PUMP_STATE:  return (float)nd->d.solar.pumpState;
+            default:                return 0.0f;
+        }
     }
+    if (nd->type == NODE_BUFOR_CONTROLLER) {
+        return (parameter == PARAM_SBUF_TEMP) ? nd->d.bufor.sBuforTemp : 0.0f;
+    }
+    if (nd->type == NODE_TH_SENSOR) {
+        switch (parameter) {
+            case PARAM_TEMPERATURE: return nd->d.th.temperature;
+            case PARAM_HUMIDITY:    return nd->d.th.humidity;
+            case PARAM_BATT_MV:     return (float)nd->d.th.batt_mv;
+            default:                return 0.0f;
+        }
+    }
+    return 0.0f;  /* param not valid for this node's type */
 }
 
 /* Current wall time snapped to the minute boundary (+4s forward bias) - the same
@@ -263,18 +320,6 @@ static bool evaluateParameterDeltaCondition(const ParameterDeltaCondition *pdc,
     }
 }
 
-/* gen1 had separate DeviceType / TargetNodeType / nodeType enums; the action
- * target (DEV_*) must map to a wire node type (NODE_*). */
-static uint8_t targetToNodeType(uint8_t target)
-{
-    switch (target) {
-        case DEV_SOLAR_CONTROLLER:  return NODE_SOLAR_CONTROLLER;
-        case DEV_BUFFER_CONTROLLER: return NODE_BUFOR_CONTROLLER;
-        case DEV_SMARTPHONE:        return NODE_SMARTPHONE;
-        default:                    return NODE_SMARTPHONE;
-    }
-}
-
 /* Bucket a rule by its conditions so each trigger only touches relevant rules:
  * ENGINE_EVAL_TIME -> rules carrying a COND_TIME (and zero-condition "always"
  * rules); ENGINE_EVAL_NODE -> rules carrying a COND_PARAMETER(_DELTA). A rule
@@ -329,25 +374,16 @@ void engine_evaluate(EngineEvalScope scope)
             continue;  /* not in this trigger's bucket */
         }
 
-        /* Solar relay dedup (kept): skip if the pump is already in the wanted
-         * state. This is the level-trigger + node-feedback anti-spam. */
-        if (rule->action.target == DEV_SOLAR_CONTROLLER &&
-            rule->action.actionType == ACTION_SET_RELAY &&
-            rule->action.data.relay.value == g_nodes.pumpState) {
-            continue;
+        /* Relay dedup (level-trigger + node-feedback anti-spam): skip if the TARGET
+         * node's pump is already in the wanted state. Per-node now (target's own
+         * pumpState), so it works for any solar node, not just a global one. */
+        if (rule->action.actionType == ACTION_SET_RELAY) {
+            const NodeRec *tgt = &g_node[rule->action.nodeAddr];
+            uint8_t want = (rule->action.data.value >= 0.5f) ? 1u : 0u;
+            if (tgt->type == NODE_SOLAR_CONTROLLER && tgt->d.solar.pumpState == want) {
+                continue;
+            }
         }
-        /* gen1 had an extra safety guard here: skip a solar pump SET_RELAY while
-         * the buffer sensor hasn't reported (sBuforTemp < 0) - running the pump
-         * without knowing the 2nd-buffer temperature can be pointless/unsafe.
-         * REMOVED for now: the buffer node isn't streaming yet, so it would block
-         * every pump rule. Restore once node telemetry (incl. BUFOR_CONTROLLER's
-         * sBuforTemp) is being collected:
-         *   if (rule->action.target == DEV_SOLAR_CONTROLLER &&
-         *       rule->action.actionType == ACTION_SET_RELAY &&
-         *       g_nodes.sBuforTemp < 0) {
-         *       continue;
-         *   }
-         */
 
         for (c = 0; c < rule->conditionCount; c++) {
             RuleCondition *rc = &rule->conditions[c];
@@ -359,15 +395,24 @@ void engine_evaluate(EngineEvalScope scope)
                     break;
                 case COND_PARAMETER: {
                     ParameterCondition *pc = &rc->u.parameter;
-                    float val = getDeviceParameterValue(pc->device, pc->parameter);
-                    cond_ok = evaluateParameterCondition(pc, val);
+                    /* fail-safe: a node that hasn't reported yet -> condition not met */
+                    if (!g_node[pc->nodeAddr].inUse) {
+                        cond_ok = false;
+                    } else {
+                        float val = getNodeParam(pc->nodeAddr, pc->parameter);
+                        cond_ok = evaluateParameterCondition(pc, val);
+                    }
                     break;
                 }
                 case COND_PARAMETER_DELTA: {
                     ParameterDeltaCondition *pdc = &rc->u.parameterDelta;
-                    float v1 = getDeviceParameterValue(pdc->device1, pdc->parameter1);
-                    float v2 = getDeviceParameterValue(pdc->device2, pdc->parameter2);
-                    cond_ok = evaluateParameterDeltaCondition(pdc, v1, v2);
+                    if (!g_node[pdc->nodeAddr1].inUse || !g_node[pdc->nodeAddr2].inUse) {
+                        cond_ok = false;
+                    } else {
+                        float v1 = getNodeParam(pdc->nodeAddr1, pdc->parameter1);
+                        float v2 = getNodeParam(pdc->nodeAddr2, pdc->parameter2);
+                        cond_ok = evaluateParameterDeltaCondition(pdc, v1, v2);
+                    }
                     break;
                 }
                 default:
@@ -385,21 +430,25 @@ void engine_evaluate(EngineEvalScope scope)
             continue;
         }
 
-        /* All conditions met -> build the action message (gen1 mapping). */
+        /* All conditions met -> build the action. Node actions route to the target
+         * address (msg.id = nodeAddr, msg.type = that node's actual type); the sink
+         * sends msg to the node ONLY when nodeAddr != 0 (see drainEngineOutbox), so
+         * SEND_MESSAGE (nodeAddr 0, system notification) reports RULE_FIRED without a
+         * bogus RF send. `value` is a float (0/1, %, ...); dispatch per actionType. */
         MessageStruct msg;
         memset(&msg, 0, sizeof(msg));
-        msg.id = 0xF1;
-        msg.type = targetToNodeType(rule->action.target);
+        msg.id   = rule->action.nodeAddr;
+        msg.type = g_node[rule->action.nodeAddr].type;
 
         if (rule->action.actionType == ACTION_SET_RELAY) {
             msg.cmd = CMD_TURN_PUMP_ON_OFF;
             msg.payload.pumpData.pumpState =
-                (rule->action.data.relay.value == VALUE_ON) ? 1u : 0u;
+                (rule->action.data.value >= 0.5f) ? 1u : 0u;
             msg.length = (uint8_t)(sizeof(msg.payload.pumpData) + 4u);
         } else if (rule->action.actionType == ACTION_SEND_MESSAGE) {
             msg.cmd = CMD_SEND_TEXT_MSG;
             strncpy(msg.payload.textData.text,
-                    rule->action.data.sendMessage.message,
+                    rule->action.data.message,
                     sizeof(msg.payload.textData.text) - 1);
             msg.payload.textData.text[sizeof(msg.payload.textData.text) - 1] = '\0';
             msg.length = (uint8_t)(4u + strlen(msg.payload.textData.text) + 1u);

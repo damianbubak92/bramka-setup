@@ -75,6 +75,11 @@ static void msg_decode(const MessageStruct *m, DecodedNode *d) {
 static void msg_join_factory_id(const MessageStruct *m, uint8_t out[NODE_FACTORY_ID_LEN]) {
     memcpy(out, m->payload.joinData.factory_id, NODE_FACTORY_ID_LEN);
 }
+
+// Capabilities bitmask the node declares at JOIN (bit N = ACTION_N controllable).
+static uint32_t msg_join_capabilities(const MessageStruct *m) {
+    return m->payload.joinData.capabilities;
+}
 */
 import "C"
 
@@ -136,17 +141,17 @@ func NodeMsgId(payload []byte) (id uint8, ok bool) {
 // CMD_JOIN_REQUEST MessageStruct (id is ADDR_UNPROVISIONED on the wire). The
 // factory id is read from the joinData payload (carried there since the node has no
 // address yet); on a v2 frame it also equals the frame-level factory_id.
-func DecodeJoinRequest(payload []byte) (factoryID [8]byte, nodeType uint8, ok bool) {
+func DecodeJoinRequest(payload []byte) (factoryID [8]byte, nodeType uint8, capabilities uint32, ok bool) {
 	_, msg, ok := splitNodeFrame(payload)
 	if !ok {
-		return factoryID, 0, false
+		return factoryID, 0, 0, false
 	}
 	m := msgStructFromBytes(msg)
 	if uint8(m.cmd) != uint8(C.CMD_JOIN_REQUEST) {
-		return factoryID, 0, false
+		return factoryID, 0, 0, false
 	}
 	C.msg_join_factory_id(&m, (*C.uint8_t)(unsafe.Pointer(&factoryID[0])))
-	return factoryID, uint8(m._type), true
+	return factoryID, uint8(m._type), uint32(C.msg_join_capabilities(&m)), true
 }
 
 // NodeParam is one decoded (key, value) reading from a node. Stored generically
