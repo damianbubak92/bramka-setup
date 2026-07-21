@@ -482,10 +482,15 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, capabiliti
 		// Re-approve of a known chip: keep its node_id/address + update name/type.
 		// A node mid-removal is revived to active; a detached node needs a fresh
 		// address (handled by the replace/re-pair path, not here).
+		// capabilities: overwrite only when the JOIN declared something (!=0); a node that
+		// declares 0 (e.g. firmware not yet sending caps) keeps its known capabilities so a
+		// re-JOIN / re-pair doesn't silently wipe them. Real declarations always win.
 		if _, err := tx.Exec(
-			`UPDATE node SET name = ?, node_type = ?, capabilities = ?, provisioned_at = ?, last_seen = ?,
+			`UPDATE node SET name = ?, node_type = ?,
+			     capabilities = CASE WHEN ? != 0 THEN ? ELSE capabilities END,
+			     provisioned_at = ?, last_seen = ?,
 			     status = CASE WHEN status = 'pending_remove' THEN 'active' ELSE status END
-			 WHERE factory_id = ?`, name, nodeType, capabilities, ts, ts, factoryID); err != nil {
+			 WHERE factory_id = ?`, name, nodeType, capabilities, capabilities, ts, ts, factoryID); err != nil {
 			return 0, err
 		}
 		return uint8(addr.Int64), tx.Commit()
@@ -512,9 +517,12 @@ func (s *Store) ProvisionNode(nodeType uint8, name, factoryID string, capabiliti
 // status -> pending_join until the new chip confirms. Returns an error if the target
 // address is not a provisioned node.
 func (s *Store) ReplaceNode(targetAddr uint8, newFactoryID string, capabilities uint32, ts int64) error {
+	// capabilities: keep existing when the new chip declared 0 (see ProvisionNode note).
 	res, err := s.db.Exec(
-		`UPDATE node SET factory_id = ?, capabilities = ?, status = 'pending_join', provisioned_at = ?, last_seen = ?
-		 WHERE address = ?`, newFactoryID, capabilities, ts, ts, targetAddr)
+		`UPDATE node SET factory_id = ?,
+		     capabilities = CASE WHEN ? != 0 THEN ? ELSE capabilities END,
+		     status = 'pending_join', provisioned_at = ?, last_seen = ?
+		 WHERE address = ?`, newFactoryID, capabilities, capabilities, ts, ts, targetAddr)
 	if err != nil {
 		return err
 	}
@@ -571,10 +579,12 @@ func (s *Store) RepairNode(nodeID int64, newFactoryID string, capabilities uint3
 	if err != nil {
 		return 0, err
 	}
+	// capabilities: keep existing when the re-paired chip declared 0 (see ProvisionNode note).
 	if _, err := tx.Exec(
-		`UPDATE node SET address = ?, factory_id = ?, capabilities = ?, status = 'pending_join',
-		     provisioned_at = ?, last_seen = ? WHERE node_id = ?`,
-		newAddr, newFactoryID, capabilities, ts, ts, nodeID); err != nil {
+		`UPDATE node SET address = ?, factory_id = ?,
+		     capabilities = CASE WHEN ? != 0 THEN ? ELSE capabilities END,
+		     status = 'pending_join', provisioned_at = ?, last_seen = ? WHERE node_id = ?`,
+		newAddr, newFactoryID, capabilities, capabilities, ts, ts, nodeID); err != nil {
 		return 0, err
 	}
 	return newAddr, tx.Commit()

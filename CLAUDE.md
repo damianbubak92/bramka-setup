@@ -302,11 +302,16 @@ Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · d
    („Utwórz nowe"/„Wymień istniejące" dropdown kompatybilnych+detached, kosz+przywracanie, twardy confirm na
    usuwaniu). [[provisioning-model]] [[gen2-backup-mirror]]
 1. **Apka: read-from-mirror gdy bramka nieosiągalna** — kaskada LAN→zdalnie→mirror. [[gen2-backup-mirror]]
-2. **Dopracowanie automatyzacji** (reguły po `id`, Go mapuje id→adres przy pushu — patrz spec §9).
+2. ~~**Dopracowanie automatyzacji**~~ **ZROBIONE 22.07 (Layers 1-4, zweryfikowane na żywo)** — reguły per-węzeł
+   (`node_id`), Go mapuje id→adres przy pushu, capabilities deklarowane przy JOIN. Szczegóły w Session Log.
 3. Produkcja: `-backup-url`/`-backup-key` do systemd unitu; usunąć sekcję gen1 z `secrets.php`.
 5. ~~**Hang M4F**~~ **ROZWIĄZANY 19.07 (commit `43f7758`)** — to była kolizja downlink↔uplink SPI (half-duplex), nie
    hardfault. Fix: full-duplex CC1310. Szczegóły w Session Log. Opcjonalne utwardzanie (MCSPI cancel na M4F) odłożone —
    niepotrzebne (`to=0`).
+
+**Automatyzacje: DZIAŁAJĄ per-węzeł (22.07).** Zależność przejściowa: dopóki firmware noda nie deklaruje capabilities
+przy JOIN, istniejące nody mają `capabilities=0` → są **źródłem warunków**, ale **nie celem akcji** (do testów: ręczny
+`UPDATE node SET capabilities=1` = bit ACTION_SET_RELAY). Bramka zachowuje istniejące caps gdy re-JOIN deklaruje 0.
 
 **Nadal ATRAPY w apce (świadomie):** Klimat (wykresy + interwał), PV, Dashboard poza kaflem solarnym.
 **Luki bramki blokujące:** brak komendy interwału pomiaru, brak noda/telemetrii PV, `reading_time`=czas ODBIORU nie pomiaru
@@ -421,6 +426,40 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-07-22 — AUTOMATYZACJE PER-WĘZEŁ: implementacja Layers 1-4 ✅ (ZWERYFIKOWANE NA ŻYWO E2E)
+- **Przebudowa całego modelu automatyzacji z gen1-type-based na per-węzeł** (diagnoza z 21.07 cd.2). Reguły kluczują
+  **`node_id`** (stała tożsamość) w apce/DB/Go; Go rozwiązuje `node_id → adres RF` dopiero **przy pushu** do silnika;
+  silnik M4F pracuje w przestrzeni adresów. Zweryfikowane na żywo: reguła czasowa odpaliła przekaźnik, toggle enabled
+  trwały przez restart apki, usunięcie noda → reguła nieaktywna+wyszarzona, przywrócenie → auto-active.
+- **Layer 1 (protokół, `automation.h`/`node_protocol.h`, commit `fecdc76`)**: usunięte `DEV_*`; warunki/akcja niosą
+  `nodeAddr` (nie typ); `RuleAction.value` = **float** (akcje rozszerzalne: przekaźnik on/off, w przyszłości % pompy).
+  Rozszerzone `PARAM_*` (Tcol/energyGain/flowRate/pumpState/temperature/humidity/batt_mv). `NODE_CAP(action)` = bit
+  zdolności. **`joinData.capabilities`** (uint32) — node deklaruje zdolności przy JOIN. Rozmiary ABI bez zmian
+  (AutomationRule=196B, MessageStruct=44B, NodeFrame=52B).
+- **Layer 2 (silnik M4F, `engine.c`)**: `g_nodes` (jeden globalny NodesData) → **tablica per-węzeł `g_node[256]`**
+  (union po typie, by zmieścić w M4F_DDR 64KB: NodeRec 36B). `getNodeParam(addr,param)` per-węzeł; dedup po `g_node[addr]`;
+  akcja celuje `rule->action.nodeAddr` (koniec hardcode 0xF1); SEND_MESSAGE (nodeAddr 0) = tylko RULE_FIRED, bez TX do noda.
+- **Layer 3 (Go, commit `fecdc76`)**: reguły trzymane jako **surowy JSON node_id-owy** (`SetRulesJSON`), getrules zwraca
+  verbatim; `RulesForPush` rozwiązuje id→adres i pushuje **tylko włączone** reguły, których **wszystkie** węzły się
+  rozwiązują (detached/removed wypada → log skip). **Re-push po repair/remove** (zmiana adresów). Capabilities czytane
+  z JOIN (`DecodeJoinRequest`), zapis `node.capabilities`, w `listnodes`/`listjoins`. Jednorazowe czyszczenie starych
+  reguł type-based (marker `rules_v2`).
+- **Layer 4 (apka KMP)**: edytor sterowany realną listą nodów. **3-stopniowa Akcja** (cel: węzeł `actionable` wg
+  capabilities LUB „Powiadomienie" → typ akcji z capabilities → wartość On/Off / treść). Warunki per-węzeł (parametry
+  z `condParamsForType`). **Toggle enabled** (zachowywany przy edycji; wyłączona reguła jest w DB, ale nie pushowana).
+  **Stan „niedostępny"**: reguła wskazująca usunięty/detached węzeł → karta **wyszarzona** + banner „Nieaktywna — brak
+  urządzenia" (poprawka UX: samo ostrzeżenie nie wystarczyło — musi wyglądać martwo). Pliki: `Models.kt`, `Dto.kt`,
+  `AutoFormat.kt`, `RulesCodec.kt`, `SampleRepository.kt`, `AutomationsScreen.kt`.
+- **🔑 FIX (przejściowy) — capabilities nie giną przy re-JOIN deklarującym 0** (`store.go`): re-pair/replace/re-approve
+  **nadpisuje caps tylko gdy JOIN zadeklarował !=0**, inaczej zachowuje istniejące (`CASE WHEN ?!=0 THEN ? ELSE
+  capabilities END`). Bug złapany na żywo: node ustawiony ręcznie `capabilities=1`, po delete→restore→re-pair firmware
+  deklarował 0 → kasował „1" → node wypadał z dropdownu „cel akcji". Realna maska (gdy firmware ją doda) i tak nadpisze —
+  model „node deklaruje" nienaruszony.
+- **ZOSTAJE (firmware noda, user w CCS)**: node ustawia `joinData.capabilities` przy JOIN (bitmask `NODE_CAP(ACTION_*)`)
+  + parsuje komendy akcji. Do tego czasu istniejące nody = caps 0 (obejście: ręczny `UPDATE node SET capabilities=1`).
+- **Lekcja (cgo)**: zagnieżdżony `/* */` w preamble cgo (`rules.go`) **zamyka blok komentarza Go przedwcześnie** →
+  „syntax error: non-declaration statement outside function body". W preamble cgo tylko `//`. [[automation-engine-type-based]]
 
 ### 2026-07-21 (cd.2) — DIAGNOZA automatyzacji: gen1 type-based, do przebudowy per-node (⭐ PROJEKT NA 2026-07-22)
 - **Mechanizm reguł DZIAŁA** (push apka→Go→M4F, ewaluacja TIME+PARAMETER/DELTA, fire SET_RELAY/SEND_MESSAGE — kiedyś
