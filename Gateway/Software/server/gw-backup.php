@@ -2,9 +2,10 @@
 // gw-backup.php - the gateway pushes config/state/history changes here (live backup).
 // Body: {"key":"<secret>","items":[{"kind":"<table>","op":"upsert|delete","data":{...}}]}
 //   kind  = which mirror table (whitelist below)
-//   op    = upsert (INSERT ... ON DUPLICATE KEY UPDATE) | delete (by primary key)
-//           plus a special kind "purge_node" that wipes one node across all tables
-//   data  = the row's columns (upsert) or just the PK columns (delete/purge)
+//   op    = upsert (INSERT ... ON DUPLICATE KEY UPDATE) | delete (by primary key) |
+//           prune (range DELETE bucket<before, solar_* retention) ; plus special kinds
+//           "archive_node" (soft-delete) and "purge_node" (hard-wipe across all tables)
+//   data  = the row's columns (upsert) | PK columns (delete) | {node_id,before} (prune)
 // Response: {"ok":true,"applied":N}. Key-gated, prepared statements only.
 //
 // Deploy on the gen2 server DB (separate from gen1). FILL IN creds; do NOT commit them.
@@ -88,6 +89,21 @@ try {
             $s = $conn->prepare("DELETE FROM $table WHERE $where");
             bindDynamic($s, array_map(fn($c) => $data[$c] ?? null, $pk));
             $s->execute(); $s->close();
+            $applied++;
+            continue;
+        }
+
+        // Retention: the gateway pruned old aggregate bars past their window (hourly
+        // >60d, daily >24mo) and mirrors that as ONE range op (not per row), so the
+        // mirror does not grow forever and a mirror read-fallback returns bounded data.
+        // Offline-safe: the op waits in backup_queue and retries on reconnect. Only the
+        // bucketed solar_* tables are prunable.
+        if ($op === 'prune') {
+            if (strpos($kind, 'solar_') !== 0) { continue; }
+            $nid    = (int)($data['node_id'] ?? -1);
+            $before = (int)($data['before']  ?? 0);
+            $s = $conn->prepare("DELETE FROM $table WHERE node_id = ? AND bucket < ?");
+            $s->bind_param('ii', $nid, $before); $s->execute(); $s->close();
             $applied++;
             continue;
         }

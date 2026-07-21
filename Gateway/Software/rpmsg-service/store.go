@@ -26,6 +26,10 @@ type Store struct {
 	// loc is the wall-clock zone for the solar daily-accumulation reset boundary
 	// (energy_gain / pump_runtime restart at local midnight).
 	loc *time.Location
+	// backupOn is true while live backup is enabled (triggers installed + worker
+	// running). Guards manual backup_queue enqueues (e.g. the aggregate prune op) so
+	// nothing accumulates in the queue when there is no drainer.
+	backupOn bool
 }
 
 // OpenStore opens (creating if needed) the SQLite DB and ensures the schema. loc

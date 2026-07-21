@@ -744,9 +744,11 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 		if err := store.InstallBackupTriggers(); err != nil {
 			log.Printf("[Backup] trigger install failed (backup off): %v", err)
 		} else {
+			store.backupOn = true // enables manual enqueues (aggregate prune propagation)
 			if err := store.SeedBackupFromCurrentState(); err != nil {
 				log.Printf("[Backup] seed failed: %v", err)
 			}
+			store.SeedMirrorPruneCatchup() // trim the mirror's pre-existing backlog to match retention
 			go backupWorker(store, backupCfg)
 		}
 	} else {

@@ -301,7 +301,13 @@ Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · d
    ramki, walidacja `(addr,factory_id)`→`MSG_UNREGISTERED`, nod milknie — robi user w CCS) **→ (3) apka**
    („Utwórz nowe"/„Wymień istniejące" dropdown kompatybilnych+detached, kosz+przywracanie, twardy confirm na
    usuwaniu). [[provisioning-model]] [[gen2-backup-mirror]]
-1. **Apka: read-from-mirror gdy bramka nieosiągalna** — kaskada LAN→zdalnie→mirror. [[gen2-backup-mirror]]
+1. **⭐ NASTĘPNA SESJA (dłuższa) — Apka: read-from-mirror gdy bramka nieosiągalna** — kaskada LAN→zdalnie→mirror.
+   Potrzebny app-facing endpoint historii/stanu czytający `gw_solar_*`/`gw_node*` z MySQL + rozszerzenie kaskady w apce.
+   **Decyzje do podjęcia**: (a) co z automatyzacjami przy bramce offline (read-only? edycja do kolejki?),
+   (b) czy robić kolejkę mirror→bramka (zmiany z apki gdy bramka wróci), (c) format/uprawnienia endpointu.
+   **Prereq gotowy**: retencja mirrora (prune propagation) — fallback zwróci już ograniczone okno, nie 2 lata.
+   Uwaga: przed produkcją i tak wyczyścić bazę do zera → re-import 2 lat gen1 → agregacja → retencja (posprzątać sieroty
+   z testów; drobne rozjazdy mirror↔bramka to sieroty per-node, patrz Session Log 22.07). [[gen2-backup-mirror]]
 2. ~~**Dopracowanie automatyzacji**~~ **ZROBIONE 22.07 (Layers 1-4, zweryfikowane na żywo)** — reguły per-węzeł
    (`node_id`), Go mapuje id→adres przy pushu, capabilities deklarowane przy JOIN. Szczegóły w Session Log.
 3. Produkcja: `-backup-url`/`-backup-key` do systemd unitu; usunąć sekcję gen1 z `secrets.php`.
@@ -426,6 +432,27 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-07-22 (cd.2) — retencja agregatów solar + propagacja prune do mirrora ✅ (zweryfikowane: bramka 1396 / mirror 1416 hourly)
+- **Retencja agregatów** (`solaragg.go`): `solar_hourly` 60 dni, `solar_daily` 24 mies., `solar_monthly` wieczne (dotąd
+  przycinana tylko surówka). `pruneSolarAggregates` w `aggregateSolar`+`RebuildSolarAggregates`. Backlog z importu gen1
+  (16k→1400 wierszy) docięty. Start-up prune objął **każdy node z agregatami** (raw ∪ hourly ∪ daily), nie tylko te z raw
+  — bo zaimportowany node historyczny nie ma surówki.
+- **Zakres przeglądania per-widok** (`solarRangeFirst`) zamiast globalnego `first`: dzień → najstarsza godzinówka (~60d),
+  miesiąc → najstarsze dzienne (~24mo), rok/total → miesięczne (pełna historia). **To był fix bugu**: apka pokazywała
+  „godzinówki z 2 lat", bo `SolarHistory` liczyła zakres z globalnego `first` (= najstarszy `solar_monthly` ≈ 2 lata) mimo
+  przyciętych godzinówek. Odrzucone fallbacki `dayTotal→daily`/`monthTotal→monthly` (user: „po co kombinujesz" — skoro
+  przeglądanie i tak sięga tylko dokąd są dane, wystarczy ograniczyć zakres). Apka czyta historię **tylko z bramki**
+  (`command()` → LAN/remote; mirror-read TODO), więc to była bramka, nie mirror.
+- **🔑 Propagacja prune do mirrora** (`backup.go` miał tylko INSERT/UPDATE triggery na agregatach — DELETE NIE szedł):
+  `pruneSolarAggregates` enqueue'uje **jedną operację zakresową** `('solar_hourly'|'solar_daily', op='prune',
+  {node_id,before})` do `backup_queue` — tylko gdy `RowsAffected>0` (≈raz/dobę, nie per 2 min, nie per wiersz) i gdy
+  `backupOn`. `SeedMirrorPruneCatchup` na starcie (po włączeniu backupu) docina istniejący backlog mirrora (per-delete
+  propagacja go nie łapie, bo lokalnie już przycięte). Serwer `gw-backup.php`: `op==='prune'` → `DELETE FROM gw_<table>
+  WHERE node_id=? AND bucket<?`. Offline-safe (op czeka w kolejce). Wymaga `Deploy-Go` **oraz** wgrania `gw-backup.php`.
+- **Rozjazd 1396 vs 1416** = eventual consistency (lag workera ~15s + prune dobowy/edge-triggered vs inserty ciągłe ≈ jedna
+  doba godzinówek). Trwały rozjazd = **sieroty na mirrorze** (node_id obecny tylko na mirrorze, catch-up iteruje nody
+  lokalne). Do posprzątania przy planowanym czyszczeniu bazy do zera + re-imporcie. [[solar-aggregation-model]] [[gen2-backup-mirror]]
 
 ### 2026-07-22 (cd.) — firmware rev2 czujnika klimatu PRZYGOTOWANY (JOIN + MCP3421 SoC + telemetria) — bring-up jutro
 - **Cel**: customowy czujnik klimatu (CC1310 + SHT35 + MCP3421 + LFP 18500 + USB charge) jako **gen2 sensor-only**

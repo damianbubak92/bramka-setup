@@ -27,6 +27,13 @@ const (
 	solarDayLastHour   = 21
 	solarRawBufferSec  = 2 * 3600 // keep this much raw behind the newest reading
 	solarKwhScale      = 10000.0  // wire/raw energy is kWh * 10000
+
+	// Aggregate retention. Each level keeps its own detail for a window, then ages
+	// out - the coarser (retained) level still carries that period's TOTAL, so read
+	// fallbacks (dayTotal/monthTotal) keep reporting correct sums for old periods;
+	// only the finer per-bar breakdown is dropped. Monthly is kept forever (tiny).
+	solarHourlyRetentionDays  = 60 // solar_hourly: last 60 days of per-hour bars
+	solarDailyRetentionMonths = 24 // solar_daily: last 24 months of per-day bars
 )
 
 // ---- API-facing shapes (unchanged JSON so the app is untouched) ----
@@ -103,6 +110,9 @@ func (s *Store) aggregateSolar(node int64, ts int64) error {
 	if err := s.pruneSolarRaw(tx, node, ts); err != nil {
 		return err
 	}
+	if err := s.pruneSolarAggregates(tx, node, ts); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -132,6 +142,9 @@ func (s *Store) RebuildSolarAggregates(node int64) error {
 		return err
 	}
 	if err := s.pruneSolarRaw(tx, node, now); err != nil {
+		return err
+	}
+	if err := s.pruneSolarAggregates(tx, node, now); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -335,11 +348,61 @@ func (s *Store) pruneSolarRaw(tx *sql.Tx, node int64, ts int64) error {
 	return err
 }
 
+// pruneSolarAggregates ages out fine-grained bars past their retention window:
+// hourly beyond 60 days, daily beyond 24 months. Safe because a period is always
+// rolled into the coarser (retained) level before its detail is pruned - so
+// aggregation upward and the read fallbacks both still have what they need; only
+// the per-bar breakdown of very old periods is lost. Monthly is never pruned.
+// Cheap at steady state (an indexed DELETE on (node_id, bucket) matching the few
+// rows that just crossed the boundary).
+func (s *Store) pruneSolarAggregates(tx *sql.Tx, node int64, ts int64) error {
+	hCut := s.local(ts).AddDate(0, 0, -solarHourlyRetentionDays)
+	hCutB := time.Date(hCut.Year(), hCut.Month(), hCut.Day(), 0, 0, 0, 0, s.loc).Unix()
+	res, err := tx.Exec(`DELETE FROM solar_hourly WHERE node_id = ? AND bucket < ?`, node, hCutB)
+	if err != nil {
+		return err
+	}
+	if err := s.enqueuePrune(tx, "solar_hourly", node, hCutB, res); err != nil {
+		return err
+	}
+	dCut := s.local(ts).AddDate(0, -solarDailyRetentionMonths, 0)
+	dCutB := time.Date(dCut.Year(), dCut.Month(), 1, 0, 0, 0, 0, s.loc).Unix()
+	res, err = tx.Exec(`DELETE FROM solar_daily WHERE node_id = ? AND bucket < ?`, node, dCutB)
+	if err != nil {
+		return err
+	}
+	return s.enqueuePrune(tx, "solar_daily", node, dCutB, res)
+}
+
+// enqueuePrune propagates a retention DELETE to the mirror as a SINGLE range op
+// ("prune": DELETE ... WHERE node_id=? AND bucket<before), not per row - so the mirror
+// applies the same cutoff without the queue being flooded with thousands of deletes.
+// Only enqueued when the local DELETE actually removed rows (so it fires ~once/day as a
+// bucket ages out, not every 2-min cycle) and only while backup is enabled (else the
+// queue would grow with no drainer). Rides the aggregation tx = atomic with the delete.
+func (s *Store) enqueuePrune(tx *sql.Tx, table string, node, before int64, res sql.Result) error {
+	if !s.backupOn {
+		return nil
+	}
+	if n, _ := res.RowsAffected(); n <= 0 {
+		return nil
+	}
+	payload := fmt.Sprintf(`{"node_id":%d,"before":%d}`, node, before)
+	_, err := tx.Exec(`INSERT INTO backup_queue(kind,op,payload) VALUES(?,'prune',?)`, table, payload)
+	return err
+}
+
 
 // AggregateAllSolarOnStartup rolls up any hours that completed while the service was
-// down (the 2h buffer may hold a finished hour). Cheap; not a full rebuild.
+// down (the 2h buffer may hold a finished hour) AND applies aggregate retention to
+// every node. Nodes are taken from raw UNION the aggregate levels, so a node with no
+// current raw (e.g. a gen1-imported history node - the import drops raw after the
+// rebuild) still gets its old hourly/daily pruned. Cheap; not a full rebuild.
 func (s *Store) AggregateAllSolarOnStartup() {
-	rows, err := s.db.Query(`SELECT DISTINCT node_id FROM solar_history`)
+	rows, err := s.db.Query(`
+		SELECT node_id FROM solar_history
+		UNION SELECT node_id FROM solar_hourly
+		UNION SELECT node_id FROM solar_daily`)
 	if err != nil {
 		return
 	}
@@ -356,6 +419,41 @@ func (s *Store) AggregateAllSolarOnStartup() {
 		if err := s.aggregateSolar(n, now); err != nil {
 			log.Printf("[Store] solar node %d: startup aggregation failed: %v", n, err)
 		}
+	}
+}
+
+// SeedMirrorPruneCatchup enqueues the current retention cutoffs for every node with
+// aggregate data, so the mirror is trimmed to match the (already-pruned) gateway even
+// for a backlog that predates prune-propagation - the per-delete propagation only fires
+// on NEW local deletes, so the pre-existing 2-year mirror backlog would otherwise linger.
+// Idempotent range ops. Call once AFTER backup is enabled (needs backupOn). No-op off.
+func (s *Store) SeedMirrorPruneCatchup() {
+	if !s.backupOn {
+		return
+	}
+	rows, err := s.db.Query(`SELECT node_id FROM solar_hourly UNION SELECT node_id FROM solar_daily`)
+	if err != nil {
+		return
+	}
+	var nodes []int64
+	for rows.Next() {
+		var n int64
+		if rows.Scan(&n) == nil {
+			nodes = append(nodes, n)
+		}
+	}
+	rows.Close()
+
+	now := time.Now().Unix()
+	hCut := s.local(now).AddDate(0, 0, -solarHourlyRetentionDays)
+	hCutB := time.Date(hCut.Year(), hCut.Month(), hCut.Day(), 0, 0, 0, 0, s.loc).Unix()
+	dCut := s.local(now).AddDate(0, -solarDailyRetentionMonths, 0)
+	dCutB := time.Date(dCut.Year(), dCut.Month(), 1, 0, 0, 0, 0, s.loc).Unix()
+	for _, n := range nodes {
+		s.db.Exec(`INSERT INTO backup_queue(kind,op,payload) VALUES('solar_hourly','prune',?)`,
+			fmt.Sprintf(`{"node_id":%d,"before":%d}`, n, hCutB))
+		s.db.Exec(`INSERT INTO backup_queue(kind,op,payload) VALUES('solar_daily','prune',?)`,
+			fmt.Sprintf(`{"node_id":%d,"before":%d}`, n, dCutB))
 	}
 }
 
@@ -404,8 +502,13 @@ func (s *Store) SolarHistory(node int64, rng string, count int) ([]SolarSeries, 
 	liveDay, liveKwh, livePump, hasLive := s.solarLiveDay(node)
 	now := time.Now().In(s.loc)
 
-	if count <= 0 { // span the whole history for this range
-		f := s.local(first)
+	// Bound browsing to where THIS range's detail actually exists (retention): day ->
+	// oldest hourly, month -> oldest daily, year/total -> oldest monthly. The app's
+	// arrow goes inactive at that edge; no period without data is ever rendered.
+	rangeFirst := s.solarRangeFirst(node, rng, first)
+
+	if count <= 0 { // span the whole (available) history for this range
+		f := s.local(rangeFirst)
 		switch rng {
 		case "day":
 			count = int(now.Sub(time.Date(f.Year(), f.Month(), f.Day(), 0, 0, 0, 0, s.loc)).Hours()/24) + 2
@@ -421,7 +524,7 @@ func (s *Store) SolarHistory(node int64, rng string, count int) ([]SolarSeries, 
 		for i := count - 1; i >= 0; i-- {
 			d := now.AddDate(0, 0, -i)
 			dayB := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, s.loc).Unix()
-			if dayB < s.dayStart(first) {
+			if dayB < s.dayStart(rangeFirst) {
 				continue
 			}
 			out = append(out, s.daySeries(node, dayB, liveDay, liveKwh, livePump, hasLive))
@@ -432,7 +535,7 @@ func (s *Store) SolarHistory(node int64, rng string, count int) ([]SolarSeries, 
 		for i := count - 1; i >= 0; i-- {
 			m := now.AddDate(0, -i, 0)
 			mB := time.Date(m.Year(), m.Month(), 1, 0, 0, 0, 0, s.loc).Unix()
-			if s.nextMonth(mB) <= first {
+			if s.nextMonth(mB) <= rangeFirst {
 				continue
 			}
 			out = append(out, s.monthSeries(node, mB, liveDay, liveKwh, livePump, hasLive))
@@ -440,7 +543,7 @@ func (s *Store) SolarHistory(node int64, rng string, count int) ([]SolarSeries, 
 		return out, nil
 	case "year":
 		out := []SolarSeries{}
-		firstYear := s.local(first).Year()
+		firstYear := s.local(rangeFirst).Year()
 		for y := firstYear; y <= now.Year(); y++ {
 			if count > 0 && now.Year()-y >= count {
 				continue
@@ -449,9 +552,32 @@ func (s *Store) SolarHistory(node int64, rng string, count int) ([]SolarSeries, 
 		}
 		return out, nil
 	case "total":
-		return []SolarSeries{s.totalSeries(node, s.local(first).Year(), now.Year(), liveDay, liveKwh, livePump, hasLive)}, nil
+		return []SolarSeries{s.totalSeries(node, s.local(rangeFirst).Year(), now.Year(), liveDay, liveKwh, livePump, hasLive)}, nil
 	}
 	return nil, fmt.Errorf("unknown range %q (day|month|year|total)", rng)
+}
+
+// solarRangeFirst is the earliest bucket that a given range can actually show, so the
+// app's back-arrow goes inactive exactly where that chart's detail ends: "day" is
+// bounded by the oldest solar_hourly bucket (~60d retention), "month" by the oldest
+// solar_daily bucket (~24mo), "year"/"total" by the oldest solar_monthly bucket
+// (= global span, kept forever). Falls back to globalFirst when that level has no
+// rows yet (e.g. a brand-new node with only raw / an in-progress first period).
+func (s *Store) solarRangeFirst(node int64, rng string, globalFirst int64) int64 {
+	var tbl string
+	switch rng {
+	case "day":
+		tbl = "solar_hourly"
+	case "month":
+		tbl = "solar_daily"
+	default:
+		return globalFirst // year/total: solar_monthly = the global oldest
+	}
+	var b sql.NullInt64
+	if s.db.QueryRow("SELECT MIN(bucket) FROM "+tbl+" WHERE node_id = ?", node).Scan(&b) == nil && b.Valid {
+		return b.Int64
+	}
+	return globalFirst
 }
 
 func (s *Store) solarSpan(node int64) (int64, int64, error) {
@@ -525,7 +651,9 @@ func (s *Store) daySeries(node int64, dayB, liveDay int64, liveKwh float64, live
 }
 
 // dayTotal = SUM of the day's per-hour increments (robust to a mid-day reset; see
-// aggregateOneDay).
+// aggregateOneDay). Only ever called for days within the hourly retention window
+// (the "day" range never browses past the earliest hourly bucket), so the hourly
+// rows are always present.
 func (s *Store) dayTotal(node int64, dayB int64) (float64, int64) {
 	var y sql.NullFloat64
 	var p sql.NullInt64
@@ -590,6 +718,10 @@ func (s *Store) monthThroughCompleteDays(node int64, monthB, beforeDay int64, th
 	return y.Float64, p.Int64
 }
 
+// monthTotal = the month's cumulative (last day's month_yield/month_pump in
+// solar_daily). Only ever called for months within the daily retention window (the
+// "month" range never browses past the earliest daily bucket), so the daily rows are
+// always present.
 func (s *Store) monthTotal(node int64, monthB int64) (float64, int64) {
 	var y sql.NullFloat64
 	var p sql.NullInt64
