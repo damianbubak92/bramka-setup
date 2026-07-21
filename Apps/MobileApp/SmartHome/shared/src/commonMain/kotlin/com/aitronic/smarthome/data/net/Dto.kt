@@ -24,6 +24,9 @@ data class NodeInfoDto(
     val provisionedAt: Long = 0,
     /** Grupowanie w apce; "" = Bez pokoju. Etykieta — node o pokoju nic nie wie. */
     val room: String = "",
+    /** Maska zdolności NODE_CAP(ACTION_*) zadeklarowana przez node przy JOIN — na jakie
+     * akcje edytor automatyzacji może go wskazać jako cel (0 = tylko czujnik). */
+    val capabilities: Long = 0,
 )
 
 /** command=listjoins → [{factory,type,firstSeen,lastSeen,count}] */
@@ -31,6 +34,8 @@ data class NodeInfoDto(
 data class PendingJoinDto(
     val factory: String = "",
     val type: Int = 0,
+    /** Zdolności zadeklarowane przy JOIN (bitmaska NODE_CAP(ACTION_*)). */
+    val capabilities: Long = 0,
     val firstSeen: Long = 0,
     val lastSeen: Long = 0,
     val count: Int = 0,

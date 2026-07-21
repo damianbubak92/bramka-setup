@@ -26,7 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.SmartHomeRepository
-import com.aitronic.smarthome.data.net.GatewaySource
+import com.aitronic.smarthome.data.net.NodeTypes
 import com.aitronic.smarthome.data.net.RulesCodec
 import com.aitronic.smarthome.domain.model.*
 import com.aitronic.smarthome.ui.components.*
@@ -38,12 +38,21 @@ import kotlinx.coroutines.launch
 
 @Composable private fun noRipple() = remember { MutableInteractionSource() }
 
+/** Węzły przykładowe do trybu offline/design (bez bramki). solar steruje przekaźnikiem. */
+private val sampleAutoNodes = listOf(
+    AutoNode(1L, "Sterownik solarny", NodeTypes.SOLAR, "solar", 1L),
+    AutoNode(2L, "Sterownik bufora", NodeTypes.BUFOR, "buffer", 0L),
+)
+
 private data class EditDraft(
     val id: Long?,
     val name: String,
     val conds: List<CondDraft>,
-    val target: String,
-    val value: Int,
+    val actionNode: Long,          // 0 = powiadomienie (SEND_MESSAGE)
+    val actionType: Int = ActionTypes.SET_RELAY,
+    val value: Int = 1,            // przekaźnik ON/OFF
+    val message: String = "",      // treść powiadomienia
+    val enabled: Boolean = true,   // zachowywane przy edycji (toggle robi lista)
 )
 
 private data class PickerReq(val title: String, val options: List<Pair<String, String>>, val selected: String, val onPick: (String) -> Unit)
@@ -53,8 +62,9 @@ private data class ConfirmReq(val title: String, val msg: String, val label: Str
  * Cała funkcja Automatyzacje: lista + edytor + dialogi.
  * Reguły są **czytane z bramki** (`getrules`) i **wypychane po każdej zmianie** (`setrules`).
  *
- * ⚠️ Ograniczenie backendu: schemat bramki nie zna flagi „enabled" — wypychamy tylko
- * reguły włączone. Wyłączona reguła znika z bramki (zostaje lokalnie do czasu odświeżenia).
+ * Model jest per-węzeł: warunki/akcje wskazują konkretny `node_id` z listy bramki. Bramka
+ * przechowuje surowy JSON (z flagą `enabled`) i przy pushu do silnika rozwiązuje id→adres
+ * oraz pomija reguły wyłączone i te wskazujące niedostępny węzeł.
  */
 @Composable
 fun AutomationsRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
@@ -67,6 +77,15 @@ fun AutomationsRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
     val gwState = store?.state?.collectAsState()?.value
     val online = gwState?.online ?: false
 
+    // Węzły z bramki (lub przykładowe offline). Live -> edytor od razu widzi nowe nody.
+    val nodes: List<AutoNode> = remember(gwState?.nodes) {
+        if (store == null) sampleAutoNodes
+        else gwState?.nodes.orEmpty().map { it.toAutoNode() }
+    }
+    val lookup: NodeLookup = remember(nodes) { nodes.associateBy { it.id } }
+    val condNodes = remember(nodes) { nodes.filter { it.hasCondParams } }
+    val actionNodes = remember(nodes) { nodes.filter { it.actionable } }
+
     // Wczytaj reguły z bramki (raz). Bez bramki -> dane przykładowe.
     LaunchedEffect(store) {
         if (store == null) { rules.addAll(repo.rules()); return@LaunchedEffect }
@@ -75,7 +94,7 @@ fun AutomationsRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
             .onFailure { toast = "Nie udało się pobrać reguł" }
     }
 
-    // Wypchnięcie aktualnego zestawu na bramkę.
+    // Wypchnięcie aktualnego zestawu na bramkę (wszystkie reguły, z flagą enabled).
     fun push(okMsg: String) {
         val s = store ?: return
         scope.launch {
@@ -85,27 +104,49 @@ fun AutomationsRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
         }
     }
 
+    fun newDraft(): EditDraft {
+        val first = actionNodes.firstOrNull()
+        return EditDraft(
+            id = null, name = "", conds = listOf(CondDraft()),
+            actionNode = first?.id ?: 0L,
+            actionType = first?.let { actionsForCaps(it.capabilities).firstOrNull()?.first } ?: ActionTypes.SEND_MESSAGE,
+            value = 1, message = "",
+        )
+    }
+
     LaunchedEffect(toast) { if (toast != null) { delay(2600); toast = null } }
 
     Box(Modifier.fillMaxSize().background(Sh.bg)) {
         if (editing == null) {
             AutoList(
-                rules = rules, online = online,
+                rules = rules, lookup = lookup, online = online,
                 onToggleOnline = { scope.launch { store?.refresh() } },
                 onToggleRule = { id -> rules.replaceRule(id) { it.copy(enabled = !it.enabled) }; push("Zsynchronizowano z bramką") },
-                onNew = { editing = EditDraft(null, "", listOf(CondDraft()), "solar", 1) },
-                onEdit = { r -> editing = EditDraft(r.id, r.name, r.conditions.map { it.toDraft() }, r.action.target, r.action.value) },
+                onNew = { editing = newDraft() },
+                onEdit = { r ->
+                    editing = EditDraft(
+                        id = r.id, name = r.name, conds = r.conditions.map { it.toDraft() },
+                        actionNode = r.action.node, actionType = r.action.actionType,
+                        value = if (r.action.value >= 0.5) 1 else 0, message = r.action.message,
+                        enabled = r.enabled,
+                    )
+                },
                 onDelete = { r -> confirm = ConfirmReq("Usunąć regułę?", "„${r.name}\" zostanie trwale usunięta.", "Usuń") { rules.remove(r); confirm = null; push("Usunięto regułę") } },
             )
         } else {
             AutoEditor(
                 draft = editing!!,
+                lookup = lookup, condNodes = condNodes, actionNodes = actionNodes,
                 onChange = { editing = it },
                 onCancel = { editing = null },
                 onPick = { picker = it },
                 onSave = {
                     val d = editing!!
-                    val saved = Rule(d.id ?: ((rules.maxOfOrNull { it.id } ?: 0L) + 1L), d.name.ifBlank { "Bez nazwy" }, true, d.conds.map { it.toCondition() }, RuleAction(d.target, d.value))
+                    val action = if (d.actionNode == 0L)
+                        RuleAction(0L, ActionTypes.SEND_MESSAGE, 0.0, d.message.trim())
+                    else
+                        RuleAction(d.actionNode, d.actionType, d.value.toDouble(), "")
+                    val saved = Rule(d.id ?: ((rules.maxOfOrNull { it.id } ?: 0L) + 1L), d.name.ifBlank { "Bez nazwy" }, d.enabled, d.conds.map { it.toCondition() }, action)
                     if (d.id == null) rules.add(saved) else rules.replaceRule(d.id) { saved }
                     editing = null; push("Zapisano regułę")
                 },
@@ -147,6 +188,7 @@ private inline fun SnapshotStateList<Rule>.replaceRule(id: Long, transform: (Rul
 @Composable
 private fun AutoList(
     rules: List<Rule>,
+    lookup: NodeLookup,
     online: Boolean,
     onToggleOnline: () -> Unit,
     onToggleRule: (Long) -> Unit,
@@ -182,7 +224,7 @@ private fun AutoList(
                 )
             } else {
                 Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 110.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    rules.forEach { r -> RuleCard(r, { onToggleRule(r.id) }, { onEdit(r) }, { onDelete(r) }) }
+                    rules.forEach { r -> RuleCard(r, lookup, { onToggleRule(r.id) }, { onEdit(r) }, { onDelete(r) }) }
                 }
             }
         }
@@ -202,18 +244,22 @@ private fun AutoList(
 }
 
 @Composable
-private fun RuleCard(r: Rule, onToggle: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun RuleCard(r: Rule, lookup: NodeLookup, onToggle: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
     val on = r.enabled
-    val col = deviceColor(r.action.target)
+    val unavailable = lookup.ruleHasUnavailable(r.conditions, r.action)
+    // Wygląd „martwy" gdy reguła się NIE wykonuje: wyłączona LUB wskazuje niedostępny węzeł.
+    // Toggle nadal pokazuje realny stan `enabled` (brak węzła to inna przyczyna nieaktywności).
+    val active = on && !unavailable
+    val col = deviceColor(lookup.uiTypeOf(r.action.node) ?: "hub")
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Sh.surface).padding(16.dp)
-            .then(if (on) Modifier else Modifier.alpha(0.62f)),
+            .then(if (active) Modifier else Modifier.alpha(0.62f)),
     ) {
         Row {
             Box(
-                Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(if (on) col.bg else Color(0xFFEDEAE3)),
+                Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(if (active) col.bg else Color(0xFFEDEAE3)),
                 contentAlignment = Alignment.Center,
-            ) { Icon(ShIcons.Bolt, null, tint = if (on) col.c else Sh.textMuted, modifier = Modifier.size(22.dp)) }
+            ) { Icon(ShIcons.Bolt, null, tint = if (active) col.c else Sh.textMuted, modifier = Modifier.size(22.dp)) }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -224,21 +270,28 @@ private fun RuleCard(r: Rule, onToggle: () -> Unit, onEdit: () -> Unit, onDelete
                 FlowPills(prefix = "JEŚLI") {
                     r.conditions.forEachIndexed { i, c ->
                         if (i > 0) AndText()
-                        CondPill(condSummary(c), condDeviceKey(c), on)
+                        CondPill(lookup.condSummary(c), lookup.condUiType(c), active)
                     }
                 }
                 Spacer(Modifier.height(8.dp))
                 // TO
                 FlowPills(prefix = "TO") {
-                    val chipC = if (on) col.chipC else Sh.textMuted
-                    val chipBg = if (on) col.chipBg else Color(0xFFEDEAE3)
+                    val chipC = if (active) col.chipC else Sh.textMuted
+                    val chipBg = if (active) col.chipBg else Color(0xFFEDEAE3)
                     Row(
                         Modifier.clip(RoundedCornerShape(20.dp)).background(chipBg).padding(horizontal = 11.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(ShIcons.Bolt, null, tint = chipC, modifier = Modifier.size(13.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text(actionText(r.action), color = chipC, fontSize = 12.sp, fontWeight = FontWeight.W500)
+                        Text(lookup.actionText(r.action), color = chipC, fontSize = 12.sp, fontWeight = FontWeight.W500)
+                    }
+                }
+                if (unavailable) {
+                    Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(ShIcons.AlertCircle, null, tint = Sh.dangerAlt, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Nieaktywna — brak urządzenia (usunięte lub niesparowane)", color = Sh.dangerAlt, fontSize = 12.sp)
                     }
                 }
             }
@@ -336,13 +389,21 @@ private fun EmptyState(iconBg: Color, icon: androidx.compose.ui.graphics.vector.
 @Composable
 private fun AutoEditor(
     draft: EditDraft,
+    lookup: NodeLookup,
+    condNodes: List<AutoNode>,
+    actionNodes: List<AutoNode>,
     onChange: (EditDraft) -> Unit,
     onCancel: () -> Unit,
     onPick: (PickerReq) -> Unit,
     onSave: () -> Unit,
 ) {
     val errors = draft.conds.map { it.error() }
-    val valid = errors.all { it == null }
+    val actionError = when {
+        draft.actionNode == 0L && draft.message.isBlank() -> "wpisz treść powiadomienia"
+        draft.actionNode != 0L && !lookup.containsKey(draft.actionNode) -> "wybierz dostępne urządzenie"
+        else -> null
+    }
+    val valid = errors.all { it == null } && actionError == null
 
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
         // Top bar
@@ -364,6 +425,7 @@ private fun AutoEditor(
             draft.conds.forEachIndexed { i, c ->
                 CondCard(
                     index = i, cond = c, error = errors[i], canRemove = draft.conds.size > 1,
+                    condNodes = condNodes, lookup = lookup,
                     onChange = { nc -> onChange(draft.copy(conds = draft.conds.toMutableList().also { it[i] = nc })) },
                     onRemove = { onChange(draft.copy(conds = draft.conds.toMutableList().also { it.removeAt(i) })) },
                     onPick = onPick,
@@ -386,21 +448,10 @@ private fun AutoEditor(
 
             // Akcja
             Text("Akcja", color = Sh.textPrimary, fontSize = 16.sp, fontWeight = FontWeight.W500, modifier = Modifier.padding(top = 24.dp, bottom = 10.dp, start = 2.dp))
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Sh.surface).padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                PickerRow("Urządzenie docelowe", deviceName(draft.target)) {
-                    onPick(PickerReq("Wybierz urządzenie", AutoTargets, draft.target) { onChange(draft.copy(target = it)) })
-                }
-                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Sh.bg).border(1.dp, Sh.fieldBorder, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 9.dp)) {
-                    Column { Text("Typ akcji", color = Sh.textMuted, fontSize = 11.sp); Text("Ustaw przekaźnik", color = Sh.textPrimary, fontSize = 15.sp, modifier = Modifier.padding(top = 1.dp)) }
-                }
-                Column {
-                    Text("Stan przekaźnika", color = Sh.textMuted, fontSize = 11.sp, modifier = Modifier.padding(start = 2.dp, bottom = 6.dp))
-                    Segmented(listOf(1 to "Włącz (ON)", 0 to "Wyłącz (OFF)"), draft.value, { onChange(draft.copy(value = it)) })
-                }
-            }
+            ActionCard(draft, lookup, actionNodes, actionError, onChange, onPick)
 
             // Podgląd reguły
-            RulePreview(draft)
+            RulePreview(draft, lookup)
         }
 
         // Footer
@@ -416,11 +467,79 @@ private fun AutoEditor(
     }
 }
 
+/** Sekcja Akcja: cel (węzeł/powiadomienie) -> typ akcji (z capabilities) -> wartość. */
+@Composable
+private fun ActionCard(
+    draft: EditDraft,
+    lookup: NodeLookup,
+    actionNodes: List<AutoNode>,
+    actionError: String?,
+    onChange: (EditDraft) -> Unit,
+    onPick: (PickerReq) -> Unit,
+) {
+    // "0" = powiadomienie w telefonie (SEND_MESSAGE), reszta = actionable nody.
+    val targetOptions = listOf("0" to "Powiadomienie w telefonie") + actionNodes.map { it.id.toString() to it.name }
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Sh.surface).padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        PickerRow("Cel akcji", lookup.nodeLabel(draft.actionNode)) {
+            onPick(PickerReq("Wybierz cel", targetOptions, draft.actionNode.toString()) { sel ->
+                val id = sel.toLongOrNull() ?: 0L
+                if (id == 0L) {
+                    onChange(draft.copy(actionNode = 0L, actionType = ActionTypes.SEND_MESSAGE))
+                } else {
+                    val at = lookup[id]?.let { actionsForCaps(it.capabilities).firstOrNull()?.first } ?: ActionTypes.SET_RELAY
+                    onChange(draft.copy(actionNode = id, actionType = at, value = 1))
+                }
+            })
+        }
+
+        if (draft.actionNode == 0L) {
+            InputField("Treść powiadomienia", draft.message, { onChange(draft.copy(message = it)) }, placeholder = "np. Bufor przegrzany")
+        } else {
+            val caps = lookup[draft.actionNode]?.capabilities ?: 0L
+            val actions = actionsForCaps(caps)
+            // Typ akcji: gdy jedna możliwość — etykieta; gdy więcej — picker.
+            if (actions.size <= 1) {
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Sh.bg).border(1.dp, Sh.fieldBorder, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 9.dp)) {
+                    Column { Text("Typ akcji", color = Sh.textMuted, fontSize = 11.sp); Text(actions.firstOrNull()?.second ?: "Ustaw przekaźnik", color = Sh.textPrimary, fontSize = 15.sp, modifier = Modifier.padding(top = 1.dp)) }
+                }
+            } else {
+                val cur = actions.firstOrNull { it.first == draft.actionType }?.second ?: actions.first().second
+                PickerRow("Typ akcji", cur) {
+                    onPick(PickerReq("Wybierz akcję", actions.map { it.first.toString() to it.second }, draft.actionType.toString()) { sel ->
+                        onChange(draft.copy(actionType = sel.toIntOrNull() ?: ActionTypes.SET_RELAY))
+                    })
+                }
+            }
+            if (draft.actionType == ActionTypes.SET_RELAY) {
+                Column {
+                    Text("Stan przekaźnika", color = Sh.textMuted, fontSize = 11.sp, modifier = Modifier.padding(start = 2.dp, bottom = 6.dp))
+                    Segmented(listOf(1 to "Włącz (ON)", 0 to "Wyłącz (OFF)"), draft.value, { onChange(draft.copy(value = it)) })
+                }
+            }
+        }
+
+        if (actionNodes.isEmpty() && draft.actionNode != 0L) {
+            Text("Brak sterowalnych urządzeń — możesz ustawić powiadomienie.", color = Sh.textMuted, fontSize = 12.sp)
+        }
+        if (actionError != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(ShIcons.AlertCircle, null, tint = Sh.dangerAlt, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(7.dp))
+                Text(actionError, color = Sh.dangerAlt, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
 @Composable
 private fun CondCard(
     index: Int, cond: CondDraft, error: String?, canRemove: Boolean,
+    condNodes: List<AutoNode>, lookup: NodeLookup,
     onChange: (CondDraft) -> Unit, onRemove: () -> Unit, onPick: (PickerReq) -> Unit,
 ) {
+    val nodeOptions = condNodes.map { it.id.toString() to it.name }
+    fun paramsFor(id: Long): List<Pair<String, String>> = lookup[id]?.let { condParamsForType(it.nodeType) } ?: emptyList()
+
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Sh.surface).padding(14.dp)) {
         Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("WARUNEK ${index + 1}", color = Sh.textMuted, fontSize = 13.sp, fontWeight = FontWeight.W500, letterSpacing = 0.4.sp, modifier = Modifier.weight(1f))
@@ -428,7 +547,7 @@ private fun CondCard(
         }
         Segmented(
             listOf(CondType.Time to "Czas", CondType.Param to "Parametr", CondType.Delta to "Delta"),
-            cond.type, { t -> onChange(defaultForType(t)) },
+            cond.type, { t -> onChange(defaultForType(t, condNodes)) },
         )
         Spacer(Modifier.height(12.dp))
         when (cond.type) {
@@ -437,19 +556,40 @@ private fun CondCard(
                 InputField("Do", cond.end, { onChange(cond.copy(end = it)) }, Modifier.weight(1f))
             }
             CondType.Param -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                PickerRow("Urządzenie", deviceName(cond.device)) { onPick(PickerReq("Wybierz urządzenie", AutoDevices, cond.device) { d -> onChange(cond.copy(device = d, param = AutoParams[d]?.first() ?: cond.param)) }) }
-                PickerRow("Parametr", cond.param) { onPick(PickerReq("Wybierz parametr", paramOptions(cond.device), cond.param) { p -> onChange(cond.copy(param = p)) }) }
+                PickerRow("Urządzenie", lookup.nodeLabel(cond.node)) {
+                    onPick(PickerReq("Wybierz urządzenie", nodeOptions, cond.node.toString()) { sel ->
+                        val id = sel.toLongOrNull() ?: 0L
+                        onChange(cond.copy(node = id, param = paramsFor(id).firstOrNull()?.first ?: ""))
+                    })
+                }
+                PickerRow("Parametr", paramLabel(lookup, cond.node, cond.param)) {
+                    onPick(PickerReq("Wybierz parametr", paramsFor(cond.node), cond.param) { p -> onChange(cond.copy(param = p)) })
+                }
                 Segmented(listOf(CompareOp.Gt to "Większe niż", CompareOp.Lt to "Mniejsze niż"), cond.op, { onChange(cond.copy(op = it)) })
                 InputField("Wartość progowa", cond.value, { onChange(cond.copy(value = it)) }, number = true)
             }
             CondType.Delta -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    PickerRow("Urządzenie 1", deviceName(cond.device1), Modifier.weight(1f)) { onPick(PickerReq("Wybierz urządzenie", AutoDevices, cond.device1) { d -> onChange(cond.copy(device1 = d, param1 = AutoParams[d]?.first() ?: cond.param1)) }) }
-                    PickerRow("Parametr 1", cond.param1, Modifier.weight(1f)) { onPick(PickerReq("Wybierz parametr", paramOptions(cond.device1), cond.param1) { p -> onChange(cond.copy(param1 = p)) }) }
+                    PickerRow("Urządzenie 1", lookup.nodeLabel(cond.node1), Modifier.weight(1f)) {
+                        onPick(PickerReq("Wybierz urządzenie", nodeOptions, cond.node1.toString()) { sel ->
+                            val id = sel.toLongOrNull() ?: 0L
+                            onChange(cond.copy(node1 = id, param1 = paramsFor(id).firstOrNull()?.first ?: ""))
+                        })
+                    }
+                    PickerRow("Parametr 1", paramLabel(lookup, cond.node1, cond.param1), Modifier.weight(1f)) {
+                        onPick(PickerReq("Wybierz parametr", paramsFor(cond.node1), cond.param1) { p -> onChange(cond.copy(param1 = p)) })
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    PickerRow("Urządzenie 2", deviceName(cond.device2), Modifier.weight(1f)) { onPick(PickerReq("Wybierz urządzenie", AutoDevices, cond.device2) { d -> onChange(cond.copy(device2 = d, param2 = AutoParams[d]?.first() ?: cond.param2)) }) }
-                    PickerRow("Parametr 2", cond.param2, Modifier.weight(1f)) { onPick(PickerReq("Wybierz parametr", paramOptions(cond.device2), cond.param2) { p -> onChange(cond.copy(param2 = p)) }) }
+                    PickerRow("Urządzenie 2", lookup.nodeLabel(cond.node2), Modifier.weight(1f)) {
+                        onPick(PickerReq("Wybierz urządzenie", nodeOptions, cond.node2.toString()) { sel ->
+                            val id = sel.toLongOrNull() ?: 0L
+                            onChange(cond.copy(node2 = id, param2 = paramsFor(id).firstOrNull()?.first ?: ""))
+                        })
+                    }
+                    PickerRow("Parametr 2", paramLabel(lookup, cond.node2, cond.param2), Modifier.weight(1f)) {
+                        onPick(PickerReq("Wybierz parametr", paramsFor(cond.node2), cond.param2) { p -> onChange(cond.copy(param2 = p)) })
+                    }
                 }
                 Segmented(listOf(CompareOp.Gt to "Większe niż", CompareOp.Lt to "Mniejsze niż"), cond.op, { onChange(cond.copy(op = it)) })
                 InputField("Minimalna różnica", cond.min, { onChange(cond.copy(min = it)) }, number = true)
@@ -466,8 +606,8 @@ private fun CondCard(
 }
 
 @Composable
-private fun RulePreview(draft: EditDraft) {
-    val col = deviceColor(draft.target)
+private fun RulePreview(draft: EditDraft, lookup: NodeLookup) {
+    val col = deviceColor(lookup.uiTypeOf(draft.actionNode) ?: "hub")
     Column(
         Modifier.fillMaxWidth().padding(top = 22.dp).clip(RoundedCornerShape(20.dp))
             .background(Sh.surface).border(1.dp, Sh.divider, RoundedCornerShape(20.dp)).padding(horizontal = 18.dp, vertical = 16.dp),
@@ -482,26 +622,46 @@ private fun RulePreview(draft: EditDraft) {
         FlowRow(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             draft.conds.forEachIndexed { i, c ->
                 if (i > 0) AndText()
-                CondPill(c.summary(), c.deviceKey(), true)
+                CondPill(lookup.draftSummary(c), lookup.draftUiType(c), true)
             }
         }
         Text("TO", color = Sh.online, fontSize = 12.sp, fontWeight = FontWeight.W700, letterSpacing = 0.4.sp)
+        val actionLabel = if (draft.actionNode == 0L)
+            "Powiadomienie: ${draft.message.ifBlank { "—" }}"
+        else
+            "${lookup.nodeLabel(draft.actionNode)} · Przekaźnik ${if (draft.value == 1) "ON" else "OFF"}"
         Row(
             Modifier.padding(top = 8.dp).clip(RoundedCornerShape(20.dp)).background(col.chipBg).padding(horizontal = 11.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(ShIcons.Bolt, null, tint = col.chipC, modifier = Modifier.size(13.dp))
             Spacer(Modifier.width(6.dp))
-            Text("${deviceName(draft.target)} · Przekaźnik ${if (draft.value == 1) "ON" else "OFF"}", color = col.chipC, fontSize = 12.sp, fontWeight = FontWeight.W500)
+            Text(actionLabel, color = col.chipC, fontSize = 12.sp, fontWeight = FontWeight.W500)
         }
     }
 }
 
-private fun defaultForType(t: CondType): CondDraft = when (t) {
+private fun defaultForType(t: CondType, condNodes: List<AutoNode>): CondDraft = when (t) {
     CondType.Time -> CondDraft(CondType.Time, start = "06:00", end = "22:00")
-    CondType.Param -> CondDraft(CondType.Param, device = "solar", param = "T3", op = CompareOp.Gt, value = "60")
-    CondType.Delta -> CondDraft(CondType.Delta, device1 = "solar", param1 = "T3", device2 = "buffer", param2 = "sBuforTemp", op = CompareOp.Gt, min = "8")
+    CondType.Param -> {
+        val n = condNodes.firstOrNull()
+        CondDraft(CondType.Param, node = n?.id ?: 0L, param = n?.let { condParamsForType(it.nodeType).firstOrNull()?.first } ?: "", op = CompareOp.Gt, value = "60")
+    }
+    CondType.Delta -> {
+        val n1 = condNodes.firstOrNull()
+        val n2 = condNodes.getOrNull(1) ?: n1
+        CondDraft(
+            CondType.Delta,
+            node1 = n1?.id ?: 0L, param1 = n1?.let { condParamsForType(it.nodeType).firstOrNull()?.first } ?: "",
+            node2 = n2?.id ?: 0L, param2 = n2?.let { condParamsForType(it.nodeType).firstOrNull()?.first } ?: "",
+            op = CompareOp.Gt, min = "8",
+        )
+    }
 }
 
-private fun paramOptions(device: String): List<Pair<String, String>> =
-    (AutoParams[device] ?: emptyList()).map { it to it }
+/** Etykieta parametru w wybranym węźle (z katalogu typu); fallback = klucz. */
+private fun paramLabel(lookup: NodeLookup, node: Long, param: String): String {
+    if (param.isBlank()) return "—"
+    val t = lookup[node]?.nodeType ?: return param
+    return condParamsForType(t).firstOrNull { it.first == param }?.second ?: param
+}

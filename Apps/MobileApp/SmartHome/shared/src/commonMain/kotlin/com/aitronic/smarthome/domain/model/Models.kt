@@ -58,17 +58,32 @@ enum class SyncState { Synced, Syncing, Error }
 
 sealed interface Condition {
     data class Time(val start: String, val end: String) : Condition
-    data class Param(val device: String, val param: String, val op: CompareOp, val value: Double) : Condition
+    /** Warunek na parametrze KONKRETNEGO węzła (node_id). Parametr = klucz telemetrii. */
+    data class Param(val node: Long, val param: String, val op: CompareOp, val value: Double) : Condition
+    /** Różnica dwóch parametrów (mogą być z dwóch różnych węzłów). */
     data class Delta(
-        val device1: String, val param1: String,
-        val device2: String, val param2: String,
+        val node1: Long, val param1: String,
+        val node2: Long, val param2: String,
         val op: CompareOp, val min: Double,
     ) : Condition
 }
 
 enum class CompareOp { Gt, Lt }
 
-data class RuleAction(val target: String, val value: Int) // value: 0|1 (relay OFF/ON)
+/** Kody akcji — 1:1 z Shared/Protocol/automation.h (ACTION_*). */
+object ActionTypes { const val SET_RELAY = 0; const val SEND_MESSAGE = 1 }
+
+/**
+ * Akcja reguły.
+ *  - `node > 0` → akcja na węźle (`actionType` = np. SET_RELAY, `value` 0/1 lub 0-100%).
+ *  - `node == 0` → akcja systemowa SEND_MESSAGE (powiadomienie w telefonie, treść w `message`).
+ */
+data class RuleAction(
+    val node: Long,
+    val actionType: Int = ActionTypes.SET_RELAY,
+    val value: Double = 0.0,
+    val message: String = "",
+)
 
 data class Rule(
     val id: Long,

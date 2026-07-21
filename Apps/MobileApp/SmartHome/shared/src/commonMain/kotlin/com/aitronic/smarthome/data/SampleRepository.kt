@@ -90,18 +90,19 @@ object SampleRepository : SmartHomeRepository {
     private fun monthTicks() = listOf(0f to "1", 0.33f to "10", 0.66f to "20", 1f to "30").map { AxisTick(it.first, it.second) }
     private fun yearTicks() = listOf(0f to "Sty", 0.27f to "Kwi", 0.55f to "Lip", 0.82f to "Paź", 1f to "Gru").map { AxisTick(it.first, it.second) }
 
+    // Dane przykładowe (tryb offline/design) — węzły 1=solar, 2=bufor (por. sampleAutoNodes).
     override fun rules() = listOf(
         Rule(1, "Pompa ON", true, listOf(
             Condition.Time("14:00", "23:55"),
-            Condition.Delta("solar", "T3", "buffer", "sBuforTemp", CompareOp.Gt, 16.0),
-        ), RuleAction("solar", 1)),
+            Condition.Delta(1L, "T3", 2L, "sBuforTemp", CompareOp.Gt, 16.0),
+        ), RuleAction(1L, ActionTypes.SET_RELAY, 1.0)),
         Rule(2, "Pompa OFF", true, listOf(
-            Condition.Delta("solar", "T3", "buffer", "sBuforTemp", CompareOp.Lt, 8.0),
-        ), RuleAction("solar", 0)),
+            Condition.Delta(1L, "T3", 2L, "sBuforTemp", CompareOp.Lt, 8.0),
+        ), RuleAction(1L, ActionTypes.SET_RELAY, 0.0)),
         Rule(3, "Nocne chłodzenie", false, listOf(
             Condition.Time("22:00", "05:00"),
-            Condition.Param("solar", "T4", CompareOp.Gt, 70.0),
-        ), RuleAction("buffer", 1)),
+            Condition.Param(1L, "T4", CompareOp.Gt, 70.0),
+        ), RuleAction(2L, ActionTypes.SET_RELAY, 1.0)),
     )
 
     override fun devices() = listOf(
