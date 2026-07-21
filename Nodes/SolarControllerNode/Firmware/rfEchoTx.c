@@ -81,7 +81,8 @@ typedef struct {
 
         /* provisioning: node -> gw (CMD_JOIN_REQUEST). */
         struct {
-            uint8_t factory_id[NODE_FACTORY_ID_LEN];
+            uint8_t  factory_id[NODE_FACTORY_ID_LEN];
+            uint32_t capabilities;   /* NODE_CAP(ACTION_*) this node can execute */
         } joinData;
 
         /* provisioning: gw -> node (CMD_JOIN_ACCEPT). */
@@ -158,7 +159,8 @@ void buttonCallback2(uint_least8_t index)
     joinMsg.type = SOLAR_CONTROLLER;
     joinMsg.cmd  = CMD_JOIN_REQUEST;
     memcpy(joinMsg.payload.joinData.factory_id, gFactoryId, NODE_FACTORY_ID_LEN);
-    joinMsg.length = sizeof(joinMsg.payload.joinData) + 4;
+    joinMsg.payload.joinData.capabilities = NODE_CAPABILITIES;   /* declared to the gateway */
+    joinMsg.length = sizeof(joinMsg.payload.joinData) + 4;       /* now 12 + 4 = 16 */
     mq_send(radioQueue, (char *) &joinMsg, joinMsg.length, 0);
     Event_post(radioEventHandle, EVENT_SEND_PACKET);
 }

@@ -85,7 +85,8 @@ typedef struct {
 
         /* provisioning: node -> gw (CMD_JOIN_REQUEST). */
         struct {
-            uint8_t factory_id[NODE_FACTORY_ID_LEN];
+            uint8_t  factory_id[NODE_FACTORY_ID_LEN];
+            uint32_t capabilities;   /* NODE_CAP(ACTION_*) this node can execute */
         } joinData;
 
         /* provisioning: gw -> node (CMD_JOIN_ACCEPT). */

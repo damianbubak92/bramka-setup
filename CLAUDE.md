@@ -456,8 +456,12 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
   capabilities END`). Bug złapany na żywo: node ustawiony ręcznie `capabilities=1`, po delete→restore→re-pair firmware
   deklarował 0 → kasował „1" → node wypadał z dropdownu „cel akcji". Realna maska (gdy firmware ją doda) i tak nadpisze —
   model „node deklaruje" nienaruszony.
-- **ZOSTAJE (firmware noda, user w CCS)**: node ustawia `joinData.capabilities` przy JOIN (bitmask `NODE_CAP(ACTION_*)`)
-  + parsuje komendy akcji. Do tego czasu istniejące nody = caps 0 (obejście: ręczny `UPDATE node SET capabilities=1`).
+- **Firmware noda (SolarControllerNode) — ZROBIONE**: `node_identity.h` dostał `ACTION_SET_RELAY`/`NODE_CAP(a)`/
+  `NODE_CAPABILITIES` (= SET_RELAY); `rfEchoTx.c`+`solar_controller_task.c` mają `capabilities` w `joinData`, a
+  `buttonCallback2` ustawia je w JOIN (`length` 12→16 przez `sizeof`). Parsowanie komendy akcji **już działało** —
+  silnik dla `ACTION_SET_RELAY` emituje `CMD_TURN_PUMP_ON_OFF`, który node obsługuje (`solar_controller_task.c:376`,
+  pisze RELAY1 + odsyła SEND_PUMP_STATUS). **Wymaga reflashu noda** (buduje user w CCS — projekt jest w repo). Nody
+  wysyłające krótki JOIN (12B, bez caps) → caps czytane jako 0 (sensor = OK); po reflashu solar leci pełne 16B z bitem.
 - **Lekcja (cgo)**: zagnieżdżony `/* */` w preamble cgo (`rules.go`) **zamyka blok komentarza Go przedwcześnie** →
   „syntax error: non-declaration statement outside function body". W preamble cgo tylko `//`. [[automation-engine-type-based]]
 

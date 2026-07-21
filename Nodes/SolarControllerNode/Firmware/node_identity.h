@@ -33,6 +33,15 @@
 #define CMD_REMOVE           6u   /* gw->node: user removed the device -> erase address */
 #define CMD_UNREGISTERED     7u   /* gw->node: (addr,factory_id) mismatch -> erase address */
 
+/* Action codes + capability bitmask a node declares in joinData.capabilities at JOIN
+ * (NODE_CAP(action) = 1<<action) - match Shared/Protocol/automation.h. The automation
+ * editor only offers a node as an ACTION TARGET if the matching bit is set. */
+#define ACTION_SET_RELAY     0u   /* on/off relay (e.g. the solar aux pump) */
+#define NODE_CAP(action)     (1u << (action))
+
+/* This node's capabilities: it drives the aux-pump relay (TURN_PUMP_ON_OFF). */
+#define NODE_CAPABILITIES    (NODE_CAP(ACTION_SET_RELAY))
+
 /* This node's identity. gNodeAddress is NVS-backed; gFactoryId is read from FCFG. */
 extern uint8_t gNodeAddress;
 extern uint8_t gFactoryId[NODE_FACTORY_ID_LEN];
