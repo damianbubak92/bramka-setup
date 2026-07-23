@@ -338,6 +338,13 @@ przy JOIN, istniejące nody mają `capabilities=0` → są **źródłem warunkó
 **Nod T&H (rev2)** — protoypy w drodze; gdy dojdzie: rozszerzenie protokołu o `climate` → wykresy klimatu + interwał.
 
 **Odłożone long-term:**
+- **⭐ Dopracowanie komunikacji radiowej gateway CC1310** (`radio_task.c`) — przeanalizować co realnie kryje się pod
+  komunikatem **„Kolizja trzeba restartować radio"** (odbiór uszkodzonego pakietu → restart radia = agresywna
+  heurystyka z gen1). Docelowo: **drop-and-continue na CRC-fail** (auto-flush, RX leci dalej) zamiast restartu radia,
+  bo restart per uszkodzony pakiet daje okna głuchoty i sam może gubić ramki. User wie, że tam jest kilka rzeczy do
+  poprawy. Objaw zauważony 23.07 przy nodzie na -82/-83 dBm (2 domy, mury): telemetria przechodzi bez luk (seq ciągłe),
+  ale „Kolizja" leci często (gen1 w paśmie + błędy bitowe + niedostrojona antena). Przy okazji: przejrzeć retry/ACK,
+  filtrację RX, obsługę sniffu gen1. [[rev2-th-node-bringup]]
 - **Warstwa C (DMSC reset)** — „prawdopodobnie tak, później" (M4F trzyma żywe sterowanie → crash Linuxa nie może go
   zabić na ~70s). OTA (RAUC A/B). Health monitoring (eMMC wear → wpina się w `bramka-reboots`/alarm). Carrier board.
 - **Zewnętrzny hosting** (backup/relay) — architektura ustalona: bramka pushuje, kaskada

@@ -63,6 +63,11 @@
  * radio (factory_id from FCFG, capabilities=0), log to UART. */
 #define NODE_JOIN_TEST        1
 
+/* rev-2 low-power telemetry cadence (provisioned steady state). */
+#define NODE_SLEEP_S     240u   /* deep-sleep (STANDBY ~1uA) between cycles = 4 min */
+#define NODE_BATT_EVERY  5u     /* read MCP3421 battery every Nth cycle (SoC moves slowly) */
+#define NODE_DEBUG_UART  1      /* 1 = per-cycle UART log (opened+closed each cycle so STANDBY still works); 0 = silent, lowest power */
+
 #define NODE_MODE_DONE   0          /* 1 = power-cycle (DONE); 0 = bench loop  */
 #define NODE_LOOP_S      15         /* bench-loop interval (NODE_MODE_DONE==0) */
 #define NODE_ADDRESS     0x1Au      /* fixed for now (provisioning later)      */
@@ -141,24 +146,37 @@ static bool nvs_save_address(uint8_t addr)
     return (rc == NVS_STATUS_SUCCESS);
 }
 
-/* Power the SHT35 rail (PERIPH_EN), open I2C, and stream T/RH + battery under `addr`
- * forever. Called once provisioned (from NVS at boot, or right after JOIN_ACCEPT). */
-static void stream_telemetry(UART_Handle uart, uint8_t addr)
+/* Provisioned steady state (low-power): each cycle powers the SHT35 rail (PERIPH_EN),
+ * opens I2C, reads T/RH (+ battery every Nth), closes everything, sends telemetry, then
+ * deep-sleeps NODE_SLEEP_S. All peripherals are released before the sleep so the CC1310
+ * enters STANDBY (~1 uA, RTC wake) between cycles. Caller must have CLOSED its UART.
+ * Never returns. */
+static void stream_telemetry(uint8_t addr)
 {
-    char b[128];
-    int  n;
-
-    GPIO_write(Board_PERIPH_EN, 1);                 /* SHT35 rail + ADC divider on */
-    Task_sleep((20000UL) / Clock_tickPeriod);       /* settle */
-    sensors_init();                                 /* I2C open (SHT35/MCP3421 on DIO9/10) */
+    uint16_t sBattMv  = 0;
+    uint8_t  sBattCtr = 0;
 
     for (;;) {
+        /* --- wake window: power sensors, measure, power down --- */
+        GPIO_write(Board_PERIPH_EN, 1);              /* SHT35 rail + ADC divider on */
+        Task_sleep((20000UL) / Clock_tickPeriod);    /* settle */
+        sensors_init();                              /* I2C open */
+
         float t = 0.0f, h = 0.0f;
-        bool okth  = sensors_read_th(&t, &h);
-        uint16_t mv = 0;
-        bool okbat = sensors_read_mcp3421_mv(&mv);
+        bool okth = sensors_read_th(&t, &h);
+
+        uint16_t mv = sBattMv;
+        if (sBattCtr == 0) {                         /* battery only every Nth cycle */
+            if (sensors_read_mcp3421_mv(&mv)) sBattMv = mv;
+        }
+        sBattCtr = (uint8_t)((sBattCtr + 1) % NODE_BATT_EVERY);
+
+        sensors_close();                             /* I2C close -> release dependency */
+        GPIO_write(Board_PERIPH_EN, 0);              /* rail + divider off */
+
         bool charging = (GPIO_read(Board_nCHRGSTAT) == 0);
 
+        /* --- send (radio_send_message opens+closes RF itself) --- */
         MessageStruct tm;
         memset(&tm, 0, sizeof(tm));
         tm.id   = addr;
@@ -166,17 +184,33 @@ static void stream_telemetry(UART_Handle uart, uint8_t addr)
         tm.cmd  = CMD_SEND_DATA_TO_DB;
         tm.payload.thData.temperature = t;
         tm.payload.thData.humidity    = h;
-        tm.payload.thData.batt_mv     = okbat ? mv : 0;
+        tm.payload.thData.batt_mv     = sBattMv;
         tm.length = (uint8_t)(4 + sizeof(tm.payload.thData));
-
         bool tacked = okth ? radio_send_message(&tm, ADDR_GATEWAY) : false;
-        n = snprintf(b, sizeof(b),
-            "[node] addr=0x%02x  T=%d.%02d C  H=%d.%02d %%  batt=%u mV(bat=%d) chg=%d  sht=%d acked=%d\r\n",
-            addr, (int)t, (int)((t - (int)t) * 100),
-            (int)h, (int)((h - (int)h) * 100), mv, okbat, charging, okth, tacked);
-        if (uart && n > 0) { UART_write(uart, b, (size_t)n); }
 
-        Task_sleep((15000000UL) / Clock_tickPeriod);   /* 15 s */
+#if NODE_DEBUG_UART
+        /* Per-cycle UART: open, write, CLOSE - so the UART power dependency is released
+         * and STANDBY still works during the sleep. (Set NODE_DEBUG_UART 0 for prod.) */
+        {
+            UART_Params up;
+            UART_Params_init(&up);
+            up.baudRate      = 115200;
+            up.writeDataMode = UART_DATA_BINARY;
+            UART_Handle u = UART_open(Board_UART0, &up);
+            if (u != NULL) {
+                char b[128];
+                int n = snprintf(b, sizeof(b),
+                    "[node] addr=0x%02x  T=%d.%02d C  H=%d.%02d %%  batt=%u mV chg=%d  sht=%d acked=%d  -> sleep %us\r\n",
+                    addr, (int)t, (int)((t - (int)t) * 100),
+                    (int)h, (int)((h - (int)h) * 100), sBattMv, charging, okth, tacked, NODE_SLEEP_S);
+                if (n > 0) UART_write(u, b, (size_t)n);
+                UART_close(u);                       /* release UART -> allow STANDBY */
+            }
+        }
+#endif
+
+        /* --- deep sleep: STANDBY (~1 uA) until the next cycle, RTC-woken --- */
+        Task_sleep((NODE_SLEEP_S * 1000000UL) / Clock_tickPeriod);
     }
 }
 
@@ -340,7 +374,8 @@ static void nodeTaskFunction(UArg a0, UArg a1)
                 "\r\n[node] provisioned from NVS: address 0x%02x - streaming telemetry (no JOIN needed)\r\n",
                 savedAddr);
             if (uart && n > 0) { UART_write(uart, b, (size_t)n); }
-            stream_telemetry(uart, savedAddr);      /* never returns */
+            UART_close(uart);                       /* release UART so STANDBY works */
+            stream_telemetry(savedAddr);            /* never returns */
         }
 
         n = snprintf(b, sizeof(b),
@@ -384,7 +419,8 @@ static void nodeTaskFunction(UArg a0, UArg a1)
                             "[join-test] *** JOIN_ACCEPT *** address 0x%02x saved to NVS=%d - streaming\r\n",
                             addr, saved);
                         if (uart && n > 0) { UART_write(uart, b, (size_t)n); }
-                        stream_telemetry(uart, addr);          /* never returns */
+                        UART_close(uart);                      /* release UART so STANDBY works */
+                        stream_telemetry(addr);                /* never returns */
                     } else {
                         n = snprintf(b, sizeof(b), "[join-test] no JOIN_ACCEPT in 60s (approve on the phone, then press JOIN again)\r\n");
                         if (uart && n > 0) { UART_write(uart, b, (size_t)n); }
