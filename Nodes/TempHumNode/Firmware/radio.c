@@ -108,3 +108,97 @@ bool radio_send_message(const MessageStruct *msg, uint8_t destAddr)
     RF_close(rfHandle);
     return acked;
 }
+
+/* Listen for the gateway's JOIN_ACCEPT (arrives after the user approves on the phone,
+ * so we poll RX in ~500 ms windows up to timeoutMs). Frame parsing mirrors the gen2
+ * node rfEchoTx RX: [dest][tag][src][ ('E': factory_id[8]) MessageStruct ][seq][crc8].
+ * For JOIN_ACCEPT the gateway addresses the unprovisioned node (dest = 0xFF) and, on an
+ * 'E' frame, targets this chip via the frame-level factory_id. */
+bool radio_wait_join_accept(const uint8_t *factoryId, uint8_t *assignedAddr, uint32_t timeoutMs)
+{
+    RF_Params rfParams;
+    RF_Params_init(&rfParams);
+
+    if (RFQueue_defineQueue(&dataQueue, rxDataEntryBuffer, sizeof(rxDataEntryBuffer),
+                            NUM_DATA_ENTRIES, PAYLOAD_LENGTH + NUM_APPENDED_BYTES)) {
+        return false;
+    }
+
+    /* Standalone RX: one packet or a ~500 ms window, then we drain + retry. */
+    RF_cmdPropRx.pQueue = &dataQueue;
+    RF_cmdPropRx.rxConf.bAutoFlushIgnored = 1;
+    RF_cmdPropRx.rxConf.bAutoFlushCrcErr  = 1;
+    RF_cmdPropRx.maxPktLen = PAYLOAD_LENGTH;
+    RF_cmdPropRx.pktConf.bRepeatOk  = 0;   /* end after 1 good packet */
+    RF_cmdPropRx.pktConf.bRepeatNok = 0;
+    RF_cmdPropRx.pOutput = (uint8_t *)&rxStatistics;
+    RF_cmdPropRx.pNextOp = NULL;
+    RF_cmdPropRx.startTrigger.triggerType = TRIG_NOW;
+    RF_cmdPropRx.startTrigger.pastTrig    = 1;
+    RF_cmdPropRx.endTrigger.triggerType   = TRIG_REL_START;
+    RF_cmdPropRx.endTime = 500 * 4000;     /* 500 ms @ 4 MHz */
+
+    rfHandle = RF_open(&rfObject, &RF_prop, (RF_RadioSetup *)&RF_cmdPropRadioDivSetup, &rfParams);
+    if (rfHandle == NULL) return false;
+    RF_runCmd(rfHandle, (RF_Op *)&RF_cmdFs, RF_PriorityNormal, NULL, 0);
+
+    bool got = false;
+    uint32_t elapsed = 0;
+    while (!got && elapsed < timeoutMs) {
+        RF_runCmd(rfHandle, (RF_Op *)&RF_cmdPropRx, RF_PriorityNormal, NULL, 0);
+        elapsed += 500;
+
+        currentDataEntry = RFQueue_getDataEntry();
+        while (!got && currentDataEntry->status == DATA_ENTRY_FINISHED) {
+            uint8_t  plen = *(uint8_t *)(&currentDataEntry->data);
+            uint8_t *p    = (uint8_t *)(&currentDataEntry->data) + 1;
+
+            /* addressed to us (unprovisioned = 0xFF) and CRC ok */
+            if (plen >= 5 && p[0] == ADDR_UNPROVISIONED &&
+                p[plen - 1] == calcChecksum(&p[2], (uint8_t)(plen - 3))) {
+
+                uint8_t tag  = p[1];
+                int     mOff = -1;
+                if (tag == 'E' && plen >= 13 &&
+                    memcmp(&p[3], factoryId, NODE_FACTORY_ID_LEN) == 0) {
+                    mOff = 11;                 /* skip [dest][tag][src][factory_id:8] */
+                } else if (tag == 'D') {
+                    mOff = 3;                  /* skip [dest][tag][src] */
+                }
+
+                if (mOff >= 0) {
+                    MessageStruct m;
+                    memset(&m, 0, sizeof(m));
+                    int mlen = (int)plen - mOff - 2;   /* minus [seq][crc] */
+                    if (mlen > (int)sizeof(m)) mlen = (int)sizeof(m);
+                    if (mlen > 0) memcpy(&m, &p[mOff], (size_t)mlen);
+
+                    if (m.cmd == CMD_JOIN_ACCEPT) {
+                        *assignedAddr = m.payload.joinAcceptData.assigned_addr;
+
+                        /* ACK the gateway: [gw src]['A'][our dest][echoed crc] */
+                        uint8_t ack[4];
+                        ack[0] = p[2];
+                        ack[1] = 'A';
+                        ack[2] = p[0];
+                        ack[3] = p[plen - 1];
+                        RF_cmdPropTx.pPkt   = ack;
+                        RF_cmdPropTx.pktLen = 4;
+                        RF_cmdPropTx.pNextOp = NULL;
+                        RF_cmdPropTx.condition.rule = COND_NEVER;
+                        RF_cmdPropTx.startTrigger.triggerType = TRIG_NOW;
+                        RF_cmdPropTx.startTrigger.pastTrig    = 1;
+                        RF_runCmd(rfHandle, (RF_Op *)&RF_cmdPropTx, RF_PriorityNormal, NULL, 0);
+
+                        got = true;
+                    }
+                }
+            }
+            RFQueue_nextEntry();
+            currentDataEntry = RFQueue_getDataEntry();
+        }
+    }
+
+    RF_close(rfHandle);
+    return got;
+}

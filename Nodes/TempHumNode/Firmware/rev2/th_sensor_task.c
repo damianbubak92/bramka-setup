@@ -21,8 +21,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
-#include <mqueue.h>
-#include <fcntl.h>
+#include <mqueue.h>   /* provides O_CREAT/O_RDWR/O_NONBLOCK in TI-RTOS POSIX */
 
 #include <ti/drivers/timer/GPTimerCC26XX.h>
 #include <ti/drivers/GPIO.h>
@@ -216,7 +215,7 @@ void thSensorTaskInit(void)
     attr.mq_maxmsg  = 4;
     attr.mq_msgsize = sizeof(MessageStruct);
     attr.mq_curmsgs = 0;
-    thNodeQueue = mq_open(TH_QUEUE_NAME, O_CREAT | O_RDWR, 0, &attr);
+    thNodeQueue = mq_open(TH_QUEUE_NAME, O_CREAT | O_RDWR | O_NONBLOCK, 0, &attr);
 
     Event_Params ep;
     Event_Params_init(&ep);

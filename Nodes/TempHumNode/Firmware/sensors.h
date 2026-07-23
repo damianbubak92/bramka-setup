@@ -28,6 +28,7 @@ bool sensors_gauge_begin(void);   /* GAUGE_START + wait GA=1     */
 void sensors_gauge_end(void);     /* GAUGE_STOP  + wait G_DONE   */
 
 bool sensors_read_th(float *tempC, float *rh);
+bool sensors_read_mcp3421_mv(uint16_t *mv);   /* rev-2 battery: MCP3421 + 1:2 divider -> mV */
 bool sensors_read_batt_mv(uint16_t *mv);     /* Voltage() 0x08, mV                */
 bool sensors_read_soh(uint8_t *soh_pct);     /* StateOfHealth 0x2E, %            */
 bool sensors_read_used_uah(int32_t *used_uah);/* AccumulatedCapacity 0x02, used uAh (ACC) */

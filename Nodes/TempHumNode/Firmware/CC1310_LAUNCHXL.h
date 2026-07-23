@@ -76,7 +76,7 @@ extern const PIN_Config BoardGpioInitTable[];
 /* Digital IOs */
 #define CC1310_LAUNCHXL_DIO0                  IOID_0
 #define CC1310_LAUNCHXL_DIO1                  IOID_4 //zamienione
-#define CC1310_LAUNCHXL_DIO12                 IOID_12
+#define CC1310_LAUNCHXL_DIO12                 IOID_2
 #define CC1310_LAUNCHXL_DIO15                 IOID_15
 #define CC1310_LAUNCHXL_DIO16_TDO             IOID_16
 #define CC1310_LAUNCHXL_DIO17_TDI             IOID_17
@@ -84,7 +84,7 @@ extern const PIN_Config BoardGpioInitTable[];
 #define CC1310_LAUNCHXL_DIO22                 IOID_22
 
 /* Discrete Inputs */
-#define CC1310_LAUNCHXL_PIN_BTN1              IOID_13
+#define CC1310_LAUNCHXL_PIN_BTN1              IOID_1
 #define CC1310_LAUNCHXL_PIN_BTN2              IOID_14
 
 /* GPIO */
@@ -94,8 +94,8 @@ extern const PIN_Config BoardGpioInitTable[];
 /* I2C */
 //#define CC1310_LAUNCHXL_I2C0_SCL0             IOID_4
 //#define CC1310_LAUNCHXL_I2C0_SDA0             IOID_5
-#define CC1310_LAUNCHXL_I2C0_SCL0             IOID_1
-#define CC1310_LAUNCHXL_I2C0_SDA0             IOID_2
+#define CC1310_LAUNCHXL_I2C0_SCL0             IOID_9   /* rev-2 T&H board: SCL = DIO9 */
+#define CC1310_LAUNCHXL_I2C0_SDA0             IOID_10  /* rev-2 T&H board: SDA = DIO10 */
 
 /* I2S */
 #define CC1310_LAUNCHXL_I2S_ADO               IOID_25
@@ -135,9 +135,11 @@ extern const PIN_Config BoardGpioInitTable[];
 #define CC1310_LAUNCHXL_SPI1_CLK              IOID_23
 #define CC1310_LAUNCHXL_SPI1_CSN              PIN_UNASSIGNED
 
-/* UART Board */
-#define CC1310_LAUNCHXL_UART_RX               IOID_5  //zamienione        /* RXD */
-#define CC1310_LAUNCHXL_UART_TX               IOID_3          /* TXD */
+/* UART Board - rev-2 T&H node PCB routes UART to DIO12(TX)/DIO13(RX) (verified 23.07).
+ * DIO13(RX) is now free: the JOIN button moved to DIO26 and the stale PIN_BTN1/2 entries
+ * were removed from BoardGpioInitTable, so nothing reserves IOID_13 anymore. */
+#define CC1310_LAUNCHXL_UART_RX               IOID_13         /* RXD - board DIO13 */
+#define CC1310_LAUNCHXL_UART_TX               IOID_12         /* TXD - board DIO12 */
 #define CC1310_LAUNCHXL_UART_CTS              IOID_19         /* CTS */
 #define CC1310_LAUNCHXL_UART_RTS              IOID_18         /* RTS */
 
@@ -311,6 +313,8 @@ typedef enum CC1310_LAUNCHXL_GPIOName {
     ADS1256_SCLK,
     ADS1256nCS,
     CC1310_LAUNCHXL_GPIO_RELAY2,
+    CC1310_LAUNCHXL_GPIO_PERIPH_EN,   /* rev-2 T&H: DIO25 (SHT35 rail + ADC divider) */
+    CC1310_LAUNCHXL_GPIO_NCHRGSTAT,   /* rev-2 T&H: DIO14 (charger STAT, low=charging) */
 /*
     CC1310_LAUNCHXL_GPIOCOUNT
     CC1310_LAUNCHXL_GPIO_S1 = 0,

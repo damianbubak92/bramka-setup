@@ -44,6 +44,7 @@ bool th_sense_init(void)
     if (i2c == NULL) return false;
 
 #ifndef TH_NO_PERIPH_EN
+    GPIO_init();   /* idempotent - safe even if main already called it */
     GPIO_setConfig(Board_PERIPH_EN, GPIO_CFG_OUT_STD | GPIO_CFG_OUT_LOW);
     GPIO_setConfig(Board_nCHRGSTAT, GPIO_CFG_IN_PU);
 #endif

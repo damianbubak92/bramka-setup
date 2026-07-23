@@ -18,6 +18,7 @@
 #define BATTERY_SOC_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Resting battery voltage (mV) -> state of charge (0..100 %), linearly
  * interpolated between the LUT knees. Clamped to [0,100]. */

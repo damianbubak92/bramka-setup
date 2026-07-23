@@ -509,8 +509,8 @@ const uint_least8_t Display_count = 0;
  */
 GPIO_PinConfig gpioPinConfigs[] = {
                                    /* Input pins */
-                                   GPIOCC26XX_DIO_13 | GPIO_DO_NOT_CONFIG,  /* Button 0 */
-                                   GPIOCC26XX_DIO_14 | GPIO_DO_NOT_CONFIG,  /* Button 1 */
+                                   GPIOCC26XX_DIO_13 | GPIO_DO_NOT_CONFIG,  /* Button 0 (unused; DIO13 = UART_RX) */
+                                   GPIOCC26XX_DIO_26 | GPIO_DO_NOT_CONFIG,  /* Button 1 = JOIN button (rev-2: DIO26), cfg at runtime */
 
                                    GPIOCC26XX_DIO_15 | GPIO_DO_NOT_CONFIG,  /* CC1310_LAUNCHXL_SPI_MASTER_READY   (nRESET ADS1256) */
                                    GPIOCC26XX_DIO_21 | GPIO_DO_NOT_CONFIG,  /* CC1310_LAUNCHXL_SPI_SLAVE_READY */
@@ -532,6 +532,10 @@ GPIO_PinConfig gpioPinConfigs[] = {
                                    GPIOCC26XX_DIO_23 | GPIO_DO_NOT_CONFIG, /*LCD enable */
                                    GPIOCC26XX_DIO_11 | GPIO_DO_NOT_CONFIG, /* SPI0 CS (controled manually) */
                                    GPIOCC26XX_DIO_01 | GPIO_DO_NOT_CONFIG, /*Relay 2 */
+
+                                   /* rev-2 T&H node peripherals (indices must match the enum) */
+                                   GPIOCC26XX_DIO_25 | GPIO_CFG_OUT_STD | GPIO_CFG_OUT_LOW,  /* PERIPH_EN (SHT35 rail + ADC divider) */
+                                   GPIOCC26XX_DIO_14 | GPIO_CFG_IN_PU,                       /* nCHRGSTAT (MCP73123 STAT, low=charging) */
 
 /*
                                    GPIOCC26XX_DIO_13 | GPIO_DO_NOT_CONFIG,  // Button 0
@@ -790,8 +794,8 @@ const PIN_Config BoardGpioInitTable[] = {
 
     CC1310_LAUNCHXL_PIN_RLED | PIN_GPIO_OUTPUT_EN | PIN_GPIO_LOW | PIN_PUSHPULL | PIN_DRVSTR_MAX,       /* LED initially off          */
     CC1310_LAUNCHXL_PIN_GLED | PIN_GPIO_OUTPUT_EN | PIN_GPIO_LOW | PIN_PUSHPULL | PIN_DRVSTR_MAX,       /* LED initially off          */
-    CC1310_LAUNCHXL_PIN_BTN1 | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_BOTHEDGES | PIN_HYSTERESIS,          /* Button is active low       */
-    CC1310_LAUNCHXL_PIN_BTN2 | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_BOTHEDGES | PIN_HYSTERESIS,          /* Button is active low       */
+    /* rev-2 T&H: PIN_BTN1(DIO13)/PIN_BTN2(DIO14) removed - DIO13=UART_RX, DIO14=nCHRGSTAT;
+     * the JOIN button (DIO26) is set up at runtime via the GPIO driver, not here. */
     CC1310_LAUNCHXL_SPI_FLASH_CS | PIN_GPIO_OUTPUT_EN | PIN_GPIO_HIGH | PIN_PUSHPULL | PIN_DRVSTR_MIN,  /* External flash chip select */
     CC1310_LAUNCHXL_UART_RX | PIN_INPUT_EN | PIN_PULLDOWN,                                              /* UART RX via debugger back channel */
     CC1310_LAUNCHXL_UART_TX | PIN_GPIO_OUTPUT_EN | PIN_GPIO_LOW | PIN_PUSHPULL,                         /* UART TX via debugger back channel */

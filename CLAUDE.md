@@ -301,13 +301,26 @@ Apka: [[smarthome-app-kmp]] · kontrakt HTTP/WS: [[remote-access-contract]] · d
    ramki, walidacja `(addr,factory_id)`→`MSG_UNREGISTERED`, nod milknie — robi user w CCS) **→ (3) apka**
    („Utwórz nowe"/„Wymień istniejące" dropdown kompatybilnych+detached, kosz+przywracanie, twardy confirm na
    usuwaniu). [[provisioning-model]] [[gen2-backup-mirror]]
-1. **⭐ NASTĘPNA SESJA (dłuższa) — Apka: read-from-mirror gdy bramka nieosiągalna** — kaskada LAN→zdalnie→mirror.
-   Potrzebny app-facing endpoint historii/stanu czytający `gw_solar_*`/`gw_node*` z MySQL + rozszerzenie kaskady w apce.
-   **Decyzje do podjęcia**: (a) co z automatyzacjami przy bramce offline (read-only? edycja do kolejki?),
-   (b) czy robić kolejkę mirror→bramka (zmiany z apki gdy bramka wróci), (c) format/uprawnienia endpointu.
-   **Prereq gotowy**: retencja mirrora (prune propagation) — fallback zwróci już ograniczone okno, nie 2 lata.
-   Uwaga: przed produkcją i tak wyczyścić bazę do zera → re-import 2 lat gen1 → agregacja → retencja (posprzątać sieroty
-   z testów; drobne rozjazdy mirror↔bramka to sieroty per-node, patrz Session Log 22.07). [[gen2-backup-mirror]]
+1. **⭐ NASTĘPNA SESJA — Apka: READ-ONLY fallback z mirrora gdy bramka nieosiągalna** (plan przyklepany 22.07 wieczór).
+   **Decyzja: BEZ kolejki mirror→bramka.** Offline = tylko podgląd, nic nie edytujemy (akcja teraz się nie wykona, a za
+   kilka h może być zbędna; mirror zostaje pasywnym backupem = zero publicznej powierzchni komend = bezpieczniej).
+   Bramka zawsze priorytet (LAN→remote); mirror **tylko gdy tier z backupem** aktywny i bramka nieosiągalna.
+   **DO KODOWANIA (kolejność):**
+   - **Serwer `gw-read.php`** (read-only, **własny klucz**, osobny od `BACKUP_KEY`): mówi **tym samym protokołem
+     `command=...`** co bramka — podzbiór read: `state`/`listnodes`/`listtrash`/`history`/`getrules`. Write-komendy → twarde
+     „read-only". **Musi odtworzyć pola pochodne solar** (`powerKw`/`energyDayKwh` — bramka liczy je z VIEW `solar_state`,
+     mirror ma tylko surowe `gw_solar_*`/`gw_node_param`). Zwraca **`last_push_at`** — serwer zapisuje go przy KAŻDYM
+     pushu z bramki na `gw-backup.php` (nowa komórka `gw_meta`) = „ostatni kontakt z bramką".
+   - **Apka**: 3. base w kaskadzie (LAN→remote→**mirror**) + globalna flaga **`readOnly`** (źródło=Mirror) → wyszarza pompę,
+     toggle reguł, add/remove/rename, **wycisza popup JOIN**; nowy stan źródła `Mirror`; baner **„Bramka niedostępna. Dane
+     z kopii: <last_push_at>"** (uczciwie „ostatni kontakt", NIE fałszywa precyzja „padła o…"). Auto-wyjście z read-only gdy
+     bramka wróci (re-fetch z bramki = źródło prawdy). Wariant komunikatu „bramka offline, brak kopii w tym pakiecie" gdy
+     bez backupu. Kosz widoczny (`gw_node.archived_at`), „Przywróć"/„Opróżnij" wyszarzone.
+   - **Widoczne read-only**: urządzenia sparowane + kosz, lista automatyzacji ze stanami on/off, pełny dashboard z ostatnimi
+     danymi + historia (już ograniczona retencją).
+   - **Odpada** prereq stabilnego `id` reguły (był tylko pod edycję offline).
+   Uwaga: przed produkcją wyczyścić bazę do zera → re-import 2 lat gen1 → agregacja → retencja (posprzątać sieroty per-node
+   z testów, patrz Session Log 22.07). [[gen2-backup-mirror]]
 2. ~~**Dopracowanie automatyzacji**~~ **ZROBIONE 22.07 (Layers 1-4, zweryfikowane na żywo)** — reguły per-węzeł
    (`node_id`), Go mapuje id→adres przy pushu, capabilities deklarowane przy JOIN. Szczegóły w Session Log.
 3. Produkcja: `-backup-url`/`-backup-key` do systemd unitu; usunąć sekcję gen1 z `secrets.php`.
@@ -432,6 +445,37 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-07-23 — BRING-UP rev2 T&H node E2E ✅ (custom PCB: RF+SHT35+MCP3421+ładowanie+NVS)
+- **Customowy czujnik klimatu rev2 (CC1310) DZIAŁA E2E na realnej płytce z fabryki.** Projekt = `Nodes/TempHumNode/
+  Firmware` (rev1 `rfWsnNode.c`/`nodeTaskFunction` rozbudowany — NIE moduły `rev2/`, te zostały jako referencja).
+  Pełen flow: boot → NVS adres? → jak jest to od razu telemetria; jak nie ma → JOIN (button DIO26) → JOIN_ACCEPT →
+  zapis adresu do NVS → telemetria SHT35+bateria pod przydzielonym adresem (0x11). Popup w apce, RSSI -22.
+- **🔑 PUŁAPKA DNIA (kosztowała godziny): po flashu CCS chip STOI na `main` — trzeba RESET** (power-cycle / CCS System
+  Reset / nRESET), inaczej nic nie rusza. Zatrzymany rdzeń niczego nie steruje → piny „pływają", UART cisza — wygląda
+  jak zły pinout, a to zatrzymana egzekucja. Na tej płytce **nie ma przycisku reset** → wyciągnąć/wpiąć zasilanie po
+  flashu. **Nigdy nie diagnozować pinów/UART krokowo ani zatrzymanym na main** — puścić wolnym biegiem. (gen1 to samo —
+  user wciskał reset po flashu.) [[rev2-th-node-bringup]]
+- **Mapa pinów potwierdzona sweepem GPIO** (symbol KiCad nazywa piny numerem DIO=IOID; nr nóżki obudowy inny, np.
+  pin18=IOID_12): UART TX/RX=DIO12/13, I2C SCL/SDA=DIO9/10, JOIN=DIO26, PERIPH_EN=DIO25, nCHRGSTAT=DIO14. Poprawione w
+  `CC1310_LAUNCHXL.{c,h}`+`Board.h` (UART/I2C defines, enum GPIO +PERIPH_EN/nCHRGSTAT, button→DIO26, stare PIN_BTN1/2 out).
+- **UART** (rev1 używał tylko `System_printf`/SysMin — stąd „brak UART": nigdy nie pisał na UART): smoke-test przez
+  `UART_open(Board_UART0)` na DIO12, 115200. Diagnoza „config vs kabel" przez podwójny kanał (UART + SysMin/JTAG).
+- **RF JOIN E2E**: ramka „D" (rev1 `radio.c`) — bramka czyta `factory_id`+`capabilities` z payloadu `joinData`, nie z
+  nagłówka, więc gen2 provisioning łyka. Dodany **`radio_wait_join_accept`** (nasłuch okien RX 500 ms, parsowanie jak
+  solar `rfEchoTx`: dest=0xFF, tag 'E' z factory_id od offsetu 11, ACK do bramki, wyłuskanie `assigned_addr`).
+- **MCP3421 bateria**: `sensors_read_mcp3421_mv` (18-bit one-shot 0x68, dzielnik ÷2). **Kalibracja 1-pkt `MCP3421_CAL=1.2598`**
+  — surowy odczyt był ~21% niski przez **obciążenie wysokoomowego dzielnika 1M/1M (500k) wejściem ΔΣ MCP3421 (~2M)**;
+  liniowe (2 pkt: 3268/2594 vs 3399/2697 = ten sam 1,26). Po cal błąd 0,24% (3407 vs 3399 mV). rev3: niższa impedancja
+  dzielnika albo bufor.
+- **Ładowanie USB**: `nCHRGSTAT` (chg=1 = ładuje), napięcie rosło 3,27→3,40 V. Prąd ~400 mA **potwierdzony termowizją**
+  (MCP73123 liniowy: P=(5−Vbat)·I; 59°C, ΔT~31°C, θJA~45°C/W → ~0,69 W → ~0,43 A ≈ RPROG 3,0k). Płaskie napięcie na
+  plateau LFP = normalne, NIE PCM. Notka: ciepło ładowarki biasuje SHT35 podczas ładowania (27,7→30°C).
+- **NVS na adres** (`Board_NVSINTERNAL`, rekord {magic "THN1",addr}, layout jak `node_identity.c`): przeżywa power-cycle
+  (zweryfikowane). **UWAGA: reflash CCS może wymazać NVS** — persystencję testować power-cyclem, nie reflashem.
+- **Scaffolding testowy w `rfWsnNode.c`** (flagi `NODE_UART_SMOKE_TEST`/`NODE_PIN_TOGGLE_TEST`/`NODE_PIN_SWEEP_TEST`/
+  `NODE_JOIN_TEST`, `g_sweep_ioid`) zostaje na razie — do posprzątania. **ZOSTAJE**: SoC z LUT (`soh_pct`), pełny gen2
+  rfEchoTx (event-loop RX na REMOVE/UNREGISTERED), power-mgmt (standby+RTC). [[rev2-th-node-bringup]] [[rev2-battery-architecture]]
 
 ### 2026-07-22 (cd.2) — retencja agregatów solar + propagacja prune do mirrora ✅ (zweryfikowane: bramka 1396 / mirror 1416 hourly)
 - **Retencja agregatów** (`solaragg.go`): `solar_hourly` 60 dni, `solar_daily` 24 mies., `solar_monthly` wieczne (dotąd

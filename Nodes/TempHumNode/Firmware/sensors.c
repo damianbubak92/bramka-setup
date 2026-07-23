@@ -247,3 +247,52 @@ bool sensors_read_used_uah(int32_t *used_uah)
     *used_uah = -(int32_t)raw;   /* discharge -> raw negative -> used positive */
     return true;
 }
+
+/* ---- rev-2 battery: MCP3421 (18-bit dS ADC, I2C 0x68) via a 1:2 divider ----
+ * Vbat = 2 * Vadc (* cal). One-shot 18-bit: config 0x8C, LSB 15.625 uV @ PGA1.
+ * Divider + MCP3421 are on the PERIPH_EN rail (must be enabled by the caller). */
+#define MCP3421_ADDR         0x68
+#define MCP3421_CFG_ONESHOT  0x8C
+#define MCP3421_RDY_MASK     0x80
+#define MCP3421_LSB_UV       15.625f
+#define MCP3421_DIVIDER      2.0f
+#ifndef MCP3421_CAL
+/* 1-point cal: corrects the systematic gain error from the MCP3421 input impedance
+ * loading the high-Z 1M/1M divider (~500k source). Calibrated 2026-07-23: node read
+ * 2594 mV, multimeter 3268 mV -> 3268/2594 = 1.2598. (rev-3: use a lower-impedance
+ * divider or a buffer to shrink this correction + its temp/part sensitivity.) */
+#define MCP3421_CAL          1.2598f
+#endif
+
+bool sensors_read_mcp3421_mv(uint16_t *mv)
+{
+    if (i2c == NULL || mv == NULL) return false;
+
+    /* start a one-shot conversion */
+    uint8_t cfg = MCP3421_CFG_ONESHOT;
+    I2C_Transaction t;
+    t.slaveAddress = MCP3421_ADDR;
+    t.writeBuf = &cfg; t.writeCount = 1;
+    t.readBuf = NULL;  t.readCount = 0;
+    if (!I2C_transfer(i2c, &t)) return false;
+
+    uint8_t rd[4];
+    int i;
+    for (i = 0; i < 40; i++) {              /* poll RDY, up to ~400 ms (18-bit ~267 ms) */
+        delay_ms(10);
+        t.slaveAddress = MCP3421_ADDR;
+        t.writeBuf = NULL; t.writeCount = 0;
+        t.readBuf = rd;    t.readCount = 4;
+        if (!I2C_transfer(i2c, &t)) return false;
+        if ((rd[3] & MCP3421_RDY_MASK) == 0) {
+            int32_t raw = ((int32_t)(int8_t)rd[0] << 16) |
+                          ((int32_t)rd[1] << 8) | (int32_t)rd[2];
+            float vin_mv = (float)raw * MCP3421_LSB_UV / 1000.0f;   /* ADC input mV */
+            float vbat   = vin_mv * MCP3421_DIVIDER * MCP3421_CAL;  /* undo 1:2      */
+            if (vbat < 0.0f) vbat = 0.0f;
+            *mv = (uint16_t)(vbat + 0.5f);
+            return true;
+        }
+    }
+    return false;   /* conversion never completed */
+}

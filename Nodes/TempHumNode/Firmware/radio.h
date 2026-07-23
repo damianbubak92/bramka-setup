@@ -17,4 +17,10 @@
  * hold our node (source) address. Returns true if the gateway ACKed. */
 bool radio_send_message(const MessageStruct *msg, uint8_t destAddr);
 
+/* After sending a JOIN_REQUEST, listen up to timeoutMs for the gateway's
+ * JOIN_ACCEPT for THIS chip (an 'E' downlink to dest 0xFF carrying our factory_id).
+ * On success sets *assignedAddr to the gateway-assigned RF address, ACKs the
+ * gateway, and returns true. factoryId = our 8-byte FCFG id. */
+bool radio_wait_join_accept(const uint8_t *factoryId, uint8_t *assignedAddr, uint32_t timeoutMs);
+
 #endif /* RADIO_H */
