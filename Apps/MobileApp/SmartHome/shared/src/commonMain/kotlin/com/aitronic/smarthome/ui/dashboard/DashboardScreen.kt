@@ -1,5 +1,6 @@
 package com.aitronic.smarthome.ui.dashboard
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -12,8 +13,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -35,6 +40,7 @@ import com.aitronic.smarthome.domain.model.ClimateState
 import com.aitronic.smarthome.domain.model.DashboardData
 import com.aitronic.smarthome.domain.model.SolarState
 import com.aitronic.smarthome.ui.icons.ShIcons
+import com.aitronic.smarthome.ui.common.liveLastUpdateLabel
 import com.aitronic.smarthome.ui.solar.SolarSelection
 import com.aitronic.smarthome.ui.theme.Sh
 import com.aitronic.smarthome.ui.theme.deviceColor
@@ -101,7 +107,7 @@ private fun NodeCard(gw: GatewayState, n: NodeInfoDto, store: GatewayStore?, onO
             store = store, nodeId = n.id, telemetryTs = gw.telemetry[n.address]?.ts ?: 0L,
             onClick = { onOpenSolar(SolarSelection(name, n.address, n.id, n.status == "legacy")) },
         )
-        NodeTypes.TH_SENSOR -> ClimateNodeCard(name, gw.climateStateFor(n.address), onOpenClimate)
+        NodeTypes.TH_SENSOR -> ClimateNodeCard(name, gw.climateStateFor(n.address), gw.telemetry[n.address]?.ts ?: 0L, onOpenClimate)
         NodeTypes.BUFOR -> BufferNodeCard(name, gw.telemetry[n.address]?.params?.get(Params.SBUF_TEMP))
         else -> GenericNodeCard(name, n.type)
     }
@@ -179,12 +185,13 @@ private fun SolarNodeCard(
 }
 
 @Composable
-private fun ClimateNodeCard(name: String, state: ClimateState?, onClick: () -> Unit) {
+private fun ClimateNodeCard(name: String, state: ClimateState?, telemetryTs: Long, onClick: () -> Unit) {
     HeroCard(brush = Sh.climateTile, shadow = Color(0xFF0E7E95).copy(alpha = 0.30f), onClick = onClick) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(ShIcons.ThermoDrop, null, tint = Color.White, modifier = Modifier.size(26.dp))
             Spacer(Modifier.width(12.dp))
             Text(name, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.W500, modifier = Modifier.weight(1f))
+            BatteryIndicator(state?.batteryPct ?: -1)
         }
         Spacer(Modifier.height(16.dp))
         Row {
@@ -194,7 +201,62 @@ private fun ClimateNodeCard(name: String, state: ClimateState?, onClick: () -> U
             val h = state?.humidity ?: -1
             Column { BigValue(if (h < 0) "—" else "$h", "%"); Text("Wilgotność", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp)) }
         }
+        LastUpdateFooter(telemetryTs)
     }
+}
+
+/** Symbol baterii z poziomem naładowania + procent. pct<0 → "—", brak wypełnienia. */
+@Composable
+private fun BatteryIndicator(pct: Int) {
+    val known = pct in 0..100
+    val low = known && pct <= 15
+    val color = if (low) Color(0xFFFFC24D) else Color.White
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(if (known) "$pct%" else "—", color = color, fontSize = 13.sp, fontWeight = FontWeight.W600)
+        Spacer(Modifier.width(6.dp))
+        Canvas(Modifier.size(26.dp, 13.dp)) {
+            val nub = size.width * 0.09f
+            val bodyW = size.width - nub
+            val stroke = 1.4.dp.toPx()
+            val r = 3.dp.toPx()
+            // obudowa
+            drawRoundRect(
+                color = color, topLeft = Offset(stroke / 2, stroke / 2),
+                size = Size(bodyW - stroke, size.height - stroke),
+                cornerRadius = CornerRadius(r, r),
+                style = Stroke(width = stroke),
+            )
+            // końcówka
+            drawRoundRect(
+                color = color, topLeft = Offset(bodyW, size.height * 0.30f),
+                size = Size(nub, size.height * 0.40f),
+                cornerRadius = CornerRadius(nub / 2, nub / 2),
+            )
+            // poziom naładowania (wewnątrz obudowy, z małym marginesem)
+            if (known && pct > 0) {
+                val inset = stroke + 1.5.dp.toPx()
+                val innerW = bodyW - 2 * inset
+                val fillW = (innerW * pct / 100f).coerceIn(2.dp.toPx(), innerW)
+                drawRoundRect(
+                    color = color, topLeft = Offset(inset, inset),
+                    size = Size(fillW, size.height - 2 * inset),
+                    cornerRadius = CornerRadius(1.5.dp.toPx(), 1.5.dp.toPx()),
+                )
+            }
+        }
+    }
+}
+
+/** Stopka karty: delikatna linia + "Ostatnia aktualizacja: …". */
+@Composable
+private fun ColumnScope.LastUpdateFooter(tsSeconds: Long) {
+    Spacer(Modifier.height(14.dp))
+    Divider()
+    Spacer(Modifier.height(10.dp))
+    Text(
+        liveLastUpdateLabel(tsSeconds) ?: "Ostatnia aktualizacja: —",
+        color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp,
+    )
 }
 
 @Composable

@@ -104,10 +104,12 @@ fun GatewayState.climateStateFor(address: Int): ClimateState? {
     val t = telemetry[address] ?: return null
     val p = t.params
     val hum = p[Params.HUMIDITY]
+    val mv = p[Params.BATT_MV]
     return ClimateState(
         tempC = p[Params.TEMPERATURE] ?: Double.NaN,
         humidity = hum?.toInt() ?: -1,
-        batteryPct = -1,  // batt_mv → % wymaga LUT (rev2) — na razie "—"
+        // batt_mv → % przez przybliżony LUT LiFePO4 (docelowo skalibrowany soh_pct z noda)
+        batteryPct = mv?.let { com.aitronic.smarthome.util.lfpSocPct(it.toInt()) } ?: -1,
         lastMeasuredLabel = "",
         intervalMin = 0,  // brak komendy interwału w bramce — "—"
     )
