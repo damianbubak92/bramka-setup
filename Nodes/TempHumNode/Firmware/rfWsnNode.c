@@ -18,6 +18,7 @@
  */
 #include <xdc/std.h>
 #include <xdc/runtime/System.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +27,7 @@
 #include <ti/sysbios/BIOS.h>
 #include <ti/sysbios/knl/Task.h>
 #include <ti/sysbios/knl/Clock.h>
+#include <ti/sysbios/knl/Semaphore.h>
 #include <ti/drivers/GPIO.h>
 #include <ti/drivers/UART.h>
 #include <ti/drivers/NVS.h>
@@ -68,6 +70,11 @@
 #define NODE_BATT_EVERY  5u     /* read MCP3421 battery every Nth cycle (SoC moves slowly) */
 #define NODE_DEBUG_UART  1      /* 1 = per-cycle UART log (opened+closed each cycle so STANDBY still works); 0 = silent, lowest power */
 
+/* JOIN provisioning window: after a button press the node stays AWAKE (radio in RX,
+ * ~6 mA) up to NODE_JOIN_WINDOW_S waiting for JOIN_ACCEPT. You must approve in the app
+ * within this window or the node sleeps again (press JOIN to retry). */
+#define NODE_JOIN_WINDOW_S   90u
+
 #define NODE_MODE_DONE   0          /* 1 = power-cycle (DONE); 0 = bench loop  */
 #define NODE_LOOP_S      15         /* bench-loop interval (NODE_MODE_DONE==0) */
 #define NODE_ADDRESS     0x1Au      /* fixed for now (provisioning later)      */
@@ -86,6 +93,11 @@ static volatile uint32_t g_cycle = 0;
 static volatile int      g_sweep_ioid = -1;   /* rev-2 sweep: IOID currently driven HIGH (WATCH this) */
 static volatile bool     g_joinPressed = false;
 
+/* JOIN button wake: the GPIO interrupt (AON) wakes the MCU from STANDBY and posts this,
+ * so a press is handled immediately even mid-sleep (not only at the next 4-min cycle). */
+static Semaphore_Struct  joinSemStruct;
+static Semaphore_Handle  joinSem;
+
 /* Read the chip's IEEE MAC from FCFG = the immutable factory id (8 B, little-endian). */
 static void read_factory_id(uint8_t out[NODE_FACTORY_ID_LEN])
 {
@@ -97,11 +109,14 @@ static void read_factory_id(uint8_t out[NODE_FACTORY_ID_LEN])
     out[6] = (uint8_t)(hi >> 16); out[7] = (uint8_t)(hi >> 24);
 }
 
-/* JOIN button ISR-context callback: just flag it; the task does the radio send. */
+/* JOIN button ISR-context callback: flag it AND post the wake semaphore so the task
+ * blocked in Semaphore_pend wakes from STANDBY and provisions right away. Semaphore_post
+ * is ISR-safe in SYS/BIOS. */
 static void joinButtonCb(uint_least8_t index)
 {
     (void)index;
     g_joinPressed = true;
+    Semaphore_post(joinSem);
 }
 
 /* ---- persisted RF address (internal-flash NVS, Board_NVSINTERNAL) ---- */
@@ -146,12 +161,83 @@ static bool nvs_save_address(uint8_t addr)
     return (rc == NVS_STATUS_SUCCESS);
 }
 
+/* Open UART, printf ONE line, close it - releasing the UART power dependency so STANDBY
+ * still works around it. NODE_DEBUG_UART 0 compiles this to a no-op (lowest power). */
+#if NODE_DEBUG_UART
+static void dbg_uart(const char *fmt, ...)
+{
+    UART_Params up;
+    UART_Params_init(&up);
+    up.baudRate      = 115200;
+    up.writeDataMode = UART_DATA_BINARY;
+    UART_Handle u = UART_open(Board_UART0, &up);
+    if (u == NULL) return;
+
+    char b[160];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(b, sizeof(b), fmt, ap);
+    va_end(ap);
+    if (n > 0) UART_write(u, b, (size_t)n);
+    UART_close(u);
+}
+#else
+static inline void dbg_uart(const char *fmt, ...) { (void)fmt; }
+#endif
+
+/* JOIN button = Board_GPIO_BUTTON1 (rev-2: DIO26), active low. The interrupt wakes the
+ * MCU from STANDBY (AON) and posts joinSem. Set up ONCE before streaming - and in BOTH
+ * paths (fresh JOIN and NVS-provisioned), so a provisioned node can still re-JOIN. */
+static void setup_join_button(void)
+{
+    GPIO_setConfig(Board_GPIO_BUTTON1, GPIO_CFG_IN_PU | GPIO_CFG_IN_INT_FALLING);
+    GPIO_setCallback(Board_GPIO_BUTTON1, joinButtonCb);
+    GPIO_enableInt(Board_GPIO_BUTTON1);
+}
+
+/* Send one JOIN_REQUEST and listen up to 60 s for JOIN_ACCEPT. On accept, persist the
+ * gateway-assigned address to NVS and return it in *addrOut. Returns true ONLY on a real
+ * accept: an already-active node is silenced by the gateway (returns false -> keep addr);
+ * a removed/detached node surfaces in the app for re-pair. Reused for first JOIN + re-JOIN. */
+static bool provision_join(const uint8_t *factoryId, uint8_t *addrOut)
+{
+    MessageStruct msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.id   = ADDR_UNPROVISIONED;               /* 0xFF = unprovisioned source */
+    msg.type = NODE_TH_SENSOR;
+    msg.cmd  = CMD_JOIN_REQUEST;
+    memcpy(msg.payload.joinData.factory_id, factoryId, NODE_FACTORY_ID_LEN);
+    msg.payload.joinData.capabilities = 0;       /* sensor: no actions */
+    msg.length = (uint8_t)(4 + sizeof(msg.payload.joinData));
+
+    /* One JOIN, then listen the whole window for JOIN_ACCEPT. We listen even if the
+     * JOIN wasn't RF-ACKed (the gateway may have received it but the ACK back was lost),
+     * to maximise the chance of catching the accept. If none arrives, sleep; the user
+     * presses JOIN again to retry. */
+    bool acked = radio_send_message(&msg, ADDR_GATEWAY);
+    dbg_uart("[node] JOIN sent -> gw 0x%02x acked=%d - %us window, approve on the phone...\r\n",
+             ADDR_GATEWAY, acked, NODE_JOIN_WINDOW_S);
+
+    uint8_t addr = 0;
+    if (radio_wait_join_accept(factoryId, &addr, NODE_JOIN_WINDOW_S * 1000u)) {
+        /* Node got the address AND radio_wait_join_accept RF-ACKed it to the gateway;
+         * now persist to NVS. The gateway only marks us `active` once our FIRST telemetry
+         * arrives under this address (MarkActive) - that is the real "provisioning done". */
+        bool saved = nvs_save_address(addr);     /* persist so a reboot skips JOIN */
+        *addrOut = addr;
+        dbg_uart("[node] *** JOIN_ACCEPT *** addr 0x%02x saved=%d - streaming\r\n", addr, saved);
+        return true;
+    }
+    dbg_uart("[node] no JOIN_ACCEPT in %us - back to sleep (press JOIN to retry)\r\n", NODE_JOIN_WINDOW_S);
+    return false;
+}
+
 /* Provisioned steady state (low-power): each cycle powers the SHT35 rail (PERIPH_EN),
  * opens I2C, reads T/RH (+ battery every Nth), closes everything, sends telemetry, then
  * deep-sleeps NODE_SLEEP_S. All peripherals are released before the sleep so the CC1310
- * enters STANDBY (~1 uA, RTC wake) between cycles. Caller must have CLOSED its UART.
- * Never returns. */
-static void stream_telemetry(uint8_t addr)
+ * enters STANDBY (~1 uA) between cycles. The sleep is a Semaphore_pend, so a JOIN button
+ * press wakes it EARLY (GPIO wake) and (re-)provisions on the spot. Never returns. */
+static void stream_telemetry(uint8_t addr, const uint8_t *factoryId)
 {
     uint16_t sBattMv  = 0;
     uint8_t  sBattCtr = 0;
@@ -188,29 +274,21 @@ static void stream_telemetry(uint8_t addr)
         tm.length = (uint8_t)(4 + sizeof(tm.payload.thData));
         bool tacked = okth ? radio_send_message(&tm, ADDR_GATEWAY) : false;
 
-#if NODE_DEBUG_UART
-        /* Per-cycle UART: open, write, CLOSE - so the UART power dependency is released
-         * and STANDBY still works during the sleep. (Set NODE_DEBUG_UART 0 for prod.) */
-        {
-            UART_Params up;
-            UART_Params_init(&up);
-            up.baudRate      = 115200;
-            up.writeDataMode = UART_DATA_BINARY;
-            UART_Handle u = UART_open(Board_UART0, &up);
-            if (u != NULL) {
-                char b[128];
-                int n = snprintf(b, sizeof(b),
-                    "[node] addr=0x%02x  T=%d.%02d C  H=%d.%02d %%  batt=%u mV chg=%d  sht=%d acked=%d  -> sleep %us\r\n",
-                    addr, (int)t, (int)((t - (int)t) * 100),
-                    (int)h, (int)((h - (int)h) * 100), sBattMv, charging, okth, tacked, NODE_SLEEP_S);
-                if (n > 0) UART_write(u, b, (size_t)n);
-                UART_close(u);                       /* release UART -> allow STANDBY */
+        dbg_uart("[node] addr=0x%02x  T=%d.%02d C  H=%d.%02d %%  batt=%u mV chg=%d  sht=%d acked=%d  -> sleep %us (or JOIN)\r\n",
+                 addr, (int)t, (int)((t - (int)t) * 100),
+                 (int)h, (int)((h - (int)h) * 100), sBattMv, charging, okth, tacked, NODE_SLEEP_S);
+
+        /* --- deep sleep: STANDBY (~1 uA) until the next cycle (RTC) OR a JOIN press
+         * (GPIO wake posts joinSem). On a press, (re-)provision: an accept switches to the
+         * new address; no accept (already-active node silenced by gw) keeps the old one. --- */
+        Semaphore_pend(joinSem, (NODE_SLEEP_S * 1000000UL) / Clock_tickPeriod);
+        if (g_joinPressed) {
+            g_joinPressed = false;
+            uint8_t newAddr;
+            if (provision_join(factoryId, &newAddr)) {
+                addr = newAddr;                      /* re-provisioned (possibly new address) */
             }
         }
-#endif
-
-        /* --- deep sleep: STANDBY (~1 uA) until the next cycle, RTC-woken --- */
-        Task_sleep((NODE_SLEEP_S * 1000000UL) / Clock_tickPeriod);
     }
 }
 
@@ -352,85 +430,45 @@ static void nodeTaskFunction(UArg a0, UArg a1)
 #endif
 
 #if NODE_JOIN_TEST
-    /* --- rev-2 provisioning: NVS address at boot; else JOIN (DIO26) -> ACCEPT -> save --- */
+    /* --- rev-2 provisioning: wake-on-button JOIN + NVS address + low-power streaming ---
+     * A JOIN press wakes the MCU from STANDBY and provisions, whether the node is fresh
+     * (shelf) or already provisioned (re-JOIN). No 100 ms polling: the node sleeps until
+     * the button (or the 4-min telemetry cycle) via Semaphore_pend. */
     {
-        UART_Params up;
-        UART_init();
-        UART_Params_init(&up);
-        up.baudRate      = 115200;
-        up.writeDataMode = UART_DATA_BINARY;
-        UART_Handle uart = UART_open(Board_UART0, &up);
+        UART_init();                               /* dbg_uart opens/closes per line */
 
         uint8_t factoryId[NODE_FACTORY_ID_LEN];
         read_factory_id(factoryId);
 
-        char b[128];
-        int  n;
+        /* Wake semaphore + JOIN button (both paths, so a provisioned node can re-JOIN). */
+        Semaphore_Params semP;
+        Semaphore_Params_init(&semP);
+        semP.mode = Semaphore_Mode_BINARY;         /* one pending post is enough */
+        Semaphore_construct(&joinSemStruct, 0, &semP);
+        joinSem = Semaphore_handle(&joinSemStruct);
+        setup_join_button();
 
-        /* Already provisioned? Skip JOIN and stream right away. */
         uint8_t savedAddr = nvs_load_address();
-        if (savedAddr != ADDR_UNPROVISIONED) {
-            n = snprintf(b, sizeof(b),
-                "\r\n[node] provisioned from NVS: address 0x%02x - streaming telemetry (no JOIN needed)\r\n",
-                savedAddr);
-            if (uart && n > 0) { UART_write(uart, b, (size_t)n); }
-            UART_close(uart);                       /* release UART so STANDBY works */
-            stream_telemetry(savedAddr);            /* never returns */
-        }
-
-        n = snprintf(b, sizeof(b),
-            "\r\n[join-test] UNPROVISIONED. factory_id=%02x%02x%02x%02x%02x%02x%02x%02x\r\n"
-            "[join-test] press JOIN (DIO26) to provision via the gateway (0x%02x)\r\n",
-            factoryId[0], factoryId[1], factoryId[2], factoryId[3],
-            factoryId[4], factoryId[5], factoryId[6], factoryId[7], ADDR_GATEWAY);
-        if (uart && n > 0) { UART_write(uart, b, (size_t)n); }
-
-        /* JOIN button = Board_GPIO_BUTTON1 (rev-2 board: DIO26), active low. */
-        GPIO_setConfig(Board_GPIO_BUTTON1, GPIO_CFG_IN_PU | GPIO_CFG_IN_INT_FALLING);
-        GPIO_setCallback(Board_GPIO_BUTTON1, joinButtonCb);
-        GPIO_enableInt(Board_GPIO_BUTTON1);
-
-        for (;;) {
-            if (g_joinPressed) {
-                g_joinPressed = false;
-
-                MessageStruct msg;
-                memset(&msg, 0, sizeof(msg));
-                msg.id   = ADDR_UNPROVISIONED;      /* 0xFF = unprovisioned source */
-                msg.type = NODE_TH_SENSOR;
-                msg.cmd  = CMD_JOIN_REQUEST;
-                memcpy(msg.payload.joinData.factory_id, factoryId, NODE_FACTORY_ID_LEN);
-                msg.payload.joinData.capabilities = 0;   /* sensor: no actions */
-                msg.length = (uint8_t)(4 + sizeof(msg.payload.joinData));
-
-                bool acked = radio_send_message(&msg, ADDR_GATEWAY);
-                n = snprintf(b, sizeof(b), "[join-test] JOIN sent -> gateway 0x%02x, acked=%d\r\n",
-                             ADDR_GATEWAY, acked);
-                if (uart && n > 0) { UART_write(uart, b, (size_t)n); }
-
-                if (acked) {
-                    n = snprintf(b, sizeof(b), "[join-test] listening 60s for JOIN_ACCEPT - APPROVE on the phone now...\r\n");
-                    if (uart && n > 0) { UART_write(uart, b, (size_t)n); }
-
-                    uint8_t addr = 0;
-                    if (radio_wait_join_accept(factoryId, &addr, 60000)) {
-                        bool saved = nvs_save_address(addr);   /* persist so a reboot skips JOIN */
-                        n = snprintf(b, sizeof(b),
-                            "[join-test] *** JOIN_ACCEPT *** address 0x%02x saved to NVS=%d - streaming\r\n",
-                            addr, saved);
-                        if (uart && n > 0) { UART_write(uart, b, (size_t)n); }
-                        UART_close(uart);                      /* release UART so STANDBY works */
-                        stream_telemetry(addr);                /* never returns */
-                    } else {
-                        n = snprintf(b, sizeof(b), "[join-test] no JOIN_ACCEPT in 60s (approve on the phone, then press JOIN again)\r\n");
-                        if (uart && n > 0) { UART_write(uart, b, (size_t)n); }
-                    }
+        if (savedAddr == ADDR_UNPROVISIONED) {
+            /* Shelf state: sleep in STANDBY until JOIN is pressed, then provision. */
+            dbg_uart("\r\n[node] UNPROVISIONED factory=%02x%02x%02x%02x%02x%02x%02x%02x"
+                     " - press JOIN (DIO26) to provision via gateway 0x%02x\r\n",
+                     factoryId[0], factoryId[1], factoryId[2], factoryId[3],
+                     factoryId[4], factoryId[5], factoryId[6], factoryId[7], ADDR_GATEWAY);
+            for (;;) {
+                Semaphore_pend(joinSem, BIOS_WAIT_FOREVER);   /* STANDBY until the button */
+                if (g_joinPressed) {
+                    g_joinPressed = false;
+                    uint8_t addr;
+                    if (provision_join(factoryId, &addr)) { savedAddr = addr; break; }
                 }
-
-                Task_sleep((500000UL) / Clock_tickPeriod);   /* crude debounce */
             }
-            Task_sleep((100000UL) / Clock_tickPeriod);       /* 100 ms poll */
+        } else {
+            dbg_uart("\r\n[node] provisioned from NVS: address 0x%02x - streaming"
+                     " (press JOIN to re-provision)\r\n", savedAddr);
         }
+
+        stream_telemetry(savedAddr, factoryId);    /* never returns; handles re-JOIN on button */
     }
 #endif
 
