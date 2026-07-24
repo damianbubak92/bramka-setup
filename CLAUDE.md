@@ -453,6 +453,36 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-24 — node T&H energooszczędny (STANDBY 4 min) ✅ + karta klimatu na dashboardzie (bateria% + live timestamp)
+- **Firmware noda T&H — cykl energooszczędny ZWERYFIKOWANY MIERNIKIEM** (commit `d15850e`, pushed). `stream_telemetry`
+  (`Nodes/TempHumNode/Firmware/rfWsnNode.c`): co 4 min → `PERIPH_EN` on → I2C open → SHT35 (+ MCP3421 **co 5. cykl** —
+  SoC zmienia się wolno) → I2C/PERIPH_EN off → radio send → **UART per-cykl (open/write/CLOSE)** → `Task_sleep(240s)` →
+  STANDBY. Klucz: **wszystkie peryferia zwolnione przed snem** (I2C/RF/UART zamknięte, PERIPH_EN off) → polityka
+  `PowerCC26XX_standbyPolicy` (`enablePolicy=true`, już w board file) wchodzi. **Pomiar mikroamperomierzem: ~0,1 µA w
+  śnie + spike'i 10 µA co kilka s (= kalibracja RCOSC `PowerCC26XX_calibrate`, normalne/znikome).** ~3 µA średnio →
+  **limiterem żywotności samorozładowanie LFP (~0,5-1 mAh/d), nie node** → lata na ładowanie. Pokrętła: `NODE_SLEEP_S=240`,
+  `NODE_BATT_EVERY=5`, `NODE_DEBUG_UART` (0 na produkcję). USER zamawia PPK2 na dokładne µAh/cykl. [[rev2-th-node-bringup]]
+- **Apka — karta klimatu na dashboardzie** (commit `8840ba2`, pushed; build zielony common/Android/iOS):
+  - **Symbol baterii + %** w prawym górnym rogu (`BatteryIndicator`, Canvas — wypełnienie ∝ %, **bursztyn gdy ≤15%**,
+    `—` gdy brak `batt_mv`). **% liczone w apce z `batt_mv`** przez przybliżony LUT LiFePO4 `lfpSocPct` (`util/Time.kt`) —
+    **UPROSZCZONE** (jedna gałąź rozładowania, bez kompensacji obciążenia, płaskie plateau = niepewne w środku). Docelowo:
+    skalibrowany **`soh_pct` liczony na nodzie** (`battery_soc.c`) → apka tylko pokazuje. USER zdejmie realną krzywą PPK2.
+  - **Stopka „Ostatnia aktualizacja: …"** pod linią: `teraz` (<60s) / `N min temu` (≤60 min) / `HH:mm dd-MM-yyyy` (>60 min).
+    **Real-time bez nowej telemetrii**: `liveLastUpdateLabel` (`ui/common/LiveTime.kt`) = **per-karta `produceState`**
+    liczący dokładny delay do najbliższego progu, budzi się tylko na nim, **kończy w regime czasu bezwzględnego**; nowa
+    telemetria (klucz `ts`) restartuje. Zero globalnej tablicy timerów — Compose zarządza korutyną per karta.
+  - Nowy wzorzec czasu: `expect nowEpochSeconds/formatLocalDateTime` + actuals Android (`SimpleDateFormat`) / iOS
+    (`NSDateFormatter`). `ts` z bramki = **unix sekundy**. [[smarthome-app-kmp]]
+- **Build apki (Windows)**: `JAVA_HOME=C:\Program Files\Android\Android Studio1\jbr` (uwaga: `Android Studio` **bez** „1"
+  ma niekompletny JBR — brak `jvm.cfg`). KMP używa **nowego androidLibrary plugina** → brak `compileDebugKotlinAndroid`;
+  sanity-check: `:shared:compileCommonMainKotlinMetadata :shared:compileKotlinIosArm64 :shared:assembleAndroidMain`.
+- **👉 NASTĘPNY KROK (po przerwie prądowej)**: **ekran szczegółów klimatu po tapnięciu karty — wykresy historyczne T/RH.**
+  Wchodzą znane luki bramki: (1) protokół noda nie ma jeszcze `climate` history → rozszerzyć telemetrię + tabelę historii
+  (à la solar: `climate_hourly/daily` albo prostsza retencja); (2) `reading_time`=czas ODBIORU nie pomiaru (backlog po
+  hangu = zły stempel → timestamp w ramce noda); (3) brak komendy interwału pomiaru (dziś 4 min zaszyte). Do decyzji z
+  userem: zacząć od strony bramki (protokół+tabela) czy od szkieletu ekranu apki na danych przykładowych. Reużyć
+  `liveLastUpdateLabel` na detalu. [[smarthome-app-kmp]] [[solar-aggregation-model]]
+
 ### 2026-07-23 — BRING-UP rev2 T&H node E2E ✅ (custom PCB: RF+SHT35+MCP3421+ładowanie+NVS)
 - **Customowy czujnik klimatu rev2 (CC1310) DZIAŁA E2E na realnej płytce z fabryki.** Projekt = `Nodes/TempHumNode/
   Firmware` (rev1 `rfWsnNode.c`/`nodeTaskFunction` rozbudowany — NIE moduły `rev2/`, te zostały jako referencja).
