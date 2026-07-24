@@ -476,12 +476,18 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 - **Build apki (Windows)**: `JAVA_HOME=C:\Program Files\Android\Android Studio1\jbr` (uwaga: `Android Studio` **bez** „1"
   ma niekompletny JBR — brak `jvm.cfg`). KMP używa **nowego androidLibrary plugina** → brak `compileDebugKotlinAndroid`;
   sanity-check: `:shared:compileCommonMainKotlinMetadata :shared:compileKotlinIosArm64 :shared:assembleAndroidMain`.
-- **👉 NASTĘPNY KROK (po przerwie prądowej)**: **ekran szczegółów klimatu po tapnięciu karty — wykresy historyczne T/RH.**
-  Wchodzą znane luki bramki: (1) protokół noda nie ma jeszcze `climate` history → rozszerzyć telemetrię + tabelę historii
-  (à la solar: `climate_hourly/daily` albo prostsza retencja); (2) `reading_time`=czas ODBIORU nie pomiaru (backlog po
-  hangu = zły stempel → timestamp w ramce noda); (3) brak komendy interwału pomiaru (dziś 4 min zaszyte). Do decyzji z
-  userem: zacząć od strony bramki (protokół+tabela) czy od szkieletu ekranu apki na danych przykładowych. Reużyć
-  `liveLastUpdateLabel` na detalu. [[smarthome-app-kmp]] [[solar-aggregation-model]]
+- **✅ EKRAN SZCZEGÓŁÓW KLIMATU + HISTORIA — ZROBIONE E2E (commit `c733218`, pushed).** Bramka: tabela `climate_history`
+  (bufor kroczący ~26 h surowego T/RH, `recordClimateHistory` na każdym odczycie T&H, guard 60 s, prune-on-insert) +
+  `command=climatehistory&node=<id>&hours=24` → `[{t,temp,hum}]` (oba metryki w jednej odpowiedzi). Lokalna (NIE
+  mirrorowana, jak `solar_history`); `dropNode` sprząta ją generycznie. **Zweryfikowane `curl`-em na żywo** (node 251,
+  próbki co 240 s). Apka: `ClimateSelection` przez scaffold → `ClimateScreen` per-node; „Aktualny pomiar" live z
+  `climateStateFor`+`liveLastUpdateLabel`, „Ostatnia doba" z `store.climateHistory` (`produceState`, re-fetch na nową
+  telemetrię), toggle T↔RH client-side. Szkielet przycięty (bez 7d/mies/rok, bez interwału, bez linii zadanej — tylko
+  24 h). `formatLocalHm` na osi X.
+- **👉 NASTĘPNY KROK**: pozostałe luki bramki dla klimatu — (1) **`reading_time`=czas ODBIORU nie pomiaru** (backlog po
+  hangu M4F klei się przy prawej krawędzi wykresu → **timestamp w ramce noda**, wspólny fix z solarem); (2) **komenda
+  interwału pomiaru** (dziś 4 min zaszyte w firmware → guzik „Ustawienia" na karcie/detalu). Plus wciąż ATRAPY: Klimat
+  poza detalem, PV, Dashboard poza kaflami solar/klimat. [[smarthome-app-kmp]] [[solar-aggregation-model]]
 
 ### 2026-07-23 — BRING-UP rev2 T&H node E2E ✅ (custom PCB: RF+SHT35+MCP3421+ładowanie+NVS)
 - **Customowy czujnik klimatu rev2 (CC1310) DZIAŁA E2E na realnej płytce z fabryki.** Projekt = `Nodes/TempHumNode/
