@@ -155,6 +155,18 @@ func initNodeSchema(db *sql.DB) error {
 			pump_runtime      INTEGER             -- accumulated this local day, minutes
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_solar_hist ON solar_history(node_id, reading_time)`,
+		// Climate (T&H) history = a rolling raw buffer for the "Ostatnia doba" chart.
+		// The node reports instantaneous T/RH (not accumulators), so no aggregation is
+		// needed: we keep the last ~26h raw and prune older on each insert. Per-node
+		// keyed -> dropNode() cleans it up generically (schema-discovered node_id column).
+		`CREATE TABLE IF NOT EXISTS climate_history (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			node_id      INTEGER NOT NULL,
+			reading_time INTEGER NOT NULL,   -- unix s (receive time; measurement-time TODO)
+			temperature  REAL,
+			humidity     REAL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_climate_hist ON climate_history(node_id, reading_time)`,
 		// Three aggregate levels, gen1's proven model (SolarSystem{Daily,Monthly,
 		// Annual}Stats). Each row = one period; each level derives from the one below by
 		// diffing the CUMULATIVE energy at period boundaries (never summing per-reading
@@ -455,6 +467,10 @@ func seedParamDefs(db *sql.DB) error {
 // nodeTypeSolar mirrors NODE_SOLAR_CONTROLLER (node_protocol.h). A solar full
 // reading (cmd SEND_DATA_TO_DB -> carries energyGain) also feeds solar_history.
 const nodeTypeSolar uint8 = 0
+
+// nodeTypeTH mirrors NODE_TH_SENSOR (node_protocol.h). Each reading carries
+// temperature+humidity -> feeds climate_history (the 24h chart buffer).
+const nodeTypeTH uint8 = 6
 
 // Assignable address pool (node_protocol.h ADDR_POOL_FIRST/LAST). The legacy
 // fixed-address nodes (0xF1/0xF2/0xF3) and the gateway (0xF0) sit ABOVE this
@@ -1040,6 +1056,14 @@ func (s *Store) RecordTelemetry(address, nodeType uint8, params []NodeParam, ts 
 			solarFull = true
 		}
 	}
+	// T&H reading (has temperature) -> append to the 24h climate buffer.
+	if nodeType == nodeTypeTH {
+		if _, hasT := vals["temperature"]; hasT {
+			if err := s.recordClimateHistory(tx, nodeID, vals, ts); err != nil {
+				return err
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -1116,6 +1140,74 @@ func (s *Store) recordSolarHistory(tx *sql.Tx, nodeID int64, v map[string]float6
 	// they fail the raw row must survive so the next ingest can retry - the whole
 	// point of "aggregation failed => keep the buffer".
 	return err
+}
+
+// Climate history is a rolling raw buffer. climateMinIntervalS drops burst
+// redeliveries (same reading retried by the transport after an M4F stall lands at
+// the same receive-second); the node's real cadence is minutes, so <60s = a dup.
+// climateRetentionS keeps a bit more than the app's 24h window; older rows are
+// pruned on each insert (cheap - one node has ~360 rows/day at a 4-min cadence).
+const (
+	climateMinIntervalS = 60
+	climateRetentionS   = 26 * 3600
+)
+
+// recordClimateHistory appends one temperature/humidity sample and prunes rows older
+// than the retention window. Called within RecordTelemetry's tx for a T&H reading.
+func (s *Store) recordClimateHistory(tx *sql.Tx, nodeID int64, v map[string]float64, ts int64) error {
+	var prevTime sql.NullInt64
+	err := tx.QueryRow(
+		`SELECT reading_time FROM climate_history WHERE node_id = ? ORDER BY reading_time DESC LIMIT 1`,
+		nodeID).Scan(&prevTime)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if prevTime.Valid && ts-prevTime.Int64 < climateMinIntervalS {
+		// node_param already got the fresh value; only the history buffer must stay clean.
+		return nil
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO climate_history (node_id, reading_time, temperature, humidity)
+		 VALUES (?, ?, ?, ?)`,
+		nodeID, ts, v["temperature"], v["humidity"]); err != nil {
+		return err
+	}
+	_, err = tx.Exec(
+		`DELETE FROM climate_history WHERE node_id = ? AND reading_time < ?`,
+		nodeID, ts-climateRetentionS)
+	return err
+}
+
+// ClimatePoint is one T&H sample for the "Ostatnia doba" chart. Both metrics ride
+// one response so the app's Temperatura<->Wilgotność toggle needs no refetch.
+type ClimatePoint struct {
+	T    int64   `json:"t"`    // unix s
+	Temp float64 `json:"temp"` // °C
+	Hum  float64 `json:"hum"`  // %
+}
+
+// ClimateHistory returns a node's raw T/RH samples with reading_time >= sinceTs,
+// oldest first. The app builds the chart series (and its own axis labels) from these.
+func (s *Store) ClimateHistory(node, sinceTs int64) ([]ClimatePoint, error) {
+	rows, err := s.db.Query(
+		`SELECT reading_time, temperature, humidity FROM climate_history
+		 WHERE node_id = ? AND reading_time >= ? ORDER BY reading_time ASC`,
+		node, sinceTs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ClimatePoint, 0, 360)
+	for rows.Next() {
+		var p ClimatePoint
+		var t, h sql.NullFloat64
+		if err := rows.Scan(&p.T, &t, &h); err != nil {
+			return nil, err
+		}
+		p.Temp, p.Hum = t.Float64, h.Float64
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // sameLocalDay reports whether two unix timestamps fall on the same calendar day

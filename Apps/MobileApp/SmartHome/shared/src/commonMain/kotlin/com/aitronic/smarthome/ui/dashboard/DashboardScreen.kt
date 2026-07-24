@@ -40,6 +40,7 @@ import com.aitronic.smarthome.domain.model.ClimateState
 import com.aitronic.smarthome.domain.model.DashboardData
 import com.aitronic.smarthome.domain.model.SolarState
 import com.aitronic.smarthome.ui.icons.ShIcons
+import com.aitronic.smarthome.ui.climate.ClimateSelection
 import com.aitronic.smarthome.ui.common.liveLastUpdateLabel
 import com.aitronic.smarthome.ui.solar.SolarSelection
 import com.aitronic.smarthome.ui.theme.Sh
@@ -50,7 +51,7 @@ fun DashboardScreen(
     data: DashboardData,
     store: com.aitronic.smarthome.data.GatewayStore? = null,
     onOpenSolar: (SolarSelection) -> Unit,
-    onOpenClimate: () -> Unit,
+    onOpenClimate: (ClimateSelection) -> Unit,
 ) {
     val gw = store?.state?.collectAsState()?.value
     Column(
@@ -96,7 +97,7 @@ fun DashboardScreen(
 
 /** Wybór karty wg typu noda. gen1 i gen2 tego samego typu = osobne karty (per-node). */
 @Composable
-private fun NodeCard(gw: GatewayState, n: NodeInfoDto, store: GatewayStore?, onOpenSolar: (SolarSelection) -> Unit, onOpenClimate: () -> Unit) {
+private fun NodeCard(gw: GatewayState, n: NodeInfoDto, store: GatewayStore?, onOpenSolar: (SolarSelection) -> Unit, onOpenClimate: (ClimateSelection) -> Unit) {
     val name = n.name.ifBlank { NodeTypes.label(n.type) }
     when (n.type) {
         NodeTypes.SOLAR -> SolarNodeCard(
@@ -107,7 +108,9 @@ private fun NodeCard(gw: GatewayState, n: NodeInfoDto, store: GatewayStore?, onO
             store = store, nodeId = n.id, telemetryTs = gw.telemetry[n.address]?.ts ?: 0L,
             onClick = { onOpenSolar(SolarSelection(name, n.address, n.id, n.status == "legacy")) },
         )
-        NodeTypes.TH_SENSOR -> ClimateNodeCard(name, gw.climateStateFor(n.address), gw.telemetry[n.address]?.ts ?: 0L, onOpenClimate)
+        NodeTypes.TH_SENSOR -> ClimateNodeCard(name, gw.climateStateFor(n.address), gw.telemetry[n.address]?.ts ?: 0L) {
+            onOpenClimate(ClimateSelection(name, n.address, n.id))
+        }
         NodeTypes.BUFOR -> BufferNodeCard(name, gw.telemetry[n.address]?.params?.get(Params.SBUF_TEMP))
         else -> GenericNodeCard(name, n.type)
     }

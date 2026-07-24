@@ -96,6 +96,10 @@ class GatewayClient(
         return json.decodeFromString(command("history&range=$range$c$n"))
     }
 
+    /** Historia klimatu (T/RH) noda z ostatnich `hours` godzin, najstarsze pierwsze. */
+    suspend fun climateHistory(node: Long, hours: Int = 24): List<ClimatePointDto> =
+        json.decodeFromString(command("climatehistory&node=$node&hours=$hours"))
+
     suspend fun listJoins(): List<PendingJoinDto> = json.decodeFromString(command("listjoins"))
 
     suspend fun approveJoin(factoryHex: String, name: String): ApproveResultDto =

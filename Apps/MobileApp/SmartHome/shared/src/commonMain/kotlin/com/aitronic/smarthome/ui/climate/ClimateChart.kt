@@ -8,7 +8,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextMeasurer
@@ -17,10 +16,8 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
-import com.aitronic.smarthome.domain.model.ClimateMetric
 import com.aitronic.smarthome.domain.model.Series
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -28,20 +25,18 @@ import kotlin.math.roundToInt
  * viewBox 0..320 x 0..150; obszar rysowania X0=30..X1=300, Y0=16..Y1=120.
  */
 @Composable
-fun ClimateChart(series: Series, metric: ClimateMetric, modifier: Modifier = Modifier) {
+fun ClimateChart(series: Series, modifier: Modifier = Modifier) {
     val tm = rememberTextMeasurer()
     Canvas(modifier.fillMaxWidth().aspectRatio(320f / 150f)) {
-        drawChart(series, metric, tm)
+        drawChart(series, tm)
     }
 }
 
-private fun DrawScope.drawChart(series: Series, metric: ClimateMetric, tm: TextMeasurer) {
+private fun DrawScope.drawChart(series: Series, tm: TextMeasurer) {
     val arr = series.values
     if (arr.isEmpty()) return
-    val isTemp = metric == ClimateMetric.Temperature
     var lo = arr.min()
     var hi = arr.max()
-    if (isTemp) { lo = min(lo, 22.0); hi = max(hi, 22.0) }
     val pad = max((hi - lo) * 0.15, 1.0)
     lo -= pad; hi += pad
 
@@ -69,17 +64,6 @@ private fun DrawScope.drawChart(series: Series, metric: ClimateMetric, tm: TextM
     for ((ly, v) in yLabels) {
         val res = tm.measure("$v$unit", TextStyle(color = axis, fontSize = 9.sp))
         drawText(res, topLeft = Offset(px(26f) - res.size.width, py(ly) - res.size.height / 2f))
-    }
-
-    // linia "zadana 22°C" (tylko temperatura)
-    if (isTemp) {
-        val ys = yFor(22.0)
-        drawLine(
-            white.copy(alpha = 0.55f), Offset(px(X0), py(ys)), Offset(px(X1), py(ys)),
-            strokeWidth = 1.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 4f)),
-        )
-        val res = tm.measure("zadana 22°C", TextStyle(color = white.copy(alpha = 0.85f), fontSize = 9.sp))
-        drawText(res, topLeft = Offset(px(X1) - res.size.width, py(ys) - res.size.height - 2f))
     }
 
     // area + linia

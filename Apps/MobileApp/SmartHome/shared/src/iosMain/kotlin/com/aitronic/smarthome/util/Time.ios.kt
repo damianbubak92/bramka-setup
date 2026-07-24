@@ -12,3 +12,9 @@ actual fun formatLocalDateTime(epochSeconds: Long): String {
     fmt.dateFormat = "HH:mm dd-MM-yyyy"
     return fmt.stringFromDate(NSDate.dateWithTimeIntervalSince1970(epochSeconds.toDouble()))
 }
+
+actual fun formatLocalHm(epochSeconds: Long): String {
+    val fmt = NSDateFormatter()
+    fmt.dateFormat = "HH:mm"
+    return fmt.stringFromDate(NSDate.dateWithTimeIntervalSince1970(epochSeconds.toDouble()))
+}

@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.collect
 import com.aitronic.smarthome.data.SmartHomeRepository
 import com.aitronic.smarthome.ui.auto.AutomationsRoot
 import com.aitronic.smarthome.ui.climate.ClimateScreen
+import com.aitronic.smarthome.ui.climate.ClimateSelection
 import com.aitronic.smarthome.ui.dashboard.DashboardScreen
 import com.aitronic.smarthome.ui.devices.DevicesRoot
 import com.aitronic.smarthome.ui.icons.ShIcons
@@ -54,8 +55,9 @@ private enum class Detail { None, Climate, Solar }
 fun AppScaffold(store: GatewayStore? = null, repo: SmartHomeRepository = SampleRepository) {
     var tab by remember { mutableStateOf(Tab.Dashboard) }
     var detail by remember { mutableStateOf(Detail.None) }
-    // Który node solar otwarto z dashboardu (per-node detal); null = agregat (fallback).
+    // Który node solar/klimat otwarto z dashboardu (per-node detal); null = fallback (sample).
     var solarSel by remember { mutableStateOf<SolarSelection?>(null) }
+    var climateSel by remember { mutableStateOf<ClimateSelection?>(null) }
     // Nowy JOIN (z WS) → przenieś użytkownika na Urządzenia i otwórz popup dodawania/wymiany,
     // z dowolnego ekranu. Flaga żyje TU (AppScaffold przeżywa zmianę zakładki, DevicesRoot nie),
     // a DevicesRoot kasuje ją przez onJoinConsumed po otwarciu — dzięki temu zwykłe wejście na
@@ -72,14 +74,14 @@ fun AppScaffold(store: GatewayStore? = null, repo: SmartHomeRepository = SampleR
     Column(Modifier.fillMaxSize().background(Sh.bg)) {
         Box(Modifier.weight(1f)) {
             when (detail) {
-                Detail.Climate -> ClimateScreen(repo) { detail = Detail.None }
+                Detail.Climate -> ClimateScreen(repo, store, climateSel) { detail = Detail.None }
                 Detail.Solar -> SolarScreen(repo, store, solarSel) { detail = Detail.None }
                 Detail.None -> when (tab) {
                     Tab.Dashboard -> DashboardScreen(
                         data = repo.dashboard(),
                         store = store,
                         onOpenSolar = { sel -> solarSel = sel; detail = Detail.Solar },
-                        onOpenClimate = { detail = Detail.Climate },
+                        onOpenClimate = { sel -> climateSel = sel; detail = Detail.Climate },
                     )
                     Tab.Automations -> AutomationsRoot(repo, store)
                     Tab.Devices -> DevicesRoot(repo, store, autoOpenJoin = autoOpenJoin, onJoinConsumed = { autoOpenJoin = false })

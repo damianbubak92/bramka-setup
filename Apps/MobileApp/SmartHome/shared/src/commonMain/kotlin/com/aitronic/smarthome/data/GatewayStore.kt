@@ -241,6 +241,10 @@ class GatewayStore(
             .firstOrNull()?.bars?.map { it.bucket to it.energyKwh } ?: emptyList()
     }
 
+    /** Historia klimatu (T/RH) noda z ostatniej doby — do wykresu „Ostatnia doba". */
+    suspend fun climateHistory(nodeId: Long, hours: Int = 24): Result<List<ClimatePointDto>> =
+        runCatching { client.climateHistory(nodeId, hours) }
+
     suspend fun rulesJson(): Result<String> = runCatching { client.getRulesJson() }
 
     suspend fun saveRulesJson(json: String): Result<Unit> = runCatching {

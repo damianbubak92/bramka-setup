@@ -84,6 +84,18 @@ data class SolarSeriesDto(
     val expected: Long = 0,
 )
 
+/**
+ * command=climatehistory&node=<id>&hours=24 → [ClimatePointDto] (store.go ClimateHistory).
+ * Surowe próbki T/RH z ostatniej doby, najstarsze pierwsze. Oba metryki w jednej
+ * odpowiedzi → przełącznik Temperatura/Wilgotność nie musi dociągać ponownie.
+ */
+@Serializable
+data class ClimatePointDto(
+    val t: Long = 0,          // unix s
+    val temp: Double = 0.0,   // °C
+    val hum: Double = 0.0,    // %
+)
+
 /** command=approvejoin → {address,factory,name,type} */
 @Serializable
 data class ApproveResultDto(

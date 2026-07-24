@@ -8,6 +8,9 @@ expect fun nowEpochSeconds(): Long
 /** Lokalna data/godzina z epoch-sekund w formacie "HH:mm dd-MM-yyyy". */
 expect fun formatLocalDateTime(epochSeconds: Long): String
 
+/** Lokalna godzina z epoch-sekund w formacie "HH:mm" (etykiety osi wykresu). */
+expect fun formatLocalHm(epochSeconds: Long): String
+
 /**
  * Etykieta "Ostatnia aktualizacja: …" wg reguł usera:
  *  - < 1 min           → "teraz"

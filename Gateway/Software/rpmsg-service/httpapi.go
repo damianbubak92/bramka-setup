@@ -103,6 +103,9 @@ func handleCommand(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub, c
 	case strings.Contains(req, "command=state"):
 		handleState(store, w, r)
 
+	case strings.Contains(req, "command=climatehistory"):
+		handleClimateHistory(store, req, w, r)
+
 	case strings.Contains(req, "command=history"):
 		handleHistory(store, req, w, r)
 
@@ -254,6 +257,37 @@ func handleHistory(store *Store, req string, w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
 	log.Printf("[HTTP] history node %d range %s -> %d period(s)", node, rng, len(series))
+}
+
+// handleClimateHistory answers "command=climatehistory&node=<id>[&hours=24]" with the
+// node's raw T/RH samples over the last N hours (default 24), for the "Ostatnia doba"
+// chart. Both metrics ride one response (the app's Temperatura<->Wilgotność toggle is
+// client-side). Numbers only - the app formats axis labels for its locale.
+func handleClimateHistory(store *Store, req string, w http.ResponseWriter, r *http.Request) {
+	q, _ := url.ParseQuery(req)
+	node := int64(atoiOr(q.Get("node"), 0))
+	hours := atoiOr(q.Get("hours"), 24)
+	if hours < 1 {
+		hours = 24
+	}
+	sinceTs := time.Now().Unix() - int64(hours)*3600
+
+	points, err := store.ClimateHistory(node, sinceTs)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, err.Error()+"\n")
+		log.Printf("[HTTP] climatehistory error: %v", err)
+		return
+	}
+	b, err := json.Marshal(points)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, "marshal error\n")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+	log.Printf("[HTTP] climatehistory node %d %dh -> %d point(s)", node, hours, len(points))
 }
 
 // solarDefaultNode is the legacy solar controller's stable node_id (= 241, preserved
