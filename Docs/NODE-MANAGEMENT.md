@@ -214,3 +214,73 @@ je **grandfathering'uje**, NIE wypadają z niego. Dlaczego się nie gryzą i jak
 w ramce (CC1310 taguje przy sniffie). Nie ruszać ścieżki sniff w `radio_task.c` — działa.
 
 Powiązane: [[provisioning-model]], [[gen2-backup-mirror]], [[solar-aggregation-model]], `Docs/ARCHITECTURE-GEN2.md`.
+
+## 14. Downlink przez NACK — dostarczanie komend nodom (pending-command) — DO IMPLEMENTACJI (zaprojektowane 24.07)
+
+> **To DOPRECYZOWUJE dostarczanie z §5.3 / §6.4-6.5.** Wcześniejszy plan zakładał bezpośredni downlink
+> `MSG_UNREGISTERED` na adres noda — ale **nod bateryjny śpi w STANDBY** (a always-on mógł być bez prądu),
+> więc bezpośredni downlink trafia w próżnię. Rozwiązanie: bramka **nie pushuje** komendy — trzyma ją i
+> **doręcza w odpowiedzi na najbliższy uplink noda**, w oknie ACK, jako **NACK niosący komendę**.
+> **Uniwersalne dla WSZYSTKICH nodów** (śpioch / always-on / zombie / po reboocie bramki) — bez rozróżniania typu.
+
+### 14.1 Dlaczego NACK (a nie osobne okno RX u noda)
+CC1310 **ACK-uje autonomicznie na warstwie RF** (`radio_task.c`: buduje `[src]['A'][0x00][crc]` i `RF_postCmd`
+NATYCHMIAST po odbiorze, DOPIERO POTEM forwarduje ramkę po SPI do M4F). Więc Go dowiaduje się o telemetrii długo
+po zamknięciu ~50 ms okna ACK noda → **decyzja ACK-vs-NACK MUSI zapaść w CC1310**. Node i tak czeka na ACK po
+każdym uplinku → doręczamy komendę w tym samym oknie = **zero dodatkowego poboru noda** (nie otwieramy nowego RX).
+
+### 14.2 Mechanizm (pending-command z potwierdzeniem)
+1. **CC1310 trzyma tabelę `{factory_id → cmd}`** (volatile RAM, ~16 wpisów). Klucz = **`factory_id`** (chip), NIE
+   adres — adres jest reużywalny, więc kluczowanie po nim jest kruche (nowy nod na tym samym adresie dostałby cudzy
+   NACK). Chip jest unikalny → nowy chip = inny factory_id → nigdy nie trafi w cudzy wpis.
+2. Node (już `'E'`, z factory_id) wysyła uplink → CC1310: `factory_id` w tabeli?
+   - **jest, a `msg.cmd == pending`** → to **confirm**: normalny ACK + **usuń wpis** (rozrywa pętlę „confirm też NACK") + forward do Go.
+   - **jest, a `msg.cmd ≠ pending`** (zwykła telemetria) → **NACK** `[src]['N'][0x00][cmd]` zamiast ACK + forward.
+   - **brak** → normalny ACK + forward.
+3. Node w oknie ACK rozpoznaje `'N'` vs `'A'`, czyta `cmd` z bajtu [3] → **wykonuje** (np. `CMD_UNREGISTERED`: czyść
+   NVS → shelf) → **odsyła confirm** (`'E'` z `cmd`=wykonana komenda) → Go dropuje wpis.
+4. **Brak confirm** (przegapiony NACK / zgubiony confirm) → wpis zostaje → **kolejny uplink → kolejny NACK** → retry. Idempotentnie.
+
+### 14.3 Dwupoziomowa odporność (rdzeń kuloodporności)
+- **Tabela CC1310 = szybki cache (volatile).** Go uzbraja ją **proaktywnie** przy usunięciu → NACK już na PIERWSZEJ telemetrii (~4 min).
+- **Rejestr Go (SQLite) = źródło prawdy durable.** Go uzbraja też **REAKTYWNIE**: każdy uplink `'E'`, którego
+  `(addr, factory_id)` **nie pasuje do aktywnego bindingu** (usunięty / mismatch §5.2 / **ożywiony zombie**) → arm.
+- **Reboot bramki / brak prądu**: tabela CC1310 (RAM) ginie — **nieważne**, bo po powrocie nod nada telemetrię, Go
+  zobaczy „unregistered `factory_id`" w rejestrze → **znów uzbroi CC1310** → NACK przy najbliższej telemetrii (~4 min).
+  **Nie persystujemy tabeli CC1310.**
+- **Wniosek**: reaktywna ścieżka GWARANTUJE poprawność sama; proaktywne uzbrojenie to tylko przyspieszenie. Zastępuje
+  to bezpośredni `SendRemove`/`SendUnregister` (który trafiał w próżnię do śpiącego noda) — **jedna droga: arm → NACK → confirm → drop.**
+
+### 14.4 Kontrakt drutu (do dodania w `node_protocol.h` / `spi_frame.h`)
+- **Odpowiedź RF** (4 B): `ACK=[src]['A'][0x00][echoed_crc]` (bez zmian) / **`NACK=[src]['N'][0x00][cmd]`** (nowa).
+  `RF_REPLY_ACK 'A'`, `RF_REPLY_NACK 'N'`.
+- **Telemetria T&H: `'D'` → `'E'`** (dokłada `factory_id[8]`). Bez tego CC1310 nie zna chipa nadawcy. Bonus: włącza §5.2 dla T&H.
+- **Confirm**: zwykły uplink `'E'` z `msg.cmd` = wykonana komenda (np. `CMD_UNREGISTERED`).
+- **Control-plane arm/disarm** (Go→M4F→CC1310):
+  ```c
+  #define SPI_FRAME_CTRL  0x04u   /* M4F -> CC1310: zarządzaj tabelą pending (payload = PendingCtrl) */
+  #define CTRL_OP_ARM     1u
+  #define CTRL_OP_DISARM  2u
+  typedef struct {                 /* 10 B, bajtowo. RPMsg MSG_ARM_PENDING(0x35) i SPI_FRAME_CTRL */
+      uint8_t op;                              /* CTRL_OP_* */
+      uint8_t cmd;                             /* CMD_* do wysłania w NACK (ARM); 0 na DISARM */
+      uint8_t factory_id[NODE_FACTORY_ID_LEN]; /* którego chipa dotyczy */
+  } PendingCtrl;
+  ```
+  Nowy RPMsg `MSG_ARM_PENDING 0x35` (0x34=TIME_SYNC zajęty). ABI nietknięte: `MessageStruct`=44, `NodeFrame`=52, `PendingCtrl`=10.
+- **CC1310**: `factory_id` już ekstrahowany (offset 3 w `'E'`), `msg.cmd` z offsetu 13 (dest+tag+src+factory_id[8]+2).
+
+### 14.5 Uogólnienie na przyszłość (zakładka „Ustawienia")
+Ten sam kanał doręcza **dowolną komendę** do noda, nie tylko unregister. Np. **interwał pomiaru**: apka → Go → arm
+`{factory_id → SET_INTERVAL(X)}` → NACK przy najbliższej telemetrii → nod ustawia + confirm → drop. Dla komend
+stanowych (nod dalej nadaje) confirm jest konieczny (inaczej Go re-armuje w kółko); dla unregister „ucichnięcie"
+i tak potwierdza, ale jawny confirm zostaje dla jednolitości.
+
+### 14.6 Kolejność implementacji (5 warstw)
+1. **Protokół** (`node_protocol.h` + `spi_frame.h`): `'N'`/`'A'`, `PendingCtrl`, `SPI_FRAME_CTRL`, `MSG_ARM_PENDING`.
+2. **Go**: arm proaktywny (remove) + reaktywny (uplink bez bindingu) + drop na confirm; `MSG_ARM_PENDING` po RPMsg; disarm przy (re)provisioningu chipa.
+3. **M4F**: relay `MSG_ARM_PENDING` (RPMsg) → `SPI_FRAME_CTRL` (SPI).
+4. **CC1310**: tabela `{factory_id→cmd}` + gałąź NACK/confirm w miejscu ACK-a.
+5. **Node** (`radio.c`/`rfWsnNode.c`): telemetria `'E'`; rozpoznanie `'N'`+cmd w oknie ACK → wykonaj + confirm; `nvs_clear` → shelf.
+
+Powiązane: [[provisioning-model]], [[rev2-th-node-bringup]], §5.3, §6.5.

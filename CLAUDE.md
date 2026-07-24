@@ -453,7 +453,27 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
-### 2026-07-24 — node T&H energooszczędny (STANDBY 4 min) ✅ + karta klimatu na dashboardzie (bateria% + live timestamp)
+### 2026-07-25 — provisioning T&H: wake-on-button JOIN ✅ + zaprojektowany downlink przez NACK (§14) — implementacja JUTRO
+- **Wake-on-button JOIN + re-provision (commit `5748f89`, pushed)**: śpiący/sprowizjonowany T&H node reaguje na JOIN
+  (przerwanie GPIO budzi ze STANDBY → semafor; sleep = `Semaphore_pend(joinSem, 240s)` z wczesnym wybudzeniem; przycisk
+  w OBU ścieżkach). Unprovisioned = `Semaphore_pend(FOREVER)` (STANDBY do wciśnięcia). `provision_join` = 1 JOIN + okno
+  90 s (`NODE_JOIN_WINDOW_S`); dwufazowo jak solar: bramka `pending_join` → `MarkActive` na 1. telemetrii; **pierwsza
+  ramka natychmiast po zapisie NVS** (measure-then-sleep) → apka pokazuje `active` od razu. [[rev2-th-node-bringup]]
+- **🔑 ZAPROJEKTOWANY (do implementacji JUTRO) — usuwanie/komendy przez NACK: `Docs/NODE-MANAGEMENT.md §14`.** Problem:
+  śpiący nod (albo always-on bez prądu w momencie usuwania) NIE odbiera bezpośredniego `MSG_UNREGISTERED`. Rozwiązanie
+  (przyklepane z userem, kuloodporne): **CC1310 trzyma tabelę `{factory_id → cmd}` i doręcza komendę w NACK-u** w oknie
+  ACK najbliższego uplinku noda (CC1310 ACK-uje autonomicznie na RF → decyzja MUSI być w CC1310, nie w Go). Node
+  wykonuje → **confirm** → Go dropuje wpis; brak confirm → retry przy kolejnej telemetrii. **Dwupoziomowo**: tabela
+  CC1310 = szybki cache (arm proaktywny przy remove), **rejestr Go (SQLite) = źródło prawdy** który uzbraja
+  **REAKTYWNIE** na każdy uplink bez ważnego `(addr, factory_id)` → przeżywa reboot bramki (tabela RAM ginie, Go
+  odbudowuje). **Uniwersalne dla wszystkich nodów** (śpioch/always-on/zombie), zastępuje `SendRemove`/`SendUnregister`.
+  Klucz = **`factory_id`, nie adres** (reużywalny → nowy chip nigdy nie dostanie cudzego NACK). Uogólnia się na przyszłe
+  komendy (interwał pomiaru z zakładki Ustawienia). **Kontrakt drutu gotowy** (§14.4): `RF_REPLY_NACK 'N'`, telemetria
+  T&H `'D'→'E'` (+factory_id → włącza też walidację §5.2), `PendingCtrl{op,cmd,factory_id[8]}` w nowym `SPI_FRAME_CTRL
+  0x04` + RPMsg `MSG_ARM_PENDING 0x35`. **5 warstw do zaimplementowania (§14.6)**: protokół → Go → M4F → CC1310 → node.
+  **👉 JUTRO ZACZYNAMY OD §14.6 krok 1 (protokół) → 2 (Go).** Firmware (M4F/CC1310/node) dostarczę gotowe do flasha (user buduje w CCS).
+
+### 2026-07-24 — node T&H energooszczędny (STANDBY 4 min) ✅ + karta klimatu na dashboardzie (bateria% + live timestamp) + ekran szczegółów klimatu + historia klimatu E2E
 - **Firmware noda T&H — cykl energooszczędny ZWERYFIKOWANY MIERNIKIEM** (commit `d15850e`, pushed). `stream_telemetry`
   (`Nodes/TempHumNode/Firmware/rfWsnNode.c`): co 4 min → `PERIPH_EN` on → I2C open → SHT35 (+ MCP3421 **co 5. cykl** —
   SoC zmienia się wolno) → I2C/PERIPH_EN off → radio send → **UART per-cykl (open/write/CLOSE)** → `Task_sleep(240s)` →
