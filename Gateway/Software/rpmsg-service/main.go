@@ -816,6 +816,20 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 					break
 				}
 
+				if cok && cmd == CmdUnregistered {
+					// Node's confirm that it cleared its identity after a pending UNREGISTERED
+					// was delivered in a NACK (§14). Drop the arm so the CC1310 stops NACKing
+					// this chip. Must NOT fall through to the telemetry path (that re-arms it).
+					if fid, ok := NodeMsgFactory(ev.Payload); ok && fid != ([8]byte{}) {
+						if err := p.DisarmPending(fid); err != nil {
+							log.Printf("[Serve] unregister-confirm chip %x: disarm failed: %v", fid[:], err)
+						} else {
+							log.Printf("[Serve] node confirmed UNREGISTERED (chip %x) - disarmed", fid[:])
+						}
+					}
+					break
+				}
+
 				nodeID, nodeType, frameFactory, params, ok := DecodeTelemetry(ev.Payload)
 				if !ok {
 					log.Printf("[Serve] NODE_TELEMETRY undecodable (%d bytes)", len(ev.Payload))
@@ -829,7 +843,20 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 					break
 				}
 				if !exists {
-					log.Printf("[Serve] telemetry from unregistered node 0x%02X - ignoring (unprovisioned should be silent)", nodeID)
+					// Reactive arm (§14): a removed/unknown node is still transmitting. If the
+					// frame carries a chip id ('E'), queue UNREGISTERED so the CC1310 NACKs its
+					// NEXT uplink and it clears itself. This is the durable backbone - it re-arms
+					// even after a gateway reboot wiped the CC1310 table. Legacy 'D' frames (no
+					// factory_id) are grandfathered -> just ignored.
+					if frameFactory != ([8]byte{}) {
+						if err := p.ArmUnregister(frameFactory); err != nil {
+							log.Printf("[Serve] unregistered node 0x%02X (chip %x): arm failed: %v", nodeID, frameFactory[:], err)
+						} else {
+							log.Printf("[Serve] telemetry from unregistered node 0x%02X (chip %x) - armed UNREGISTERED, dropping reading", nodeID, frameFactory[:])
+						}
+					} else {
+						log.Printf("[Serve] telemetry from unregistered node 0x%02X ('D' frame, no chip id) - ignoring", nodeID)
+					}
 					break
 				}
 
@@ -839,10 +866,13 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 				// Legacy sniff nodes and old 'D' frames (factory_id == 0) are exempt.
 				if status != "legacy" && frameFactory != ([8]byte{}) {
 					if bound, ok := factoryHexToBytes(storedFactory); ok && bound != frameFactory {
-						if err := p.SendUnregister(frameFactory, nodeType, nodeID); err != nil {
-							log.Printf("[Serve] node 0x%02X identity mismatch - SendUnregister failed: %v", nodeID, err)
+						// Impersonation / stale chip on a reused address: arm UNREGISTERED so the
+						// CC1310 NACKs this chip's next uplink (§14 - the old direct SendUnregister
+						// fired into the void for a sleeping node). Drop the reading.
+						if err := p.ArmUnregister(frameFactory); err != nil {
+							log.Printf("[Serve] node 0x%02X identity mismatch - arm failed: %v", nodeID, err)
 						} else {
-							log.Printf("[Serve] node 0x%02X identity mismatch (frame factory != binding) - sent UNREGISTERED, dropping reading", nodeID)
+							log.Printf("[Serve] node 0x%02X identity mismatch (frame chip %x != binding) - armed UNREGISTERED, dropping reading", nodeID, frameFactory[:])
 						}
 						break
 					}

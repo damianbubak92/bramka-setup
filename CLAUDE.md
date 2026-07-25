@@ -453,6 +453,26 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
 
+### 2026-07-26 — §14 downlink przez NACK ZAIMPLEMENTOWANY + ZWERYFIKOWANY E2E ✅ + fix M4F single-RX-buffer (ring)
+- **Cały §14 (5 warstw) działa E2E na realnym HW** — pełny cykl `re-JOIN→active→remove→NACK→confirm→disarm→
+  factory/silent`, **zero retry**. Mechanizm: bramka nie pushuje komendy do śpiącego noda, tylko CC1310 trzyma tabelę
+  `{factory_id→cmd}` i doręcza ją w **NACK-u w oknie ACK** najbliższego uplinku (CC1310 ACK-uje autonomicznie na RF →
+  decyzja musi być w CC1310). Node wykonuje → **confirm** → Go/CC1310 rozbrajają. Kluczowanie po `factory_id` (nie adresie
+  → reużycie adresu bezpieczne). Dwupoziomowo: tabela CC1310 = cache; **rejestr Go = źródło prawdy**, uzbraja
+  **reaktywnie** na każdy uplink bez ważnego bindingu (przeżywa reboot bramki). Spec: `Docs/NODE-MANAGEMENT.md §14`.
+  [[nack-downlink-pending-commands]]
+- **Warstwy (wszystko w repo):** protokół (`RF_REPLY_NACK 'N'`, `PendingCtrl`, `SPI_FRAME_CTRL 0x04`, `MSG_ARM_PENDING
+  0x35`), **Go** (arm proaktywny na remove + reaktywny + disarm na confirm/provision; przy usuwaniu **`SendUnregister`
+  bezpośredni DLA always-on + `ArmUnregister` DLA bateryjnych** — pomysł usera), **M4F** (relay `MSG_ARM_PENDING`→
+  `SPI_FRAME_CTRL`, osobna kolejka control), **CC1310** (tabela `{factory_id→cmd}` chroniona `Hwi`, gałąź NACK/confirm w
+  miejscu ACK-a), **node** (telemetria `'E'` + rozpoznanie `'N'` → czyść NVS + confirm → shelf).
+- **🔑 Przy okazji naprawiony PRE-EXISTING bug M4F (`ipc_rpmsg_echo.c`)**: pojedynczy `gRxBuffer` **dropował** wiadomość
+  gdy przyszła zanim poprzednia obsłużona (`if (pending) return`); pętla COMMS bierze 1/`vTaskDelay(1)`, więc KAŻDY burst
+  Go→M4F gubił jedną (u nas ACK-telemetrii + `ARM_PENDING` → retry arma ~1 s). Fix: **4-slotowy ring SPSC** (callback→head,
+  COMMS→tail, lock-free na single-core Cortex-M; COMMS drenuje cały ring/iterację). Ogólna poprawa niezawodności RPMsg.
+  Po fixie: **zero retry** nawet pod burstem telemetria+confirm (RTT ~13 ms, retries=0).
+- **Build:** M4F + CC1310 + node w CCS (wszystko w repo), Go przez `Deploy-Go`. Zweryfikowane na żywo.
+
 ### 2026-07-25 — provisioning T&H: wake-on-button JOIN ✅ + zaprojektowany downlink przez NACK (§14) — implementacja JUTRO
 - **Wake-on-button JOIN + re-provision (commit `5748f89`, pushed)**: śpiący/sprowizjonowany T&H node reaguje na JOIN
   (przerwanie GPIO budzi ze STANDBY → semafor; sleep = `Semaphore_pend(joinSem, 240s)` z wczesnym wybudzeniem; przycisk

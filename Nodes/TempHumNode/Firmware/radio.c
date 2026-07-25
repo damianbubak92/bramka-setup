@@ -15,7 +15,7 @@
 #include "RFQueue.h"
 
 #define MAX_RETRIES         3
-#define PAYLOAD_LENGTH      50
+#define PAYLOAD_LENGTH      64   /* headroom for 'E' frames (factory_id[8]) + JOIN_ACCEPT */
 #define NUM_DATA_ENTRIES    2
 #define NUM_APPENDED_BYTES  2
 /* RF core runs at 4 MHz -> 4 ticks/us. ACK window after TX. */
@@ -41,7 +41,8 @@ static uint8_t calcChecksum(const uint8_t *d, uint8_t len)
     return crc;
 }
 
-bool radio_send_message(const MessageStruct *msg, uint8_t destAddr)
+bool radio_send_message(const MessageStruct *msg, uint8_t destAddr,
+                        const uint8_t *factoryId, uint8_t *nackCmd)
 {
     RF_Params rfParams;
     RF_Params_init(&rfParams);
@@ -71,34 +72,55 @@ bool radio_send_message(const MessageStruct *msg, uint8_t destAddr)
     if (rfHandle == NULL) return false;
     RF_runCmd(rfHandle, (RF_Op *)&RF_cmdFs, RF_PriorityNormal, NULL, 0);
 
-    /* Build frame: [dest]['D'][src][MessageStruct][seq][crc8] */
-    uint8_t frame[3 + sizeof(MessageStruct) + 2];
+    /* Build frame: 'E' [dest]['E'][src][factory_id:8][msg][seq][crc8] when a chip id is
+     * given (telemetry/confirm - lets the gateway key its §14 pending-command table),
+     * else legacy 'D' [dest]['D'][src][msg][seq][crc8] (JOIN). The CRC covers src..seq
+     * (calcChecksum(&frame[2], hdr+len-1)) exactly as the gateway validates it. */
+    uint8_t frame[3 + NODE_FACTORY_ID_LEN + sizeof(MessageStruct) + 2];
     uint8_t len = msg->length;
+    uint8_t hdr;
     frame[0] = destAddr;
-    frame[1] = 'D';
     frame[2] = msg->id;
-    memcpy(&frame[3], msg, len);
+    if (factoryId != NULL) {
+        frame[1] = 'E';
+        memcpy(&frame[3], factoryId, NODE_FACTORY_ID_LEN);
+        memcpy(&frame[3 + NODE_FACTORY_ID_LEN], msg, len);
+        hdr = (uint8_t)(3 + NODE_FACTORY_ID_LEN);
+    } else {
+        frame[1] = 'D';
+        memcpy(&frame[3], msg, len);
+        hdr = 3;
+    }
     txSeq++;
-    frame[len + 3] = txSeq;
-    frame[len + 4] = calcChecksum(&frame[2], len + 2);
-    uint8_t expectedCRC = frame[len + 4];
+    frame[hdr + len]     = txSeq;
+    frame[hdr + len + 1] = calcChecksum(&frame[2], (uint8_t)(hdr + len - 1));
+    uint8_t expectedCRC  = frame[hdr + len + 1];
+    uint8_t pktLen       = (uint8_t)(hdr + len + 2);
 
-    bool acked = false;
+    if (nackCmd != NULL) { *nackCmd = 0u; }
+
+    /* A reply ends the retry loop, whether ACK or NACK (both mean the gateway heard us).
+     * NACK carries a pending CMD_* in byte [3] (§14) - hand it to the caller. */
+    bool gotReply = false;
     int retry;
-    for (retry = 0; retry <= MAX_RETRIES && !acked; retry++) {
+    for (retry = 0; retry <= MAX_RETRIES && !gotReply; retry++) {
         RF_cmdPropTx.pPkt   = frame;
-        RF_cmdPropTx.pktLen = len + 5;
-        /* Blocks through TX and the chained RX (ACK) window. */
+        RF_cmdPropTx.pktLen = pktLen;
+        /* Blocks through TX and the chained RX (ACK/NACK) window. */
         RF_runCmd(rfHandle, (RF_Op *)&RF_cmdPropTx, RF_PriorityNormal, NULL, 0);
 
         currentDataEntry = RFQueue_getDataEntry();
         while (currentDataEntry->status == DATA_ENTRY_FINISHED) {
             uint8_t  plen  = *(uint8_t *)(&currentDataEntry->data);
             uint8_t *pdata = (uint8_t *)(&currentDataEntry->data) + 1;
-            /* ACK: [our addr]['A'][dest we used][expectedCRC] */
-            if (plen >= 4 && pdata[0] == msg->id && pdata[1] == 'A' &&
-                pdata[2] == destAddr && pdata[3] == expectedCRC) {
-                acked = true;
+            /* Reply to our uplink: [our addr][tag][dest we used][crc-or-cmd] */
+            if (plen >= 4 && pdata[0] == msg->id && pdata[2] == destAddr) {
+                if (pdata[1] == RF_REPLY_ACK && pdata[3] == expectedCRC) {
+                    gotReply = true;                            /* normal ACK */
+                } else if (pdata[1] == RF_REPLY_NACK) {
+                    if (nackCmd != NULL) { *nackCmd = pdata[3]; }  /* NACK carries a pending CMD_* */
+                    gotReply = true;
+                }
             }
             RFQueue_nextEntry();
             currentDataEntry = RFQueue_getDataEntry();
@@ -106,7 +128,7 @@ bool radio_send_message(const MessageStruct *msg, uint8_t destAddr)
     }
 
     RF_close(rfHandle);
-    return acked;
+    return gotReply;
 }
 
 /* Listen for the gateway's JOIN_ACCEPT (arrives after the user approves on the phone,

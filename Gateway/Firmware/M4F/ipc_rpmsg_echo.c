@@ -89,14 +89,19 @@ static void installCustomHardFaultHandler(void)
 /* RPMessage object - musi być global */
 static RPMessage_Object gRecvMsgObject;
 
-/* Bufor dla wiadomości otrzymanej od Linuxa - wypełniany w callback */
+/* RX ring for messages from Linux (filled in the callback, drained by the COMMS task).
+ * Replaces the old single buffer that DROPPED a message whenever a second arrived before
+ * the loop serviced the first - which happened for any Go burst (e.g. a telemetry ACK
+ * immediately followed by an ARM_PENDING, causing the ~1s ARM retry). SPSC: the callback
+ * (RPMsg thread) owns gRxHead, the COMMS task owns gRxTail; volatile + single-core Cortex-M
+ * (in-order) makes it lock-free. */
+#define RX_RING_SLOTS  4u
 static volatile struct {
     char     data[MAX_MSG_SIZE];
     uint16_t dataLen;
-    uint16_t remoteCoreId;
-    uint16_t remoteEndPt;
-    volatile uint8_t  pending;  /* 1 = nowa wiadomość, 0 = pusty */
-} gRxBuffer;
+} gRxRing[RX_RING_SLOTS];
+static volatile uint8_t gRxHead = 0;   /* callback writes here, then advances */
+static volatile uint8_t gRxTail = 0;   /* COMMS task reads here, then advances */
 
 /* Bufor dla tick counter */
 static uint32_t gTickCount = 0;
@@ -174,24 +179,22 @@ static void linuxMsgCallback(RPMessage_Object *obj, void *arg,
                               void *data, uint16_t dataLen,
                               uint16_t remoteCoreId, uint16_t remoteEndPt)
 {
-    /* Ignoruj jeśli poprzednia wiadomość nieobsłużona (lub zaimplementuj queue) */
-    if (gRxBuffer.pending) {
-        DebugP_log("[M4F] WARNING: dropped message, previous still pending\r\n");
+    (void)remoteCoreId;
+    uint8_t next = (uint8_t)((gRxHead + 1u) % RX_RING_SLOTS);
+    if (next == gRxTail) {   /* ring full - drop (should not happen: 4 slots, ~1ms drain) */
+        DebugP_log("[M4F] WARNING: RX ring full, dropped message\r\n");
         return;
     }
-    
+
     if (dataLen > MAX_MSG_SIZE - 1) {
         dataLen = MAX_MSG_SIZE - 1;
     }
-    
-    memcpy((void *)gRxBuffer.data, data, dataLen);
-    gRxBuffer.data[dataLen] = 0;  /* null terminator */
-    gRxBuffer.dataLen = dataLen;
-    gRxBuffer.remoteCoreId = remoteCoreId;
-    gRxBuffer.remoteEndPt = remoteEndPt;
 
-    /* Atomic ustawienie flagi - signal dla main loop */
-    gRxBuffer.pending = 1;
+    memcpy((void *)gRxRing[gRxHead].data, data, dataLen);
+    gRxRing[gRxHead].data[dataLen] = 0;  /* null terminator */
+    gRxRing[gRxHead].dataLen = dataLen;
+
+    gRxHead = next;   /* publish the slot AFTER it is fully written */
 
     /* Aktualizuj endpoint Linuxa przy każdej wiadomości - obsługuje restart Linux service */
     gLinuxEndpoint = remoteEndPt;
@@ -470,6 +473,16 @@ static void nodeTxSink(const NodeFrame *frame)
     }
 }
 
+/* Control TX sink (COMMS task context): relay a pending-table arm/disarm to the
+ * CC1310 over SPI (§14). Non-blocking; the SPI task owns the bus. */
+static void ctrlTxSink(const PendingCtrl *ctrl)
+{
+    if (!spi_master_post_ctrl(ctrl)) {
+        DebugP_log("[M4F] -> ctrl: SPI ctrl queue full (op=%u cmd=%u)\r\n",
+                    (unsigned)ctrl->op, (unsigned)ctrl->cmd);
+    }
+}
+
 /* ENGINE task: data rules are event-driven (node-data queue); time rules run on
  * a wall-clock minute tick aligned to :00. The queue receive timeout is sized to
  * the next minute boundary, so an intervening node event does not shift the tick
@@ -567,7 +580,7 @@ static void processEventRetries(void)
     }
 }
 
-static void handleLinuxMessage(void)
+static void handleLinuxMessage(const char *rxData, uint16_t rxLen)
 {
     uint8_t msg_type;
     uint16_t msg_seq;
@@ -576,15 +589,14 @@ static void handleLinuxMessage(void)
 
     /* Decode binary protocol message */
     int rc = protocol_decode(
-        (const uint8_t *)gRxBuffer.data,
-        gRxBuffer.dataLen,
+        (const uint8_t *)rxData,
+        rxLen,
         &msg_type, &msg_seq,
         &msg_payload, &msg_payload_len);
 
     if (rc != 0) {
         DebugP_log("[M4F] Protocol decode failed: rc=%d (raw %u bytes)\r\n",
-                    rc, (unsigned)gRxBuffer.dataLen);
-        gRxBuffer.pending = 0;
+                    rc, (unsigned)rxLen);
         return;
     }
 
@@ -694,6 +706,7 @@ static void handleLinuxMessage(void)
         case MSG_RULE_ITEM:
         case MSG_RULE_COMMIT:
         case MSG_NODE_CMD:
+        case MSG_ARM_PENDING:
         case MSG_TIME_SYNC: {
             /* gen2 control messages -> engine glue (handles ACK/ERROR). */
             engine_rpmsg_dispatch(msg_type, msg_seq, msg_payload, msg_payload_len);
@@ -747,8 +760,7 @@ static void handleLinuxMessage(void)
                         (unsigned)msg_type, (unsigned)msg_seq);
             break;
     }
-
-    gRxBuffer.pending = 0;
+    /* Slot consumption is the COMMS loop advancing gRxTail - nothing to clear here. */
 }
 
 static void doPeriodicTick(void)
@@ -927,8 +939,9 @@ void ipc_rpmsg_echo_main(void *args)
 
     DebugP_log("[M4F] Application starting...\r\n");
     
-    /* Inicjalizacja bufora */
-    gRxBuffer.pending = 0;
+    /* Inicjalizacja RX ringu */
+    gRxHead = 0;
+    gRxTail = 0;
     
     /* Czekaj aż Linux się zinicjalizuje */
     DebugP_log("[M4F] Waiting for Linux ready...\r\n");
@@ -964,7 +977,7 @@ void ipc_rpmsg_echo_main(void *args)
     /* Automation engine: init core + RPMsg glue. Active ruleset starts empty;
      * Linux pushes it via RULE_BEGIN..COMMIT after HELLO. */
     engine_init(engineActionSink, NULL, engineClockUsec);
-    engine_rpmsg_init(sendReliable, sendReply, nodeTxSink);
+    engine_rpmsg_init(sendReliable, sendReply, nodeTxSink, ctrlTxSink);
 
     /* Cross-task queues (lock-free): engine->comms outbox, SPI->engine node-in. */
     gOutboxQueue = xQueueCreateStatic(OUTBOX_DEPTH, sizeof(outbox_item_t),
@@ -996,10 +1009,12 @@ void ipc_rpmsg_echo_main(void *args)
     while (!gbShutdown) {
         gCommsLive++;   /* liveness beat for the monitor task (silent-hang diagnosis) */
 
-        /* 1. RX from Linux (callback set the pending flag) */
+        /* 1. RX from Linux - drain ALL queued messages (ring), not just one, so a Go
+         * burst (e.g. telemetry-ACK + ARM_PENDING) is fully serviced this iteration. */
         gCommsStage = 1u;
-        if (gRxBuffer.pending) {
-            handleLinuxMessage();
+        while (gRxTail != gRxHead) {
+            handleLinuxMessage((const char *)gRxRing[gRxTail].data, gRxRing[gRxTail].dataLen);
+            gRxTail = (uint8_t)((gRxTail + 1u) % RX_RING_SLOTS);
         }
 
         /* 2. Engine outbox -> Linux reports + node delivery */

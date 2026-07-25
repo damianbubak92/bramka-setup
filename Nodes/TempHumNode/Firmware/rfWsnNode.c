@@ -214,7 +214,7 @@ static bool provision_join(const uint8_t *factoryId, uint8_t *addrOut)
      * JOIN wasn't RF-ACKed (the gateway may have received it but the ACK back was lost),
      * to maximise the chance of catching the accept. If none arrives, sleep; the user
      * presses JOIN again to retry. */
-    bool acked = radio_send_message(&msg, ADDR_GATEWAY);
+    bool acked = radio_send_message(&msg, ADDR_GATEWAY, NULL, NULL);  /* JOIN = legacy 'D' */
     dbg_uart("[node] JOIN sent -> gw 0x%02x acked=%d - %us window, approve on the phone...\r\n",
              ADDR_GATEWAY, acked, NODE_JOIN_WINDOW_S);
 
@@ -236,8 +236,10 @@ static bool provision_join(const uint8_t *factoryId, uint8_t *addrOut)
  * opens I2C, reads T/RH (+ battery every Nth), closes everything, sends telemetry, then
  * deep-sleeps NODE_SLEEP_S. All peripherals are released before the sleep so the CC1310
  * enters STANDBY (~1 uA) between cycles. The sleep is a Semaphore_pend, so a JOIN button
- * press wakes it EARLY (GPIO wake) and (re-)provisions on the spot. Never returns. */
-static void stream_telemetry(uint8_t addr, const uint8_t *factoryId)
+ * press wakes it EARLY (GPIO wake) and (re-)provisions on the spot.
+ * Returns true if the gateway UNREGISTERED us (§14: a NACK on the telemetry ACK window) -
+ * NVS is wiped and the caller drops back to the unprovisioned shelf; otherwise never returns. */
+static bool stream_telemetry(uint8_t addr, const uint8_t *factoryId)
 {
     uint16_t sBattMv  = 0;
     uint8_t  sBattCtr = 0;
@@ -272,11 +274,31 @@ static void stream_telemetry(uint8_t addr, const uint8_t *factoryId)
         tm.payload.thData.humidity    = h;
         tm.payload.thData.batt_mv     = sBattMv;
         tm.length = (uint8_t)(4 + sizeof(tm.payload.thData));
-        bool tacked = okth ? radio_send_message(&tm, ADDR_GATEWAY) : false;
+        /* 'E' frame (factory_id) so the gateway can key its §14 pending-command table.
+         * The gateway may reply with a NACK carrying a command instead of an ACK. */
+        uint8_t nackCmd = 0;
+        bool tacked = okth ? radio_send_message(&tm, ADDR_GATEWAY, factoryId, &nackCmd) : false;
 
         dbg_uart("[node] addr=0x%02x  T=%d.%02d C  H=%d.%02d %%  batt=%u mV chg=%d  sht=%d acked=%d  -> sleep %us (or JOIN)\r\n",
                  addr, (int)t, (int)((t - (int)t) * 100),
                  (int)h, (int)((h - (int)h) * 100), sBattMv, charging, okth, tacked, NODE_SLEEP_S);
+
+        /* §14: gateway piggybacked UNREGISTERED/REMOVE on the ACK window = "clear your
+         * identity, go silent". Obey: echo a best-effort confirm (cmd == delivered cmd, so
+         * the CC1310 recognises it and drops the entry), wipe NVS, return -> caller re-enters
+         * the unprovisioned shelf. Idempotent: if the confirm is lost we're silent anyway. */
+        if (nackCmd == CMD_UNREGISTERED || nackCmd == CMD_REMOVE) {
+            MessageStruct cf;
+            memset(&cf, 0, sizeof(cf));
+            cf.id     = addr;
+            cf.type   = NODE_TH_SENSOR;
+            cf.cmd    = nackCmd;                  /* echo the delivered command = the confirm */
+            cf.length = 4u;                       /* header only */
+            (void)radio_send_message(&cf, ADDR_GATEWAY, factoryId, NULL);
+            (void)nvs_save_address(ADDR_UNPROVISIONED);   /* out of pool -> loads as unprovisioned */
+            dbg_uart("[node] UNREGISTERED by gateway (cmd %u) - NVS cleared, going to shelf\r\n", nackCmd);
+            return true;
+        }
 
         /* --- deep sleep: STANDBY (~1 uA) until the next cycle (RTC) OR a JOIN press
          * (GPIO wake posts joinSem). On a press, (re-)provision: an accept switches to the
@@ -346,7 +368,7 @@ static void read_and_send(void)
         msg.payload.thData.acc_uah     = g_okAcc ? g_acc_uah : 0;      /* cumulative used uAh */
         msg.length = 4 + sizeof(msg.payload.thData);
 
-        g_acked = radio_send_message(&msg, ADDR_GATEWAY);
+        g_acked = radio_send_message(&msg, ADDR_GATEWAY, NULL, NULL);  /* legacy bench path ('D') */
         System_printf("[node] RF -> gateway 0x%02x: acked=%d\n", ADDR_GATEWAY, g_acked);
         System_flush();
     }
@@ -448,6 +470,9 @@ static void nodeTaskFunction(UArg a0, UArg a1)
         joinSem = Semaphore_handle(&joinSemStruct);
         setup_join_button();
 
+        /* Outer loop: after the gateway UNREGISTERS us (§14), stream_telemetry wipes NVS
+         * and returns -> we re-read NVS (now unprovisioned) and drop back to the shelf. */
+        for (;;) {
         uint8_t savedAddr = nvs_load_address();
         if (savedAddr == ADDR_UNPROVISIONED) {
             /* Shelf state: sleep in STANDBY until JOIN is pressed, then provision. */
@@ -468,7 +493,8 @@ static void nodeTaskFunction(UArg a0, UArg a1)
                      " (press JOIN to re-provision)\r\n", savedAddr);
         }
 
-        stream_telemetry(savedAddr, factoryId);    /* never returns; handles re-JOIN on button */
+        (void)stream_telemetry(savedAddr, factoryId);  /* returns only on UNREGISTERED -> re-enter shelf */
+        }  /* outer for(;;) */
     }
 #endif
 

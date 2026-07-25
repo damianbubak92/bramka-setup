@@ -14,8 +14,15 @@
 #include "node_protocol.h"
 
 /* Send one MessageStruct to destAddr (gateway = ADDR_GATEWAY 0x00). msg->id must
- * hold our node (source) address. Returns true if the gateway ACKed. */
-bool radio_send_message(const MessageStruct *msg, uint8_t destAddr);
+ * hold our node (source) address.
+ *   factoryId: our 8-byte FCFG id -> frame tag 'E' (carries it, so the gateway can
+ *              key its §14 pending-command table). NULL -> legacy 'D' frame (JOIN).
+ *   nackCmd:   out. If the gateway replies with a NACK instead of an ACK, *nackCmd
+ *              gets the delivered CMD_* (e.g. CMD_UNREGISTERED); 0 on a normal ACK.
+ *              Pass NULL if you don't handle NACKs.
+ * Returns true if the gateway replied (ACK or NACK), false if no reply after retries. */
+bool radio_send_message(const MessageStruct *msg, uint8_t destAddr,
+                        const uint8_t *factoryId, uint8_t *nackCmd);
 
 /* After sending a JOIN_REQUEST, listen up to timeoutMs for the gateway's
  * JOIN_ACCEPT for THIS chip (an 'E' downlink to dest 0xFF carrying our factory_id).

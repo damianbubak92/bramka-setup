@@ -62,6 +62,7 @@
 #define SPI_ARM_TIMEOUT_MS       500u    /* max wait for slave to arm (scenario A); > slave hold */
 #define SPI_MAX_RETRIES          3
 #define SPI_OUT_DEPTH            8u
+#define SPI_CTRL_DEPTH           4u      /* pending-table arm/disarm control frames (§14); rare */
 #define SPI_TASK_STACK_WORDS     1024u   /* [DIAG] confirmed ~290 words used (730 free at 1024); M4F_DRAM is nearly full so no bump. */
 #define SPI_TASK_PRIORITY        2u
 
@@ -81,6 +82,10 @@ static QueueHandle_t  gNodeInQueue;            /* engine input (we produce), Nod
 static uint8_t        gSpiOutStorage[SPI_OUT_DEPTH * sizeof(NodeFrame)];
 static StaticQueue_t  gSpiOutQueueObj;
 static QueueHandle_t  gSpiOutQueue;            /* node commands (we consume), NodeFrame */
+
+static uint8_t        gSpiCtrlStorage[SPI_CTRL_DEPTH * sizeof(PendingCtrl)];
+static StaticQueue_t  gSpiCtrlQueueObj;
+static QueueHandle_t  gSpiCtrlQueue;           /* pending-table control (we consume), PendingCtrl (§14) */
 
 static StackType_t    gSpiStack[SPI_TASK_STACK_WORDS];
 static StaticTask_t   gSpiTaskObj;
@@ -149,6 +154,20 @@ static void frame_make_node_cmd(SpiFrame *f, const NodeFrame *nf,
     }
     f->len = len;
     memcpy(f->payload, nf, len);   /* factory_id + MessageStruct */
+    frame_finalize(f);
+}
+
+/* Control frame -> CC1310: arm/disarm the pending-command table (§14). Carries a
+ * PendingCtrl (op, cmd, factory_id); the M4F does not interpret it. */
+static void frame_make_ctrl(SpiFrame *f, const PendingCtrl *pc,
+                            uint8_t seq, uint8_t pending)
+{
+    memset(f, 0, sizeof(*f));
+    f->type    = SPI_FRAME_CTRL;
+    f->seq     = seq;
+    f->pending = pending;
+    f->len     = (uint8_t)sizeof(PendingCtrl);
+    memcpy(f->payload, pc, sizeof(PendingCtrl));
     frame_finalize(f);
 }
 
@@ -263,10 +282,11 @@ static bool spi_tx_clock_now(void)
  * IRQ mode: clear gSrSem, assert MR, then block on gSrSem until the falling edge
  * (the slave arming) arrives - zero CPU spent waiting. A final level re-check
  * tolerates a missed edge. POLL mode: sample the level every SPI_POLL_MS. */
-static bool spi_tx_cmd(const NodeFrame *nf, uint8_t seq, uint8_t pending)
+/* Arm the slave then clock the ALREADY-BUILT gTxFrame (full-duplex; routes RX).
+ * Shared by node-cmd and control transfers - the arm/clock choreography is identical,
+ * only the frame contents differ. */
+static bool spi_tx_current(void)
 {
-    frame_make_node_cmd(&gTxFrame, nf, seq, pending);
-
     if (gIrqActive) {
         while (SemaphoreP_pend(&gSrSem, 0u) == SystemP_SUCCESS) { }   /* drain stale */
         mr_assert();
@@ -298,6 +318,18 @@ static bool spi_tx_cmd(const NodeFrame *nf, uint8_t seq, uint8_t pending)
     }
 }
 
+static bool spi_tx_cmd(const NodeFrame *nf, uint8_t seq, uint8_t pending)
+{
+    frame_make_node_cmd(&gTxFrame, nf, seq, pending);
+    return spi_tx_current();
+}
+
+static bool spi_tx_ctrl(const PendingCtrl *pc, uint8_t seq, uint8_t pending)
+{
+    frame_make_ctrl(&gTxFrame, pc, seq, pending);
+    return spi_tx_current();
+}
+
 /* ========================================================================== */
 /*  Task                                                                       */
 /* ========================================================================== */
@@ -317,7 +349,21 @@ static void spiTask(void *args)
          * falling edge (ISR posts gSrSem), or the backstop timeout (level resample). */
         (void)SemaphoreP_pend(&gSrSem, pdMS_TO_TICKS(waitMs));
 
-        /* 1) Master-initiated: drain outbound commands. */
+        /* 1) Master-initiated: drain outbound CONTROL commands first (§14 pending-table
+         *    arm/disarm), so a disarm Go ordered ahead of a JOIN_ACCEPT reaches the
+         *    CC1310 before the node command. */
+        {
+            PendingCtrl pc;
+            while (xQueueReceive(gSpiCtrlQueue, &pc, 0) == pdTRUE) {
+                uint8_t pending = (uint8_t)uxQueueMessagesWaiting(gSpiCtrlQueue);
+                if (!spi_tx_ctrl(&pc, gTxSeq++, pending)) {
+                    DebugP_log("[SPI] ctrl send GIVEUP (op=%u cmd=%u)\r\n",
+                                (unsigned)pc.op, (unsigned)pc.cmd);
+                }
+            }
+        }
+
+        /* 2) Master-initiated: drain outbound node commands. */
         while (xQueueReceive(gSpiOutQueue, &cmd, 0) == pdTRUE) {
             uint8_t pending = (uint8_t)uxQueueMessagesWaiting(gSpiOutQueue);
             if (!spi_tx_cmd(&cmd, gTxSeq++, pending)) {
@@ -326,7 +372,7 @@ static void spiTask(void *args)
             }
         }
 
-        /* 2) Slave-initiated: SLAVE_READY pulled low without us asserting. */
+        /* 3) Slave-initiated: SLAVE_READY pulled low without us asserting. */
         if (sr_is_low()) {
             spi_rx_from_slave();
         }
@@ -494,6 +540,18 @@ bool spi_master_post_cmd(const NodeFrame *frame)
     return true;
 }
 
+bool spi_master_post_ctrl(const PendingCtrl *ctrl)
+{
+    if (ctrl == NULL || gSpiCtrlQueue == NULL) {
+        return false;
+    }
+    if (xQueueSend(gSpiCtrlQueue, ctrl, 0) != pdTRUE) {
+        return false;
+    }
+    SemaphoreP_post(&gSrSem);   /* wake the SPI task to drain the queue */
+    return true;
+}
+
 void spi_master_shutdown(uint32_t timeoutMs)
 {
     uint32_t waited = 0u;
@@ -525,6 +583,10 @@ void spi_master_init(QueueHandle_t nodeInQueue)
     gSpiOutQueue = xQueueCreateStatic(SPI_OUT_DEPTH, sizeof(NodeFrame),
                                       gSpiOutStorage, &gSpiOutQueueObj);
     DebugP_assert(gSpiOutQueue != NULL);
+
+    gSpiCtrlQueue = xQueueCreateStatic(SPI_CTRL_DEPTH, sizeof(PendingCtrl),
+                                       gSpiCtrlStorage, &gSpiCtrlQueueObj);
+    DebugP_assert(gSpiCtrlQueue != NULL);
     (void)SemaphoreP_constructBinary(&gXferDoneSem, 0);
     (void)SemaphoreP_constructBinary(&gSrSem, 0);
 

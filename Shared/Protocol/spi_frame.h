@@ -31,6 +31,7 @@
 #define SPI_FRAME_NODE_DATA    0x01u  /* CC1310 -> M4F: a node reading (MessageStruct) */
 #define SPI_FRAME_NODE_CMD     0x02u  /* M4F -> CC1310: a command for a node (MessageStruct) */
 #define SPI_FRAME_ACK          0x03u  /* acknowledgement of seq */
+#define SPI_FRAME_CTRL         0x04u  /* M4F -> CC1310: manage the pending-command table (payload = PendingCtrl, node_protocol.h §14) */
 
 /* 128-byte on-wire frame. All fields are byte-granular so the struct is exactly
  * 128 bytes with no padding on either toolchain. Do NOT add wider fields. */

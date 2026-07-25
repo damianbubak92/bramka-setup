@@ -12,6 +12,7 @@
 #include <ti/drivers/GPIO.h>
 #include <ti/sysbios/BIOS.h>
 #include <ti/sysbios/knl/Clock.h>
+#include <ti/sysbios/hal/Hwi.h>
 #include <ti/devices/DeviceFamily.h>
 #include DeviceFamily_constructPath(driverlib/rf_prop_mailbox.h)
 
@@ -158,6 +159,57 @@ static bool acked = false;
 
 char rxMsg[MAX_MSG_SIZE];
 char txMsg[MAX_MSG_SIZE];
+
+/* ===== §14 pending-command table: {factory_id -> cmd} to deliver to a chip in a
+ * NACK on its next uplink. Written by the SPI task (SPI_FRAME_CTRL arm/disarm from
+ * Go/M4F) and by this radio task (disarm on the node's confirm); read here on every
+ * ACK. Guarded with Hwi_disable/restore (ops are a few bytes, ~us). Volatile RAM -
+ * Go's registry re-arms reactively after a reset, so it needn't survive a reboot. */
+#define PENDING_MAX  8u
+static struct { uint8_t fid[8]; uint8_t cmd; bool used; } gPending[PENDING_MAX];
+
+static int pending_find_locked(const uint8_t *fid) {
+    int i;
+    for (i = 0; i < (int)PENDING_MAX; i++) {
+        if (gPending[i].used && memcmp(gPending[i].fid, fid, 8) == 0) return i;
+    }
+    return -1;
+}
+
+/* Return the pending cmd for a chip, or 0 (no CMD_* is 0 on the wire: CMD_* start at
+ * CMD_SEND_DATA_TO_DB=0, but that is never armed; armed cmds are REMOVE=6/UNREGISTERED=7). */
+static uint8_t pending_lookup(const uint8_t *fid) {
+    UInt key = Hwi_disable();
+    int i = pending_find_locked(fid);
+    uint8_t cmd = (i >= 0) ? gPending[i].cmd : 0u;
+    Hwi_restore(key);
+    return cmd;
+}
+
+/* Arm/replace {fid -> cmd}. Called from the SPI task (SPI_FRAME_CTRL). Table full ->
+ * drop (rare; the reactive path re-arms on the next uplink). */
+void pending_arm(const uint8_t *fid, uint8_t cmd) {
+    UInt key = Hwi_disable();
+    int i = pending_find_locked(fid);
+    if (i < 0) {
+        for (i = 0; i < (int)PENDING_MAX; i++) { if (!gPending[i].used) break; }
+    }
+    if (i < (int)PENDING_MAX) {
+        memcpy(gPending[i].fid, fid, 8);
+        gPending[i].cmd  = cmd;
+        gPending[i].used = true;
+    }
+    Hwi_restore(key);
+}
+
+/* Disarm a chip. Called from the SPI task (SPI_FRAME_CTRL disarm) and from this task
+ * on the node's confirm. */
+void pending_disarm(const uint8_t *fid) {
+    UInt key = Hwi_disable();
+    int i = pending_find_locked(fid);
+    if (i >= 0) gPending[i].used = false;
+    Hwi_restore(key);
+}
 
 uint8_t calcChecksum(const char* msg, size_t len) {
     uint8_t crc = 0;
@@ -366,10 +418,34 @@ static void radioTaskFunction(UArg arg0, UArg arg1)
                         {
                           if (addressedToUs)
                           {
+                            /* §14: default reply = ACK (echo the frame CRC). If this chip
+                             * has a pending command (only 'E' frames carry a factory_id),
+                             * deliver it in a NACK instead - unless THIS uplink is the node's
+                             * confirm (msg.cmd == pending), in which case clear it and ACK. */
+                            uint8_t replyTag = 'A';
+                            uint8_t replyB3  = rxMsg[packetLength-1];
+                            if (rxMsg[1] == 'E' && packetLength >= 14)
+                            {
+                                const uint8_t *fid = (const uint8_t *)&rxMsg[3];   /* factory_id @ off 3 */
+                                uint8_t pend = pending_lookup(fid);
+                                if (pend != 0)
+                                {
+                                    uint8_t msgCmd = (uint8_t)rxMsg[13];           /* MessageStruct.cmd (off 11+2) */
+                                    if (msgCmd == pend)
+                                    {
+                                        pending_disarm(fid);                       /* confirm -> clear, then ACK */
+                                    }
+                                    else
+                                    {
+                                        replyTag = 'N';                            /* deliver the command in a NACK */
+                                        replyB3  = pend;
+                                    }
+                                }
+                            }
                             txMsg[0] = rxMsg[2];
-                            txMsg[1] = 'A';
+                            txMsg[1] = replyTag;
                             txMsg[2] = rxMsg[0];
-                            txMsg[3] = rxMsg[packetLength-1];
+                            txMsg[3] = replyB3;
                             txMsg[4] = '\0';
                             RF_cmdPropTx.pktLen = 4;    //Mo�na u�y� strlen(txMsg) ale tak jest szybciej
                             RF_cmdPropTx.pPkt = (uint8_t*)txMsg;

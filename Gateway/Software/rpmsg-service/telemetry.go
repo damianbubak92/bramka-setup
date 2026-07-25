@@ -137,6 +137,15 @@ func NodeMsgId(payload []byte) (id uint8, ok bool) {
 	return uint8(m.id), true
 }
 
+// NodeMsgFactory returns the NodeFrame envelope's factory_id (the chip an uplink
+// concerns). Zero for a legacy 'D' frame (no factory_id) - the caller must treat
+// all-zero as "unknown" and not arm/validate against it. Used by the drain to
+// arm/disarm the CC1310 pending-command table (NODE-MANAGEMENT.md §14).
+func NodeMsgFactory(payload []byte) (factoryID [8]byte, ok bool) {
+	factoryID, _, ok = splitNodeFrame(payload)
+	return factoryID, ok
+}
+
 // DecodeJoinRequest extracts a joining node's factory id + type from a
 // CMD_JOIN_REQUEST MessageStruct (id is ADDR_UNPROVISIONED on the wire). The
 // factory id is read from the joinData payload (carried there since the node has no

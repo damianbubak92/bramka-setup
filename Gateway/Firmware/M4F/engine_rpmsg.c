@@ -9,14 +9,17 @@
 static RpmsgEventTxFn g_tx_event = NULL;
 static RpmsgReplyFn   g_reply    = NULL;
 static NodeTxFn       g_tx_node  = NULL;
+static CtrlTxFn       g_tx_ctrl  = NULL;
 
 void engine_rpmsg_init(RpmsgEventTxFn tx_event,
                        RpmsgReplyFn   reply,
-                       NodeTxFn       tx_node)
+                       NodeTxFn       tx_node,
+                       CtrlTxFn       tx_ctrl)
 {
     g_tx_event = tx_event;
     g_reply    = reply;
     g_tx_node  = tx_node;
+    g_tx_ctrl  = tx_ctrl;
 }
 
 static void ackIf(uint16_t seq)
@@ -114,6 +117,19 @@ bool engine_rpmsg_dispatch(uint8_t msg_type, uint16_t seq,
             if (payload_len < 2u) { sendError(seq); return true; }
             uint8_t sec = (payload_len >= 3u) ? payload[2] : 0u;
             engine_set_time(payload[0], payload[1], sec);
+            ackIf(seq);
+            return true;
+        }
+
+        case MSG_ARM_PENDING: {
+            /* payload: PendingCtrl - arm/disarm the CC1310's pending-command table
+             * (§14). The M4F does not interpret it: relay it verbatim to the CC1310. */
+            if (payload_len != (uint16_t)sizeof(PendingCtrl)) { sendError(seq); return true; }
+            if (g_tx_ctrl != NULL) {
+                PendingCtrl pc;
+                memcpy(&pc, payload, sizeof(pc));
+                g_tx_ctrl(&pc);
+            }
             ackIf(seq);
             return true;
         }

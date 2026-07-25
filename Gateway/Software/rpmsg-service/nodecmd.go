@@ -79,6 +79,16 @@ static void frame_wrap(NodeFrame *f, const uint8_t *factory_id, const MessageStr
     if (factory_id != NULL) memcpy(f->factory_id, factory_id, NODE_FACTORY_ID_LEN);
     f->msg = *m;
 }
+
+// Build a PendingCtrl (NODE-MANAGEMENT.md §14): arm/disarm the CC1310's
+// {factory_id -> cmd} table. Goes to the M4F as MSG_ARM_PENDING, relayed to the
+// CC1310 as SPI_FRAME_CTRL. The C compiler owns the 10-byte layout.
+static void msg_make_pending_ctrl(PendingCtrl *pc, uint8_t op, uint8_t cmd, const uint8_t *factory_id) {
+    memset(pc, 0, sizeof(*pc));
+    pc->op  = op;
+    pc->cmd = cmd;
+    if (factory_id != NULL) memcpy(pc->factory_id, factory_id, NODE_FACTORY_ID_LEN);
+}
 */
 import "C"
 
@@ -103,7 +113,15 @@ func init() {
 		abiOK = false
 		log.Printf("[nodecmd] ABI MISMATCH NodeFrame: C header=%d, expected=52 - node cmd DISABLED", got)
 	}
+	if got := int(unsafe.Sizeof(C.PendingCtrl{})); got != 10 {
+		abiOK = false
+		log.Printf("[nodecmd] ABI MISMATCH PendingCtrl: C header=%d, expected=10 - arm-pending DISABLED", got)
+	}
 }
+
+// MsgArmPending mirrors protocol.h MSG_ARM_PENDING (Linux -> M4F: manage the
+// CC1310 pending-command table). Plain Go const for the non-cgo drain.
+const MsgArmPending = 0x35
 
 // nodeFrameBytes wraps a MessageStruct in the NodeFrame envelope with the target
 // factory_id (nil => all-zero => a legacy 'D' node) and returns the 52-byte wire
@@ -214,4 +232,36 @@ func (p *Protocol) SendUnregister(factoryID [8]byte, nodeType, nodeAddr uint8) e
 	var m C.MessageStruct
 	C.msg_make_unregister(&m, C.uint8_t(nodeType), C.uint8_t(nodeAddr))
 	return p.sendReliableTyped(MsgNodeCmd, nodeFrameBytes(&factoryID, &m))
+}
+
+// pendingCtrlBytes builds the 10-byte PendingCtrl wire image MSG_ARM_PENDING carries.
+func pendingCtrlBytes(op, cmd uint8, factoryID [8]byte) []byte {
+	var pc C.PendingCtrl
+	C.msg_make_pending_ctrl(&pc, C.uint8_t(op), C.uint8_t(cmd),
+		(*C.uint8_t)(unsafe.Pointer(&factoryID[0])))
+	return C.GoBytes(unsafe.Pointer(&pc), C.int(unsafe.Sizeof(pc)))
+}
+
+// SendArmPending arms/disarms the CC1310's pending-command table for a chip
+// (NODE-MANAGEMENT.md §14). Reliable to the M4F, which relays it to the CC1310 as
+// SPI_FRAME_CTRL. Failure is non-fatal for callers: the reactive path re-arms on the
+// node's next unbound uplink, so treat an error as "will be retried".
+func (p *Protocol) SendArmPending(op, cmd uint8, factoryID [8]byte) error {
+	if !abiOK {
+		return fmt.Errorf("arm-pending disabled: PendingCtrl ABI mismatch (see startup log)")
+	}
+	return p.sendReliableTyped(MsgArmPending, pendingCtrlBytes(op, cmd, factoryID))
+}
+
+// ArmUnregister queues CMD_UNREGISTERED for a chip: the CC1310 delivers it in the
+// NACK to that chip's NEXT uplink -> the node clears its stored address and goes
+// silent. Used on removal (proactive) and on any unbound uplink (reactive).
+func (p *Protocol) ArmUnregister(factoryID [8]byte) error {
+	return p.SendArmPending(uint8(C.CTRL_OP_ARM), uint8(C.CMD_UNREGISTERED), factoryID)
+}
+
+// DisarmPending clears any pending command for a chip. Called when the chip is
+// (re)provisioned (so a restored own chip isn't NACKed) and on its unregister confirm.
+func (p *Protocol) DisarmPending(factoryID [8]byte) error {
+	return p.SendArmPending(uint8(C.CTRL_OP_DISARM), 0, factoryID)
 }

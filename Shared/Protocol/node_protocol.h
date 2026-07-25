@@ -75,6 +75,18 @@
 #define RF_FRAME_TAG_V2      'E'
 
 /* ========================================================================= *
+ * RF REPLY TAG (byte [1] of the 4-byte reply the gateway sends to a node uplink).
+ * The node listens for this reply in its post-TX ACK window (radio.c). Normally
+ * an ACK; when the CC1310 has a pending command for that chip it replies with a
+ * NACK carrying the CMD_* instead (delivered in the SAME window - no extra node
+ * RX). See Docs/NODE-MANAGEMENT.md §14.
+ *   ACK : [node_src]['A'][gw 0x00][echoed_crc]  - normal acknowledgement
+ *   NACK: [node_src]['N'][gw 0x00][cmd]         - deliver a pending CMD_* (e.g. CMD_UNREGISTERED)
+ * ========================================================================= */
+#define RF_REPLY_ACK   'A'
+#define RF_REPLY_NACK  'N'
+
+/* ========================================================================= *
  * MessageStruct - one node<->gateway message.
  * Layout MUST stay identical to gen1 (CC1310 interop). `int` -> `int32_t` only.
  * ========================================================================= */
@@ -154,6 +166,29 @@ typedef struct {
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 _Static_assert(sizeof(NodeFrame) == 52, "NodeFrame must be 52 bytes (8 + 44)");
+#endif
+
+/* ========================================================================= *
+ * PendingCtrl - control-plane command that manages the CC1310's pending-command
+ * table (Docs/NODE-MANAGEMENT.md §14). Go -> M4F over RPMsg (MSG_ARM_PENDING),
+ * then M4F -> CC1310 over SPI (SPI_FRAME_CTRL). The CC1310 keeps a small table
+ * {factory_id -> cmd} and delivers `cmd` in a NACK to that chip's next uplink.
+ * Keyed by factory_id (the chip), never by the reusable address.
+ *   ARM   : add/replace {factory_id -> cmd}
+ *   DISARM: remove factory_id (on (re)provision of that chip, or on confirm)
+ * Byte-granular -> identical 10-byte layout on M4F (ARM32), A53 (AArch64), CC1310.
+ * ========================================================================= */
+#define CTRL_OP_ARM     1u
+#define CTRL_OP_DISARM  2u
+
+typedef struct {
+    uint8_t op;                               /* CTRL_OP_* */
+    uint8_t cmd;                              /* CMD_* to deliver in the NACK (ARM); 0 on DISARM */
+    uint8_t factory_id[NODE_FACTORY_ID_LEN];  /* [2..9] the chip this concerns */
+} PendingCtrl;
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+_Static_assert(sizeof(PendingCtrl) == 10, "PendingCtrl must be 10 bytes (1 + 1 + 8)");
 #endif
 
 /* ========================================================================= *

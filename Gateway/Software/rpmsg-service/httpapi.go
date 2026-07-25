@@ -371,6 +371,10 @@ func handleApproveJoin(p *Protocol, store *Store, joins *joinRegistry, hub *WSHu
 		return
 	}
 
+	// §14: clear any pending UNREGISTERED for this chip BEFORE the accept, so a
+	// restored own chip (armed when it was removed) isn't NACKed once it reports under
+	// the assigned address. Ordered ahead of the accept in the M4F->CC1310 pipe.
+	_ = p.DisarmPending(fid)
 	if err := p.SendJoinAccept(fid, pj.NodeType, addr); err != nil {
 		// Provisioned in the DB but the accept didn't reach the M4F: report so the
 		// user retries (the node keeps sending JOIN; re-approve reuses the address).
@@ -429,6 +433,7 @@ func handleReplaceNode(p *Protocol, store *Store, joins *joinRegistry, hub *WSHu
 		log.Printf("[HTTP] replacenode: %v", err)
 		return
 	}
+	_ = p.DisarmPending(fid) // §14: don't NACK a restored own chip (see handleApproveJoin)
 	if err := p.SendJoinAccept(fid, pj.NodeType, target); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		io.WriteString(w, "re-pointed, accept push failed\n")
@@ -478,6 +483,7 @@ func handleRepairNode(p *Protocol, store *Store, joins *joinRegistry, hub *WSHub
 		log.Printf("[HTTP] repairnode: %v", err)
 		return
 	}
+	_ = p.DisarmPending(fid) // §14: don't NACK a restored own chip (see handleApproveJoin)
 	if err := p.SendJoinAccept(fid, pj.NodeType, addr); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		io.WriteString(w, "re-paired, accept push failed\n")
@@ -583,10 +589,18 @@ func handleRemoveNode(p *Protocol, store *Store, hub *WSHub, req string, w http.
 		return
 	}
 
-	// Best-effort: tell an online node to erase its identity and go silent now.
+	// §14 removal, two prongs (both fire now; the M4F RX ring means neither is dropped):
+	//  1. Direct UNREGISTERED to the node's address - reaches an ALWAYS-ON node that is
+	//     listening right now, so it clears its identity + confirms on the spot.
+	//  2. Arm the pending-command table - catches a SLEEPING/battery node on its next
+	//     uplink (NACK), and is the durable backbone: the reactive path (main.go) re-arms
+	//     even if this push is lost (gateway reboot). The node's confirm disarms both.
 	if fid, fok := factoryHexToBytes(factory); fok {
-		if err := p.SendRemove(fid, nodeType, addr); err != nil {
-			log.Printf("[HTTP] removenode 0x%02X: notify push failed (offline?): %v", addr, err)
+		if err := p.SendUnregister(fid, nodeType, addr); err != nil {
+			log.Printf("[HTTP] removenode 0x%02X: direct UNREGISTERED push failed (offline?): %v", addr, err)
+		}
+		if err := p.ArmUnregister(fid); err != nil {
+			log.Printf("[HTTP] removenode 0x%02X: arm UNREGISTERED failed (reactive path will retry): %v", addr, err)
 		}
 	}
 	// Immediate hard-delete: frees the address and drops local history; the mirror

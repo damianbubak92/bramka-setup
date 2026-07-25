@@ -30,11 +30,17 @@ typedef void (*RpmsgReplyFn)(uint8_t msg_type, uint16_t seq);
  * sends a legacy 'D' frame (no identity), otherwise a v2 'E' frame. */
 typedef void (*NodeTxFn)(const NodeFrame *frame);
 
+/* Deliver a control command to the CC1310 (over SPI): arm/disarm its pending-
+ * command table (§14). The CC1310 keeps {factory_id -> cmd} and delivers cmd in a
+ * NACK to that chip's next uplink. The M4F just relays it. */
+typedef void (*CtrlTxFn)(const PendingCtrl *ctrl);
+
 void engine_rpmsg_init(RpmsgEventTxFn tx_event,
                        RpmsgReplyFn   reply,
-                       NodeTxFn       tx_node);
+                       NodeTxFn       tx_node,
+                       CtrlTxFn       tx_ctrl);
 
-/* Handle a gen2 control message (0x30..0x34). Returns true if consumed.
+/* Handle a gen2 control message (0x30..0x35). Returns true if consumed.
  * Replies MSG_ACK (echoing seq) on success, or MSG_ERROR (echoing seq) on
  * rejection so Linux can correlate immediately and resync. Call from the
  * RPMsg dispatch switch. */

@@ -74,6 +74,7 @@
 #define MSG_RULE_COMMIT    0x32u  /* payload: u16 expectedCount (BE) + u32 crc32 (BE) - atomic swap */
 #define MSG_NODE_CMD       0x33u  /* payload: MessageStruct - command from phone, relayed to node */
 #define MSG_TIME_SYNC      0x34u  /* payload: u8 hour, u8 minute, [u8 second] - set engine wall-clock (COND_TIME + :00 tick) */
+#define MSG_ARM_PENDING    0x35u  /* payload: PendingCtrl - arm/disarm the CC1310 pending-command table; M4F relays it to CC1310 as SPI_FRAME_CTRL (NODE-MANAGEMENT.md §14) */
 
 /* M4F -> Linux (telemetry / state) */
 #define MSG_NODE_TELEMETRY 0x40u  /* payload: MessageStruct - raw node reading -> cloud/DB */

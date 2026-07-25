@@ -87,6 +87,11 @@ extern mqd_t        radioQueue;
 extern Event_Handle radioEventHandle;
 #define EVENT_SEND_PACKET   (1 << 0)          /* radio_task's "send to node" bit */
 
+/* §14 pending-command table lives in radio_task.c (read on ACK, delivered in a NACK);
+ * we WRITE it here from SPI_FRAME_CTRL frames sent by Go/M4F. */
+extern void pending_arm(const uint8_t *fid, uint8_t cmd);
+extern void pending_disarm(const uint8_t *fid);
+
 /* We own these; radio_task.c externs them. */
 mqd_t        spiQueue;
 Event_Handle spiMasterEventHandle;
@@ -182,6 +187,23 @@ static void route_rx_frame(void)
                 job.frame.message.type, job.frame.message.cmd);
         } else if (display) {
             Display_printf(display, 0, 0, "[SPI Slave] radioQueue full - cmd dropped");
+        }
+    }
+    else if (rxFrame.type == SPI_FRAME_CTRL) {
+        /* §14: arm/disarm the pending-command table. Payload = PendingCtrl:
+         * op(1) cmd(1) factory_id(8). op 1 = ARM, 2 = DISARM. */
+        if (rxFrame.len >= 10) {
+            uint8_t        op  = rxFrame.payload[0];
+            uint8_t        cmd = rxFrame.payload[1];
+            const uint8_t *fid = &rxFrame.payload[2];
+            if (op == 1u) {                       /* CTRL_OP_ARM */
+                pending_arm(fid, cmd);
+                if (display) Display_printf(display, 0, 0,
+                    "[SPI Slave] pending ARM -> cmd %d", cmd);
+            } else if (op == 2u) {                /* CTRL_OP_DISARM */
+                pending_disarm(fid);
+                if (display) Display_printf(display, 0, 0, "[SPI Slave] pending DISARM");
+            }
         }
     }
     /* FRAME_NOP / FRAME_ACK: nothing to forward. */

@@ -16,6 +16,10 @@ import (
 const (
 	CmdJoinRequest uint8 = 4
 	CmdRemove      uint8 = 6
+	// CmdUnregistered is the node's confirm that it cleared its identity after a
+	// pending UNREGISTERED was delivered in a NACK (NODE-MANAGEMENT.md §14): drop the
+	// arm. Distinct from CmdRemove (the older direct remove-confirm).
+	CmdUnregistered uint8 = 7
 )
 
 // pendingJoin is a node that pressed JOIN and awaits user approval. JSON tags

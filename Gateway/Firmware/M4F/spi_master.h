@@ -29,6 +29,12 @@ void spi_master_init(QueueHandle_t nodeInQueue);
  * queue is full. Called from the comms task (nodeTxSink). */
 bool spi_master_post_cmd(const NodeFrame *frame);
 
+/* Queue a control command to the CC1310 (SPI_FRAME_CTRL): arm/disarm the pending-
+ * command table (§14 - deliver CMD_* to a node in a NACK on its next uplink). The
+ * PendingCtrl is copied. Non-blocking; false if the control queue is full. Called
+ * from the comms task (ctrlTxSink). */
+bool spi_master_post_ctrl(const PendingCtrl *ctrl);
+
 /* Minimum free stack (words) the SPI task ever had - 0 if not started. A value
  * trending toward 0 is an overflow risk (diagnostic for the intermittent hang). */
 uint32_t spi_master_stack_hwm(void);
