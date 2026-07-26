@@ -346,7 +346,13 @@ przy JOIN, istniejące nody mają `capabilities=0` → są **źródłem warunkó
   ale „Kolizja" leci często (gen1 w paśmie + błędy bitowe + niedostrojona antena). Przy okazji: przejrzeć retry/ACK,
   filtrację RX, obsługę sniffu gen1. [[rev2-th-node-bringup]]
 - **Warstwa C (DMSC reset)** — „prawdopodobnie tak, później" (M4F trzyma żywe sterowanie → crash Linuxa nie może go
-  zabić na ~70s). OTA (RAUC A/B). Health monitoring (eMMC wear → wpina się w `bramka-reboots`/alarm). Carrier board.
+  zabić na ~70s). OTA = zaprojektowane (`Docs/OTA-DESIGN.md`). Health monitoring (eMMC wear → wpina się w `bramka-reboots`/alarm). Carrier board.
+- **⚡ Szybki reset SAMEGO M4F bez reboota Linuxa (optymalizacja, pomysł usera 2026-07-27)** — dziś recovery martwego
+  M4F = **pełny reboot SoC** (~30-40s), bo `m4f-reload` (remoteproc stop) na ZAWIESZONYM M4F wiesza SoC ([[no-per-core-m4f-reset-am62]]),
+  a per-core reset M4F na AM62 „nie działa". PYTANIE do analizy: czy da się zresetować M4F w POJEDYNCZE sekundy bez
+  ruszania Linuxa — przez **DMSC/TISCI processor-boot** (`Sciclient_procBoot*`, warm reset domeny MCU M4FSS z A53) albo
+  inną sekwencją. `SOC_generateSwWarmResetMcuDomain` (hardfault handler) resetuje domenę MCU — sprawdzić czy na AM62 to
+  TYLKO M4F czy cały SoC. **Nie pilne — nic nie blokuje, czysta optymalizacja czasu recovery** (dziś ~30-40s to OK).
 - **Zewnętrzny hosting** (backup/relay) — architektura ustalona: bramka pushuje, kaskada
   **LAN → port-forward (dziś) / relay na VPS (docelowo) → mirror MySQL tylko gdy bramka nieosiągalna**; 3 pakiety
   (economy/standard/premium). Apka ma już abstrakcję (`SmartHomeRepository` + `GatewayClient`).
@@ -452,6 +458,26 @@ $EDITOR /etc/bramka/boot-accounting.conf  # próg/okno/wyłączenie alarmu
 ## Session Log (NEWEST FIRST)
 
 > Format: data — co zrobione, ważne decyzje, lessons learned
+
+### 2026-07-27 — OTA: PEŁNY design spisany (`Docs/OTA-DESIGN.md`) — nody + bramka, do wdrożenia gdy flota urośnie
+- **Cały mechanizm OTA zaprojektowany i udokumentowany** (`Docs/OTA-DESIGN.md`) — długa dyskusja, decyzje na każdym
+  poziomie. **NIEzaimplementowane** — wdrożyć gdy będą grupy nodów tego samego typu (broadcast się opłaca). Skróty:
+  - **Nody:** migracja na **CC1312R** (352 KB flash → mieści A/B; HW AES/ECC/SHA/TRNG → secure OAD w sprzęcie; cap-sense
+    + Sensor Controller pod LightSwitch; ten sam package/layout co CC1310, tańszy). On-chip **A/B + BIM**. Obraz
+    **AES-CCM zaszyfrowany + ECDSA podpisany**; klucze: **root per-device `KDF(master,factory_id)` + klucz grupowy
+    per-update owinięty per-device** (wzorzec LoRaWAN FUOTA). **Broadcast bez ACK + poll bitmap braków + retransmit unii**
+    (flota N nodów ≈ 1,2-1,5× airtime jednego). **Debug-lock CCFG** (CPU_DAP+TAP+bootloader off) obowiązkowy. Transport:
+    **SPI 128→256 B** (1:1 z RF 255 B, M4F czysty relay), **OAD na paśmie 869.4-869.65 (10% duty)** bo 868.x (1%) za
+    ciasne. Cykl **try/verify/swap/confirm/rollback per-node**, commit dyrygowany bramką.
+  - **Bramka:** cała = **JEDNA jednostka RAUC** (rootfs+Go+M4F+gateway-CC1312) po HTTPS, **atomowy cutover jednym
+    rebootem** + spójny rollback. **M4F z filesystemu** (odrzucono OSPI A/B — przerost formy; reboot ~30-40 s OK).
+    **Gateway-CC1312 = BIM + JEDEN slot** (bez A/B — bo po drucie, M4F go doflashuje z golden-image w rootfs; RAUC A/B =
+    jego rollback). HW: M4F GPIO → CC nRESET+boot-pin (carrier board).
+  - Decyzje usera: whole-image RAUC, M4F-independence niepotrzebna, R7 zbędny (R1 wystarcza), klucz per-device +
+    grupowy per-update, broadcast. [[nack-downlink-pending-commands]] [[near-term-roadmap]]
+- **👉 NASTĘPNIE: projekt LightSwitch** (CC1312) — user chce na produkcję za kilka dni. Krytyczne decyzje blokujące
+  schemat: **przewód neutralny N w puszce czy no-neutral** (#1, wywraca zasilanie), przełączanie 230 V (przekaźnik
+  latching vs triak/SSR — LED/indukcyjne/trzask), PSU AC→3,3 V, cap-sense (strefy/gang/szkło), obudowa. Zacząć od N.
 
 ### 2026-07-26 — §14 downlink przez NACK ZAIMPLEMENTOWANY + ZWERYFIKOWANY E2E ✅ + fix M4F single-RX-buffer (ring)
 - **Cały §14 (5 warstw) działa E2E na realnym HW** — pełny cykl `re-JOIN→active→remove→NACK→confirm→disarm→
