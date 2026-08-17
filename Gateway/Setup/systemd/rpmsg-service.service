@@ -65,7 +65,22 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
 ProtectHome=true
-PrivateTmp=true
+# PrivateTmp: DELIBERATELY OFF. It needs /var/tmp (-> /var/volatile/tmp on Arago)
+# to exist at namespace-setup time, but /var/volatile is a tmpfs and the OS
+# volatile/tmpfiles ordering intermittently leaves /var/volatile/tmp missing after
+# a boot -> systemd fails the whole unit with "spawn start-pre: Not a directory"
+# (ENOTDIR). That took the entire gateway offline for 3 days (2026-08-17). The
+# isolation gain on a single-service non-root appliance is marginal; reliability
+# wins. Do NOT re-enable without a guaranteed /var/volatile/tmp (e.g. a oneshot
+# ordered After=var-volatile.mount Before=this unit).
+# PrivateTmp=true
+# /run/bramka is on tmpfs and was ALSO intermittently missing after a boot (same
+# Yocto volatile/tmpfiles fragility) -> ReadWritePaths=/run/bramka would ENOTDIR
+# the unit too. RuntimeDirectory= makes systemd create it as part of THIS unit's
+# start (immune to tmpfiles ordering); Preserve=yes keeps it across restarts so the
+# bramka-reboot.path (watching /run/bramka/reboot-request) is unaffected.
+RuntimeDirectory=bramka
+RuntimeDirectoryPreserve=yes
 ReadWritePaths=/var/lib/bramka /run/bramka
 ProtectKernelTunables=true
 ProtectKernelModules=true
