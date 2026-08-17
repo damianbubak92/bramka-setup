@@ -128,10 +128,10 @@ func main() {
 	go func() {
 		<-p.PeerDeadCh()
 		log.Printf("[Main] *** PEER DEAD - M4F unreachable (heartbeat giveup or device gone) ***")
-		log.Printf("[Main] Recovery: clean reboot (remoteproc stop is unsafe on a hung M4F)")
-		sdNotify("STOPPING=1")
-		recoverByReboot()
-		select {} // reboot in progress - block until the system goes down
+		// Recovery is a clean reboot (remoteproc stop is unsafe on a hung M4F), but
+		// GATED by the circuit-breaker: a few free reboots, then throttle into a
+		// degraded mode instead of a futile reboot storm. See breaker.go.
+		handlePeerDead(p)
 	}()
 
 	// Wait for signal
@@ -909,6 +909,10 @@ func runServe(p *Protocol, cfg HTTPConfig, dbPath, tz string, backupCfg BackupCo
 		return
 	}
 	log.Println("[Serve] Connected.")
+
+	// Clear the reboot-breaker storm counter once the M4F proves stable (stays
+	// connected bkStabilityT). Serve-mode only; never triggers a reboot. See breaker.go.
+	go watchM4FStability(p)
 
 	// Engine wall-clock: the M4F has no RTC, so seed it from system time (NTP on
 	// Linux) and re-sync periodically to correct drift. Production carrier adds an

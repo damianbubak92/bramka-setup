@@ -56,8 +56,9 @@ type pendingAck struct {
 // Protocol implements the binary protocol state machine.
 type Protocol struct {
 	transport *Transport
-	state     ProtocolState
-	stateMu   sync.Mutex
+	state       ProtocolState
+	stateMu     sync.Mutex
+	connectedAt time.Time // set when state -> CONNECTED; read by the reboot breaker
 
     // === DEBUG: drop first N ACKs (for retry testing) ===
     debugDropAcks atomic.Int32
@@ -155,10 +156,22 @@ func (p *Protocol) setState(s ProtocolState) {
 	p.stateMu.Lock()
 	old := p.state
 	p.state = s
+	if s == StateConnected && old != StateConnected {
+		p.connectedAt = time.Now() // stamp M4F connect for the breaker's stability check
+	}
 	p.stateMu.Unlock()
 	if old != s {
 		log.Printf("[Protocol] State: %s -> %s", old, s)
 	}
+}
+
+// ConnectedAt returns when the M4F last transitioned to CONNECTED, or the zero
+// time if it has not connected this run. The reboot breaker uses it to tell a
+// fresh incident (M4F was stable, then died) from a storm (rapid re-death).
+func (p *Protocol) ConnectedAt() time.Time {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	return p.connectedAt
 }
 
 // Hello sends HELLO and waits for HELLO_ACK (with timeout).
