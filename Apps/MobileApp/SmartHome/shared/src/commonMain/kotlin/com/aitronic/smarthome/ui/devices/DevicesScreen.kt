@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -73,6 +74,8 @@ fun DevicesRoot(
 ) {
     val scope = rememberCoroutineScope()
     val gw = store?.state?.collectAsState()?.value
+    // Offline (dane z kopii z mirrora) = tylko podgląd: brak parowania/usuwania/edycji/przywracania.
+    val canWrite = gw?.canWrite ?: false
     val typeNames = remember { repo.deviceTypes().associate { it.id to it.name } }
 
     val devices: List<Device> = if (gw == null) remember { repo.devices() } else {
@@ -166,13 +169,18 @@ fun DevicesRoot(
         if (showTrash) {
             TrashScreen(
                 items = gw?.trash ?: emptyList(), nowS = nowS,
+                canWrite = canWrite,
                 onBack = { showTrash = false },
-                onRestore = { t -> scope.launch { store?.restoreNode(t.id) } },
+                onRestore = { t ->
+                    if (canWrite) scope.launch { store?.restoreNode(t.id) }
+                    else notice = Notice("Tryb podglądu", "Dane z kopii — przywracanie z kosza jest dostępne dopiero, gdy bramka wróci online.")
+                },
             )
         } else if (editing == null) {
             DevList(
                 devices = devices, rooms = allRooms, typeNames = typeNames, filter = filter,
                 onFilter = { filter = it },
+                canWrite = canWrite,
                 pending = gw?.joins?.size ?: 0,
                 onJoin = {
                     // Prawdziwy JOIN: node zgłasza się sam (bramka wypycha join_pending po WS).
@@ -181,10 +189,14 @@ fun DevicesRoot(
                 },
                 onTrash = { scope.launch { store?.loadTrash() }; showTrash = true },
                 onOpen = { d ->
-                    // Detached (bez adresu) — edycja po adresie byłaby no-opem. Zamiast edytora:
-                    // instrukcja sparowania + możliwość USUNIĘCIA po node_id (żeby nie zostawały
-                    // nieusuwalne trupy, gdy ktoś nigdy nie wciśnie JOIN).
-                    if (d.needsPairing) {
+                    if (!canWrite) {
+                        // Tryb podglądu (dane z kopii): pokaż tylko informacje, bez edytora.
+                        val room = if (d.room == NO_ROOM) "bez pokoju" else d.room
+                        notice = Notice(d.name, "${typeNames[d.type] ?: d.type} · $room\n\nEdycja urządzeń jest dostępna, gdy bramka jest online. Teraz oglądasz dane z kopii.")
+                    } else if (d.needsPairing) {
+                        // Detached (bez adresu) — edycja po adresie byłaby no-opem. Zamiast edytora:
+                        // instrukcja sparowania + możliwość USUNIĘCIA po node_id (żeby nie zostawały
+                        // nieusuwalne trupy, gdy ktoś nigdy nie wciśnie JOIN).
                         confirm = ConfirmReq(
                             "Wymaga sparowania",
                             "„${d.name}\" czeka na sparowanie — wciśnij JOIN na urządzeniu, aby dokończyć. Jeśli już go nie potrzebujesz, usuń je (trafi do kosza).",
@@ -323,7 +335,7 @@ fun DevicesRoot(
 @Composable
 private fun DevList(
     devices: List<Device>, rooms: List<String>, typeNames: Map<String, String>, filter: String,
-    pending: Int,
+    pending: Int, canWrite: Boolean = true,
     onFilter: (String) -> Unit, onJoin: () -> Unit, onTrash: () -> Unit, onOpen: (Device) -> Unit,
 ) {
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars).verticalScroll(rememberScrollState())) {
@@ -339,17 +351,20 @@ private fun DevList(
             Text("${devices.size} urządzeń · $onlineCount online", color = Sh.textMuted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
             // JOIN jest realny: node zgłasza się sam po wciśnięciu przycisku, a bramka
             // wypycha zdarzenie po WS. Tu pokazujemy oczekujących + ręczne odświeżenie.
-            Row(
-                Modifier.padding(top = 12.dp).clip(RoundedCornerShape(14.dp)).border(1.5.dp, Sh.dashed, RoundedCornerShape(14.dp))
-                    .clickable(noRipple(), null) { onJoin() }.padding(horizontal = 14.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(ShIcons.JoinRing, null, tint = Sh.textPrimary, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (pending > 0) "Oczekujące na dodanie: $pending" else "Wciśnij JOIN na urządzeniu, aby je dodać",
-                    color = Sh.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.W500,
-                )
+            // Offline (dane z kopii) — parowanie niedostępne, więc przycisk znika.
+            if (canWrite) {
+                Row(
+                    Modifier.padding(top = 12.dp).clip(RoundedCornerShape(14.dp)).border(1.5.dp, Sh.dashed, RoundedCornerShape(14.dp))
+                        .clickable(noRipple(), null) { onJoin() }.padding(horizontal = 14.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(ShIcons.JoinRing, null, tint = Sh.textPrimary, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (pending > 0) "Oczekujące na dodanie: $pending" else "Wciśnij JOIN na urządzeniu, aby je dodać",
+                        color = Sh.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.W500,
+                    )
+                }
             }
         }
 
@@ -598,7 +613,7 @@ private fun JoinDialog(
  */
 @Composable
 private fun TrashScreen(
-    items: List<com.aitronic.smarthome.data.net.TrashNodeDto>, nowS: Long,
+    items: List<com.aitronic.smarthome.data.net.TrashNodeDto>, nowS: Long, canWrite: Boolean = true,
     onBack: () -> Unit, onRestore: (com.aitronic.smarthome.data.net.TrashNodeDto) -> Unit,
 ) {
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
@@ -641,9 +656,12 @@ private fun TrashScreen(
                                 color = Sh.textMuted, fontSize = 12.sp,
                             )
                         }
+                        // „Przywróć" tylko na żywej bramce — offline (dane z kopii) kosz jest podglądowy.
                         Box(
-                            Modifier.clip(RoundedCornerShape(12.dp)).border(1.5.dp, Sh.fieldBorder, RoundedCornerShape(12.dp))
-                                .clickable(noRipple(), null) { onRestore(t) }.padding(horizontal = 14.dp, vertical = 8.dp),
+                            Modifier.clip(RoundedCornerShape(12.dp))
+                                .border(1.5.dp, Sh.fieldBorder, RoundedCornerShape(12.dp))
+                                .then(if (canWrite) Modifier.clickable(noRipple(), null) { onRestore(t) } else Modifier.alpha(0.4f))
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
                         ) { Text("Przywróć", color = Sh.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.W500) }
                     }
                 }

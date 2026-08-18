@@ -7,9 +7,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,11 +27,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.aitronic.smarthome.data.GatewayState
 import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.SampleRepository
 import kotlinx.coroutines.flow.collect
 import com.aitronic.smarthome.data.SmartHomeRepository
 import com.aitronic.smarthome.ui.auto.AutomationsRoot
+import com.aitronic.smarthome.ui.common.liveRelativeTimeLabel
 import com.aitronic.smarthome.ui.climate.ClimateScreen
 import com.aitronic.smarthome.ui.climate.ClimateSelection
 import com.aitronic.smarthome.ui.dashboard.DashboardScreen
@@ -71,7 +75,11 @@ fun AppScaffold(store: GatewayStore? = null, repo: SmartHomeRepository = SampleR
         }
     }
 
+    val gwState: GatewayState? = store?.state?.collectAsState()?.value
+
     Column(Modifier.fillMaxSize().background(Sh.bg)) {
+        // Globalny status połączenia: zielono online / czerwono offline + „dane z kopii: <last seen>".
+        if (gwState != null) ConnectionStatusBar(gwState)
         Box(Modifier.weight(1f)) {
             when (detail) {
                 Detail.Climate -> ClimateScreen(repo, store, climateSel) { detail = Detail.None }
@@ -138,6 +146,48 @@ private fun BottomNav(current: Tab, onSelect: (Tab) -> Unit) {
                 Text(t.label, color = labelColor, fontSize = 11.sp, fontWeight = FontWeight.W500)
             }
         }
+    }
+}
+
+/**
+ * Globalny status połączenia (u góry, na każdym ekranie). Zielono „Połączono na żywo"
+ * gdy bramka online (LAN/remote); czerwono „Offline — dane z kopii: <N min temu / data>"
+ * gdy dane z read-only mirrora; czerwono „Brak połączenia" gdy w ogóle brak danych.
+ * `last seen` = ostatni kontakt bramki z kopią (X-Gateway-Last-Push), tyka na żywo.
+ */
+@Composable
+private fun ConnectionStatusBar(state: GatewayState) {
+    val seen: String? = if (state.readOnly && state.lastPushAt != null)
+        liveRelativeTimeLabel(state.lastPushAt) else null
+    val connecting = !state.wsSettled          // przed werdyktem WS
+    val live = state.online && !state.readOnly // Lan/Remote (bramka na żywo)
+    val dot = when {
+        connecting -> Sh.textMuted
+        live       -> Sh.online
+        else       -> Sh.dangerAlt
+    }
+    val text = when {
+        connecting     -> "Łączenie…"
+        live           -> "Na żywo"
+        state.readOnly -> "Dane z kopii" + (seen?.let { " · $it" } ?: "")
+        else           -> "Brak połączenia"
+    }
+    // Bez tła (przezroczysty, na kolorze ekranu) — subtelny status, nie szary slab.
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(horizontal = 16.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(7.dp).clip(CircleShape).background(dot))
+        Spacer(Modifier.width(7.dp))
+        Text(
+            text,
+            color = if (live || connecting) Sh.textMuted else dot,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.W600,
+        )
     }
 }
 

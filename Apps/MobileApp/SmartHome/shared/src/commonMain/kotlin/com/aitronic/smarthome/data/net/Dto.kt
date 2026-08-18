@@ -134,11 +134,15 @@ data class RestoreResultDto(
     val status: String = "",
 )
 
-/** Zdarzenia z kanału WS (wshub.go: join_pending / telemetry / node_status). */
+/** Zdarzenia z kanału WS (wshub.go: join_pending / telemetry / node_status) + stan linku. */
 sealed interface GatewayEvent {
     data class JoinPending(val factory: String, val nodeType: Int) : GatewayEvent
     data class Telemetry(val address: Int, val nodeType: Int, val params: Map<String, Double>, val ts: Long) : GatewayEvent
     data class NodeStatus(val address: Int, val status: String) : GatewayEvent
+    /** Kanał WS połączył się z bramką (żywy link) — do proaktywnego statusu online. */
+    data object WsConnected : GatewayEvent
+    /** Kanał WS zerwany / nie łączy — bramka prawdopodobnie offline (przełącz na kopię). */
+    data object WsDisconnected : GatewayEvent
 }
 
 /** Typy nodów (Shared/Protocol/node_protocol.h). */

@@ -18,11 +18,17 @@ expect fun formatLocalHm(epochSeconds: Long): String
  *  - > 60 min          → konkretna godzina i data, np. "12:45 24-07-2026"
  * Brak stempla (ts<=0) → null (UI nie pokazuje wiersza).
  */
-fun lastUpdateLabel(tsSeconds: Long, nowSeconds: Long = nowEpochSeconds()): String? {
+fun lastUpdateLabel(tsSeconds: Long, nowSeconds: Long = nowEpochSeconds()): String? =
+    relativeTimeLabel(tsSeconds, nowSeconds)?.let { "Ostatnia aktualizacja: $it" }
+
+/**
+ * Bare „kiedy" bez prefiksu — dla statusu połączenia („Offline — dane z kopii: <to>"):
+ *  teraz / N min temu / "HH:mm dd-MM-yyyy". null gdy brak stempla (ts<=0).
+ */
+fun relativeTimeLabel(tsSeconds: Long, nowSeconds: Long = nowEpochSeconds()): String? {
     if (tsSeconds <= 0L) return null
     val diff = nowSeconds - tsSeconds
-    val prefix = "Ostatnia aktualizacja: "
-    return prefix + when {
+    return when {
         diff < 60L    -> "teraz"
         diff <= 3600L -> "${diff / 60L} min temu"
         else          -> formatLocalDateTime(tsSeconds)

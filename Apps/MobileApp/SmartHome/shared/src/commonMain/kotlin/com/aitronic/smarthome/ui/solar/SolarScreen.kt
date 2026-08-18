@@ -162,8 +162,8 @@ fun SolarScreen(repo: SmartHomeRepository, store: GatewayStore? = null, sel: Sol
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(if (auxOn) "ON" else "OFF", color = Color.White.copy(alpha = 0.9f), fontSize = 14.sp, fontWeight = FontWeight.W600)
                             Spacer(Modifier.width(8.dp))
-                            if (pumpReadOnly) {
-                                // gen1 — bez sterowania, tylko kłódka (podgląd stanu).
+                            if (pumpReadOnly || gw?.canWrite != true) {
+                                // gen1 LUB offline (dane z kopii) — bez sterowania, kłódka = tylko podgląd.
                                 Icon(ShIcons.Lock, "tylko podgląd", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(15.dp))
                             } else {
                                 PumpToggle(auxOn, enabled = pending == null) {

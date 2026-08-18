@@ -76,6 +76,7 @@ fun AutomationsRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
     val scope = rememberCoroutineScope()
     val gwState = store?.state?.collectAsState()?.value
     val online = gwState?.online ?: false
+    val canEdit = gwState?.canWrite ?: false // edycja/add/delete reguł tylko na żywej bramce
 
     // Węzły z bramki (lub przykładowe offline). Live -> edytor od razu widzi nowe nody.
     val nodes: List<AutoNode> = remember(gwState?.nodes) {
@@ -119,7 +120,7 @@ fun AutomationsRoot(repo: SmartHomeRepository, store: GatewayStore? = null) {
     Box(Modifier.fillMaxSize().background(Sh.bg)) {
         if (editing == null) {
             AutoList(
-                rules = rules, lookup = lookup, online = online,
+                rules = rules, lookup = lookup, online = online, canEdit = canEdit,
                 onToggleOnline = { scope.launch { store?.refresh() } },
                 onToggleRule = { id -> rules.replaceRule(id) { it.copy(enabled = !it.enabled) }; push("Zsynchronizowano z bramką") },
                 onNew = { editing = newDraft() },
@@ -190,6 +191,7 @@ private fun AutoList(
     rules: List<Rule>,
     lookup: NodeLookup,
     online: Boolean,
+    canEdit: Boolean,
     onToggleOnline: () -> Unit,
     onToggleRule: (Long) -> Unit,
     onNew: () -> Unit,
@@ -224,27 +226,29 @@ private fun AutoList(
                 )
             } else {
                 Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 110.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    rules.forEach { r -> RuleCard(r, lookup, { onToggleRule(r.id) }, { onEdit(r) }, { onDelete(r) }) }
+                    rules.forEach { r -> RuleCard(r, lookup, canEdit, { onToggleRule(r.id) }, { onEdit(r) }, { onDelete(r) }) }
                 }
             }
         }
 
-        // FAB
-        Row(
-            Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 24.dp)
-                .clip(RoundedCornerShape(20.dp)).background(Sh.graphiteBtn)
-                .clickable(noRipple(), null) { onNew() }.padding(horizontal = 20.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(ShIcons.Plus, null, tint = Color.White, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.width(10.dp))
-            Text("Nowa", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.W500)
+        // FAB — tylko gdy można pisać (offline/kopia: brak „Nowa").
+        if (canEdit) {
+            Row(
+                Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 24.dp)
+                    .clip(RoundedCornerShape(20.dp)).background(Sh.graphiteBtn)
+                    .clickable(noRipple(), null) { onNew() }.padding(horizontal = 20.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(ShIcons.Plus, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(10.dp))
+                Text("Nowa", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.W500)
+            }
         }
     }
 }
 
 @Composable
-private fun RuleCard(r: Rule, lookup: NodeLookup, onToggle: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun RuleCard(r: Rule, lookup: NodeLookup, canEdit: Boolean, onToggle: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
     val on = r.enabled
     val unavailable = lookup.ruleHasUnavailable(r.conditions, r.action)
     // Wygląd „martwy" gdy reguła się NIE wykonuje: wyłączona LUB wskazuje niedostępny węzeł.
@@ -264,7 +268,7 @@ private fun RuleCard(r: Rule, lookup: NodeLookup, onToggle: () -> Unit, onEdit: 
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(r.name, color = Sh.textPrimary, fontSize = 16.sp, fontWeight = FontWeight.W500, modifier = Modifier.weight(1f))
-                    RuleToggle(on, onToggle)
+                    RuleToggle(on, canEdit, onToggle)
                 }
                 // JEŚLI
                 FlowPills(prefix = "JEŚLI") {
@@ -296,11 +300,14 @@ private fun RuleCard(r: Rule, lookup: NodeLookup, onToggle: () -> Unit, onEdit: 
                 }
             }
         }
-        Box(Modifier.fillMaxWidth().padding(top = 14.dp).height(1.dp).background(Sh.hairline))
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
-            TextAction(ShIcons.Pencil, "Edytuj", Sh.textSecondary, onEdit)
-            Spacer(Modifier.width(6.dp))
-            TextAction(ShIcons.Trash, "Usuń", Sh.dangerAlt, onDelete)
+        // Edytuj/Usuń tylko na żywej bramce — offline (dane z kopii) tylko podgląd.
+        if (canEdit) {
+            Box(Modifier.fillMaxWidth().padding(top = 14.dp).height(1.dp).background(Sh.hairline))
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
+                TextAction(ShIcons.Pencil, "Edytuj", Sh.textSecondary, onEdit)
+                Spacer(Modifier.width(6.dp))
+                TextAction(ShIcons.Trash, "Usuń", Sh.dangerAlt, onDelete)
+            }
         }
     }
 }
@@ -347,12 +354,12 @@ private fun CondPill(text: String, deviceKey: String?, enabled: Boolean) {
 }
 
 @Composable
-private fun RuleToggle(on: Boolean, onToggle: () -> Unit) {
+private fun RuleToggle(on: Boolean, enabled: Boolean, onToggle: () -> Unit) {
     val left by animateDpAsState(if (on) 18.dp else 2.dp, tween(200), label = "k")
     val track by animateColorAsState(if (on) Sh.online else Color(0xFFD9D3C7), tween(200), label = "t")
     Box(
         Modifier.size(width = 40.dp, height = 24.dp).clip(RoundedCornerShape(12.dp)).background(track)
-            .clickable(noRipple(), null) { onToggle() },
+            .then(if (enabled) Modifier.clickable(noRipple(), null) { onToggle() } else Modifier.alpha(0.5f)),
     ) {
         Box(Modifier.padding(start = left, top = 2.dp).size(20.dp).clip(CircleShape).background(Color.White))
     }

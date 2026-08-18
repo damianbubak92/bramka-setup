@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext HTTP dozwolone TYLKO dla domeny read-only mirrora (iot.aitronic.pl nie
+  ma jeszcze SSL). Wszystko inne - w tym bramka HTTPS:9443 z pinningiem certyfikatu -
+  pozostaje domyślnie TLS-only. Gdy mirror dostanie https, zmień mirrorUrl na https://
+  w GatewayConfig i ten wpis staje się zbędny (można usunąć).
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">iot.aitronic.pl</domain>
+    </domain-config>
+</network-security-config>

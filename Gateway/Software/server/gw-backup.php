@@ -126,6 +126,14 @@ try {
                       'last_kind' => $kind ?? null]);
     exit;
 }
+// Stamp "last contact with the gateway" so gw-read.php can show the app an honest
+// offline "last seen: N min ago" label. Best-effort: the push already committed, so
+// never fail it over this. time() is the server's unix seconds.
+try {
+    $conn->query("INSERT INTO gw_config (`key`,`value`) VALUES ('last_push_at','" . time() . "')
+                  ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)");
+} catch (Throwable $e) { /* ignore - last_push_at is diagnostic only */ }
+
 $conn->close();
 echo json_encode(['ok' => true, 'applied' => $applied]);
 

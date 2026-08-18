@@ -9,6 +9,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
 
@@ -39,6 +40,11 @@ actual fun createHttpClient(pinSha256: String): HttpClient {
     val ok = OkHttpClient.Builder()
         .sslSocketFactory(ssl.socketFactory, tm)
         .hostnameVerifier { _, _ -> true } // pin jest właściwym sprawdzeniem tożsamości
+        // WS ping/pong: bez tego pad KABLA to half-open TCP i WS wisi ~minuty zanim
+        // wykryje śmierć. Ping co 5 s → brak pongu → zerwanie (WsDisconnected) w ~5-10 s.
+        .pingInterval(5, TimeUnit.SECONDS)
+        // Ogranicz próbę połączenia (WS/HTTP), by decyzja online/offline była szybka.
+        .connectTimeout(4, TimeUnit.SECONDS)
         .build()
 
     return HttpClient(OkHttp) {

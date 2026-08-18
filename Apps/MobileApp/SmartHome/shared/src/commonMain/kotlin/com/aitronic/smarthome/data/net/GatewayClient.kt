@@ -32,48 +32,105 @@ class GatewayClient(
     private val http: HttpClient = createHttpClient(cfg.certPinSha256),
 ) {
     private var lastGood: String? = null
+    // MIRROR-FIRST: startujemy z false — dopóki WS nie potwierdzi bramki, ODCZYTY idą na
+    // mirror (zawsze dostępny, dane instant przy starcie). WS łączy się z bramką →
+    // markGatewayUp() → odczyty wracają na bramkę; WS zrywa → markGatewayDown() → mirror.
+    // Gdy false, ODCZYTY (allowMirror) omijają bramkę całkowicie (zero timeoutów).
+    private var gatewayOnline = false
+
     var source: GatewaySource = GatewaySource.Offline
+        private set
+
+    /** Ostatni kontakt bramki z mirrorem (X-Gateway-Last-Push, unix s) — do banera
+     * "Offline — dane z kopii: …". Ustawiane przy odpowiedzi z mirrora. null = nieznany. */
+    var lastPushAt: Long? = null
         private set
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    /** Wysyła komendę; zwraca surową treść odpowiedzi. Rzuca [GatewayUnreachable] gdy oba base padły. */
-    suspend fun command(command: String): String {
+    /**
+     * Wysyła komendę; zwraca surową treść odpowiedzi. Rzuca [GatewayUnreachable] gdy
+     * wszystko padło. [allowMirror] = true tylko dla ODCZYTÓW: gdy bramka (LAN+remote)
+     * nieosiągalna, spada na read-only mirror (gw-read.php) i ustawia [source]=Mirror.
+     * Write-komendy zostawiają allowMirror=false → offline rzucają (UI je wyszarza).
+     */
+    suspend fun command(command: String, allowMirror: Boolean = false): String {
         val body = "command=$command&authToken=${cfg.authToken}"
-        // kolejność prób: ostatni działający → LAN → remote
-        val bases = buildList {
-            lastGood?.let { add(it) }
-            if (cfg.lanBase !in this) add(cfg.lanBase)
-            if (cfg.remoteBase !in this) add(cfg.remoteBase)
-        }
         var lastErr: Throwable? = null
-        for (base in bases) {
-            val isLan = base == cfg.lanBase
+
+        // Szybka ścieżka offline: gdy bramka jest znana jako niedostępna i to ODCZYT,
+        // pomiń próby bramki (i ich timeouty ~LAN+remote) — idź prosto na mirror. Powrót
+        // bramki wykrywa asynchronicznie WS (WsConnected → markGatewayUp), bez pollingu.
+        val skipGateway = allowMirror && cfg.mirrorUrl != null && !gatewayOnline
+
+        if (!skipGateway) {
+            // kolejność prób: ostatni działający → LAN → remote
+            val bases = buildList {
+                lastGood?.let { add(it) }
+                if (cfg.lanBase !in this) add(cfg.lanBase)
+                if (cfg.remoteBase !in this) add(cfg.remoteBase)
+            }
+            for (base in bases) {
+                val isLan = base == cfg.lanBase
+                try {
+                    val res = http.post("$base/") {
+                        contentType(ContentType.Text.Plain)
+                        setBody(body)
+                        timeout {
+                            // Offline i tak omijamy bramkę (gatewayOnline=false), więc timeout
+                            // płacimy tylko w krótkim oknie zanim WS wykryje pad — stąd remote 5 s.
+                            requestTimeoutMillis = if (isLan) LAN_TIMEOUT_MS else REMOTE_TIMEOUT_MS
+                            connectTimeoutMillis = if (isLan) LAN_TIMEOUT_MS else REMOTE_TIMEOUT_MS
+                        }
+                    }
+                    if (!res.status.isSuccess()) {
+                        lastErr = GatewayHttpError(res.status.value, res.bodyAsText())
+                        continue
+                    }
+                    gatewayOnline = true
+                    lastGood = base
+                    source = if (isLan) GatewaySource.Lan else GatewaySource.Remote
+                    return res.bodyAsText()
+                } catch (t: Throwable) {
+                    lastErr = t
+                    if (lastGood == base) lastGood = null // wymuś ponowny wybór
+                }
+            }
+            gatewayOnline = false // wszystkie base bramki padły → następne odczyty idą prosto na mirror
+        }
+
+        // Bramka nieosiągalna. Dla ODCZYTÓW spadamy na read-only mirror (gdy tier ma backup).
+        val mirror = cfg.mirrorUrl
+        if (allowMirror && mirror != null) {
             try {
-                val res = http.post("$base/") {
+                val res = http.post(mirror) { // pełny URL do gw-read.php (nie "$base/")
                     contentType(ContentType.Text.Plain)
-                    setBody(body)
+                    setBody("command=$command&authToken=${cfg.mirrorReadKey}")
                     timeout {
-                        // LAN ma być szybki: nie chcemy czekać, gdy jesteśmy poza domem
-                        requestTimeoutMillis = if (isLan) LAN_TIMEOUT_MS else REMOTE_TIMEOUT_MS
-                        connectTimeoutMillis = if (isLan) LAN_TIMEOUT_MS else REMOTE_TIMEOUT_MS
+                        requestTimeoutMillis = REMOTE_TIMEOUT_MS
+                        connectTimeoutMillis = REMOTE_TIMEOUT_MS
                     }
                 }
-                if (!res.status.isSuccess()) {
-                    lastErr = GatewayHttpError(res.status.value, res.bodyAsText())
-                    continue
+                if (res.status.isSuccess()) {
+                    res.headers["X-Gateway-Last-Push"]?.toLongOrNull()?.let { lastPushAt = it }
+                    source = GatewaySource.Mirror
+                    return res.bodyAsText()
                 }
-                lastGood = base
-                source = if (isLan) GatewaySource.Lan else GatewaySource.Remote
-                return res.bodyAsText()
+                lastErr = GatewayHttpError(res.status.value, res.bodyAsText())
             } catch (t: Throwable) {
                 lastErr = t
-                if (lastGood == base) lastGood = null // wymuś ponowny wybór
             }
         }
         source = GatewaySource.Offline
         throw GatewayUnreachable("Bramka nieosiągalna (LAN i zdalnie)", lastErr)
     }
+
+    /** WS zerwał link → od razu przełącz odczyty na szybką ścieżkę mirrora (bez czekania
+     * aż jakiś odczyt sam wykryje padniętą bramkę). */
+    fun markGatewayDown() { gatewayOnline = false }
+
+    /** WS wrócił → pozwól najbliższemu odczytowi znów spróbować bramki (źródło prawdy). */
+    fun markGatewayUp() { gatewayOnline = true }
 
     // --- Komendy wysokopoziomowe ---
 
@@ -83,24 +140,25 @@ class GatewayClient(
         return command((if (on) "PUMP_ON" else "PUMP_OFF") + a).trim().equals("OK", ignoreCase = true)
     }
 
-    suspend fun listNodes(): List<NodeInfoDto> = json.decodeFromString(command("listnodes"))
+    suspend fun listNodes(): List<NodeInfoDto> = json.decodeFromString(command("listnodes", allowMirror = true))
 
     /** Ostatnia znana telemetria wszystkich nodów (z bazy) — do zasiania stanu przy starcie. */
-    suspend fun state(): List<NodeStateDto> = json.decodeFromString(command("state"))
+    suspend fun state(): List<NodeStateDto> = json.decodeFromString(command("state", allowMirror = true))
 
     /** Wykresy uzysku solarnego. range = day|month|year|total; count = ile okresów wstecz;
      * node = node_id konkretnego solara (null → domyślny na bramce). */
     suspend fun solarHistory(range: String, count: Int = 0, node: Long? = null): List<SolarSeriesDto> {
         val c = if (count > 0) "&count=$count" else ""
         val n = node?.let { "&node=$it" } ?: ""
-        return json.decodeFromString(command("history&range=$range$c$n"))
+        return json.decodeFromString(command("history&range=$range$c$n", allowMirror = true))
     }
 
-    /** Historia klimatu (T/RH) noda z ostatnich `hours` godzin, najstarsze pierwsze. */
+    /** Historia klimatu (T/RH) noda z ostatnich `hours` godzin, najstarsze pierwsze.
+     * Offline z mirrora → [] (climate_history nie jest mirrorowane). */
     suspend fun climateHistory(node: Long, hours: Int = 24): List<ClimatePointDto> =
-        json.decodeFromString(command("climatehistory&node=$node&hours=$hours"))
+        json.decodeFromString(command("climatehistory&node=$node&hours=$hours", allowMirror = true))
 
-    suspend fun listJoins(): List<PendingJoinDto> = json.decodeFromString(command("listjoins"))
+    suspend fun listJoins(): List<PendingJoinDto> = json.decodeFromString(command("listjoins", allowMirror = true))
 
     suspend fun approveJoin(factoryHex: String, name: String): ApproveResultDto =
         json.decodeFromString(command("approvejoin&factory=$factoryHex&name=${name.urlEncode()}"))
@@ -131,14 +189,14 @@ class GatewayClient(
         json.decodeFromString(command("repairnode&factory=$factoryHex&id=$nodeId"))
 
     /** Kosz — soft-usunięte nody na mirrorze (okno retencji 60 dni). */
-    suspend fun listTrash(): List<TrashNodeDto> = json.decodeFromString(command("listtrash"))
+    suspend fun listTrash(): List<TrashNodeDto> = json.decodeFromString(command("listtrash", allowMirror = true))
 
     /** Przywróć noda z kosza → wraca lokalnie jako `detached` (czeka na sparowanie). */
     suspend fun restoreNode(id: Long): RestoreResultDto =
         json.decodeFromString(command("restorenode&id=$id"))
 
     /** Surowy JSON reguł (schemat apki) — parsowanie w warstwie wyżej. */
-    suspend fun getRulesJson(): String = command("getrules")
+    suspend fun getRulesJson(): String = command("getrules", allowMirror = true)
 
     /** rules= NIE jest url-enkodowane (serwer wycina surowy JSON do "&authToken="). */
     suspend fun setRulesJson(rulesJson: String): Boolean {
@@ -161,6 +219,7 @@ class GatewayClient(
             val base = lastGood ?: cfg.lanBase
             try {
                 http.webSocket(cfg.wsUrl(base)) {
+                    send(GatewayEvent.WsConnected) // żywy link do bramki → status online
                     for (frame in incoming) {
                         if (frame is Frame.Text) {
                             parseEvent(frame.readText())?.let { send(it) }
@@ -171,6 +230,8 @@ class GatewayClient(
                 // zerwane/niedostępne — spróbuj drugiego base przy następnej pętli
                 if (lastGood == cfg.lanBase) lastGood = cfg.remoteBase else lastGood = null
             }
+            // Link zamknięty lub błąd → sygnał „bramka down" (store przełącza na kopię).
+            send(GatewayEvent.WsDisconnected)
             delay(RECONNECT_MS)
         }
     }
@@ -200,7 +261,7 @@ class GatewayClient(
 
     companion object {
         const val LAN_TIMEOUT_MS = 1500L
-        const val REMOTE_TIMEOUT_MS = 8000L
+        const val REMOTE_TIMEOUT_MS = 5000L
         const val RECONNECT_MS = 3000L
     }
 }

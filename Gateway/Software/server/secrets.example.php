@@ -21,3 +21,6 @@ $GW_DB_NAME = 'baza23202_gen2';               // separate gen2 DB
 $GW_DB_USER = 'CHANGE_ME_user';
 $GW_DB_PASS = 'CHANGE_ME_password';
 $BACKUP_KEY = 'CHANGE_ME_long_random_secret'; // must match the gateway's -backup-key
+$READ_KEY   = 'CHANGE_ME_different_random_secret'; // gw-read.php ONLY (app read-fallback);
+                                                   // MUST differ from $BACKUP_KEY - a leaked
+                                                   // app key must never be able to push/write

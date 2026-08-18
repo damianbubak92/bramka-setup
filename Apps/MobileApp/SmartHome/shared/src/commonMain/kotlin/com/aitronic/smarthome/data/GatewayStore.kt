@@ -2,6 +2,7 @@ package com.aitronic.smarthome.data
 
 import com.aitronic.smarthome.data.net.*
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -20,6 +21,12 @@ data class NodeTelemetry(val nodeType: Int, val params: Map<String, Double>, val
  */
 data class GatewayState(
     val source: GatewaySource = GatewaySource.Offline,
+    /** Gdy [source]=Mirror: ostatni kontakt bramki z kopią (unix s) — do banera
+     * „Offline — dane z kopii: N min temu". null = nieznany. */
+    val lastPushAt: Long? = null,
+    /** Czy WS wydał już werdykt (connect/disconnect). Do werdyktu status = „Łączenie…"
+     * (dane pokazujemy z mirrora od razu, ale nie krzyczymy „offline" zanim wiemy). */
+    val wsSettled: Boolean = false,
     val nodes: List<NodeInfoDto> = emptyList(),
     val joins: List<PendingJoinDto> = emptyList(),
     /** Kosz — soft-usunięte nody. Ładowany na żądanie (loadTrash), nie live. */
@@ -38,6 +45,14 @@ data class GatewayState(
     val error: String? = null,
 ) {
     val online: Boolean get() = source != GatewaySource.Offline
+
+    /** Tryb tylko-do-odczytu: bramka nieosiągalna, dane z kopii (mirror). UI wyszarza
+     * wszystkie akcje zapisu (pompa, edycja reguł, add/remove/rename urządzeń). */
+    val readOnly: Boolean get() = source == GatewaySource.Mirror
+
+    /** Komendy (zapis) wolno wysyłać TYLKO na żywej bramce (Lan/Remote). Offline/kopia/
+     * łączenie → false → UI wyszarza wszystkie akcje zapisu. */
+    val canWrite: Boolean get() = source == GatewaySource.Lan || source == GatewaySource.Remote
 
     /**
      * Node danego typu — **najświeższy** (max ts), nie „pierwszy z brzegu".
@@ -67,12 +82,26 @@ class GatewayStore(
     private val _newJoin = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
     val newJoin: SharedFlow<Unit> = _newJoin.asSharedFlow()
 
-    /** Start: pierwsze pobranie + nasłuch live. Wołać raz (np. z AppScaffold). */
-    fun start() {
+    /** Kanał WS — żyje TYLKO na foreground (foreground-only: koniec pingów/WS w tle). */
+    private var wsJob: Job? = null
+
+    /** Apka na wierzchu (ON_START). MIRROR-FIRST: `gatewayOnline=false` → refresh idzie od
+     * razu na mirror (dane instant), a WS decyduje o online/offline (connect → bramka
+     * = źródło prawdy, disconnect → kopia). Resume = świeże przeładowanie danych. */
+    fun onForeground() {
         scope.launch { refresh() }
-        scope.launch {
-            client.events().collect { ev -> onEvent(ev) }
+        if (wsJob?.isActive != true) {
+            wsJob = scope.launch { client.events().collect { ev -> onEvent(ev) } }
         }
+    }
+
+    /** Apka w tle (ON_STOP). Zamknij WS (koniec pingów/WS w tle → oszczędność baterii).
+     * Powrót zachowa się jak świeży start: mirror-first + WS ustali stan na nowo. */
+    fun onBackground() {
+        wsJob?.cancel()
+        wsJob = null
+        client.markGatewayDown()                     // po powrocie odczyty mirror-first
+        _state.update { it.copy(wsSettled = false) }  // status znów „Łączenie…" do werdyktu WS
     }
 
     /**
@@ -102,7 +131,8 @@ class GatewayStore(
                 s.copy(
                     nodes = nodes, joins = joins, telemetry = merged,
                     powerKwHint = hints, energyDayKwh = dayKwh,
-                    loading = false, source = client.source, error = null,
+                    loading = false, source = client.source, lastPushAt = client.lastPushAt,
+                    error = null,
                 )
             }
         } catch (t: Throwable) {
@@ -135,6 +165,22 @@ class GatewayStore(
                 if (isNew) {
                     _state.update { s -> s.copy(joins = s.joins + PendingJoinDto(factory = ev.factory, type = ev.nodeType)) }
                     _newJoin.tryEmit(Unit) // przenieś użytkownika do Urządzeń + otwórz popup
+                }
+            }
+            GatewayEvent.WsConnected -> {
+                // Żywy WS = bramka online (źródło prawdy) → odczyty wracają na bramkę + odśwież.
+                client.markGatewayUp()
+                _state.update { it.copy(wsSettled = true) }
+                scope.launch { refresh() }
+            }
+            GatewayEvent.WsDisconnected -> {
+                _state.update { it.copy(wsSettled = true) } // WS wydał werdykt (choćby „nie łączę")
+                // markGatewayDown/refresh TYLKO na przejściu z live — nie spamuj przy
+                // kolejnych próbach reconnectu, gdy już jesteśmy na kopii.
+                val s = _state.value.source
+                if (s == GatewaySource.Lan || s == GatewaySource.Remote) {
+                    client.markGatewayDown()   // odczyty od teraz prosto na mirror
+                    scope.launch { refresh() } // → dane z kopii + status offline, w tle
                 }
             }
         }
