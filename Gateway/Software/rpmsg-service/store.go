@@ -450,6 +450,8 @@ func seedParamDefs(db *sql.DB) error {
 		{6, "batt_mv", "Napięcie baterii", "mV", "int", 0, 3},
 		{6, "soh_pct", "Kondycja baterii (SOH)", "%", "int", 0, 4},
 		{6, "acc_uah", "Zużycie skumulowane", "µAh", "int", 0, 5},
+		// NODE_LIGHT_CONTROLLER = 3: relay on/off carried as pumpState (SEND_PUMP_STATUS).
+		{3, "pumpState", "Światło", "", "bool", 0, 1},
 	}
 	for _, d := range seeds {
 		if _, err := db.Exec(

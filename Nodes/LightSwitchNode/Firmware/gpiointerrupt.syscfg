@@ -1,0 +1,101 @@
+/**
+ * @cliArgs --board "/ti/boards/CC1312R1_LAUNCHXL" --device "CC1312R1F3RGZ" --part "Default" --package "RGZ" --rtos "tirtos7" --product "simplelink_cc13xx_cc26xx_sdk@8.31.00.11"
+ * @versions {"tool":"1.21.1+3772"}
+ */
+
+/* ---- moduły ---- */
+const GPIO        = scripting.addModule("/ti/drivers/GPIO");
+const GPIO1       = GPIO.addInstance();   /* LED_RED (pairing)  */
+const GPIO2       = GPIO.addInstance();   /* RELAY1 (światło)   */
+const GPIO3       = GPIO.addInstance();   /* LED_BLUE (backlight bright) */
+const NVS         = scripting.addModule("/ti/drivers/NVS");
+const NVS1        = NVS.addInstance();     /* adres RF (persist) */
+const RF          = scripting.addModule("/ti/drivers/RF");
+const custom      = scripting.addModule("/ti/devices/radioconfig/custom");
+const rfdesign    = scripting.addModule("/ti/devices/radioconfig/rfdesign");
+const Display     = scripting.addModule("/ti/display/Display");
+const Display1    = Display.addInstance();
+const Power       = scripting.addModule("/ti/drivers/Power");
+const Settings    = scripting.addModule("/ti/posix/tirtos/Settings");
+const BIOS        = scripting.addModule("/ti/sysbios/BIOS");
+const Event       = scripting.addModule("/ti/sysbios/knl/Event");
+const Idle        = scripting.addModule("/ti/sysbios/knl/Idle", {}, false);
+const Idle2       = Idle.addInstance();
+const Mailbox     = scripting.addModule("/ti/sysbios/knl/Mailbox");
+const Error       = scripting.addModule("/ti/sysbios/runtime/Error");
+const SysCallback = scripting.addModule("/ti/sysbios/runtime/SysCallback");
+const Timestamp   = scripting.addModule("/ti/sysbios/runtime/Timestamp");
+
+/* ---- LED_RED = DIO25 (active-high przez NPN), tryb parowania miga ---- */
+GPIO1.$name              = "CONFIG_GPIO_RLED";
+GPIO1.mode               = "Output";
+GPIO1.initialOutputState = "Low";
+GPIO1.gpioPin.$assign    = "DIO25";
+
+/* ---- RELAY1 = DIO28 (trigger do MOC / przekaźnik światła) ---- */
+GPIO2.$name              = "CONFIG_RELAY1";
+GPIO2.mode               = "Output";
+GPIO2.initialOutputState = "Low";
+GPIO2.gpioPin.$assign    = "DIO28";
+
+/* ---- LED_BLUE = DIO26 (jasna gałąź podświetlenia; dim jest sprzętowy 20k) ---- */
+GPIO3.$name              = "CONFIG_GPIO_BLED";
+GPIO3.mode               = "Output";
+GPIO3.initialOutputState = "Low";
+GPIO3.gpioPin.$assign    = "DIO26";
+
+/* ---- NVS internal: trwały adres RF (poza obszarem aplikacji, pod CCFG) ---- */
+NVS1.$name                    = "CONFIG_NVSINTERNAL";
+NVS1.internalFlash.regionBase = 0x52000;
+NVS1.internalFlash.regionSize = 0x4000;
+
+/* ---- PHY gen2 (2-GFSK 50 kbps, 868 MHz, TX 10 dBm) - CC1312-correct + sprawdzone ---- */
+custom.prop8                                              = ["custom868"];
+custom.radioConfigcustom868.phyType868                    = "2gfsk50kbps";
+custom.radioConfigcustom868.carrierFrequency              = 868.0000;
+custom.radioConfigcustom868.txPower                       = "10";
+custom.radioConfigcustom868.$name                         = "RF_Custom_Setting";
+custom.radioConfigcustom868.codeExportConfig.$name        = "ti_devices_radioconfig_code_export_param0";
+custom.radioConfigcustom868.codeExportConfig.symGenMethod = "Legacy";
+
+/* ---- Display over UART2: TX=DIO8, RX=DIO9 (pogo pad) ---- */
+Display1.$name                   = "CONFIG_Display_0";
+Display1.uart.$name              = "CONFIG_UART2_0";
+Display1.uart.uart.txPin.$assign = "DIO8";
+Display1.uart.uart.rxPin.$assign = "DIO9";
+
+const CCFG              = scripting.addModule("/ti/devices/CCFG", {}, false);
+CCFG.ccfgTemplate.$name = "ti_devices_CCFG_CCFGCC26XXTemplate0";
+
+BIOS.assertsEnabled = false;
+BIOS.heapBaseAddr   = "__primary_heap_start__";
+BIOS.heapEndAddr    = "__primary_heap_end__";
+
+const Clock      = scripting.addModule("/ti/sysbios/knl/Clock", {}, false);
+Clock.tickPeriod = 10;
+
+const Timer = scripting.addModule("/ti/sysbios/family/arm/cc26xx/Timer", {}, false);
+
+Idle2.$name   = "powerIdle";
+Idle2.idleFxn = "Power_idleFunc";
+
+const Semaphore            = scripting.addModule("/ti/sysbios/knl/Semaphore", {}, false);
+Semaphore.supportsPriority = false;
+
+const Swi         = scripting.addModule("/ti/sysbios/knl/Swi", {}, false);
+Swi.numPriorities = 6;
+
+const Task             = scripting.addModule("/ti/sysbios/knl/Task", {}, false);
+Task.checkStackFlag    = false;
+Task.defaultStackSize  = 512;
+Task.idleTaskStackSize = 512;
+Task.numPriorities     = 6;
+
+Error.policy       = "Error_SPIN";
+Error.printDetails = false;
+
+const System           = scripting.addModule("/ti/sysbios/runtime/System", {}, false);
+System.abortFxn        = "System_abortSpin";
+System.exitFxn         = "System_exitSpin";
+System.extendedFormats = "%f";
+System.supportModule   = "SysCallback";

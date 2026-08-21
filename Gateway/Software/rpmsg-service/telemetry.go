@@ -64,6 +64,11 @@ static void msg_decode(const MessageStruct *m, DecodedNode *d) {
         d->soh_pct     = m->payload.thData.soh_pct;
         d->acc_uah     = m->payload.thData.acc_uah;
         break;
+    case NODE_LIGHT_CONTROLLER:
+        // LightSwitch: relay on/off carried as pumpState (SEND_PUMP_STATUS).
+        d->kind = DEC_KIND_PUMP;
+        d->pumpState = m->payload.pumpData.pumpState;
+        break;
     default:
         d->kind = DEC_KIND_NONE;
         break;

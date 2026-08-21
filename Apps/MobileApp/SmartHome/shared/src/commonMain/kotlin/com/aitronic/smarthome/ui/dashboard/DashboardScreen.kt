@@ -3,6 +3,7 @@ package com.aitronic.smarthome.ui.dashboard
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -25,9 +26,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.alpha
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.aitronic.smarthome.data.GatewayStore
 import com.aitronic.smarthome.data.GatewayState
 import com.aitronic.smarthome.data.climateStateFor
@@ -112,6 +121,12 @@ private fun NodeCard(gw: GatewayState, n: NodeInfoDto, store: GatewayStore?, onO
             onOpenClimate(ClimateSelection(name, n.address, n.id))
         }
         NodeTypes.BUFOR -> BufferNodeCard(name, gw.telemetry[n.address]?.params?.get(Params.SBUF_TEMP))
+        NodeTypes.LIGHT -> LightNodeCard(
+            name = name,
+            on = (gw.telemetry[n.address]?.params?.get("pumpState") ?: 0.0) >= 0.5,
+            canWrite = gw.canWrite,
+            store = store, address = n.address,
+        )
         else -> GenericNodeCard(name, n.type)
     }
 }
@@ -272,6 +287,54 @@ private fun BufferNodeCard(name: String, tempC: Double?) {
         }
         Spacer(Modifier.height(16.dp))
         Column { BigValue(if (tempC == null || tempC.isNaN()) "—" else fmt1(tempC), "°C"); Text("Temperatura bufora", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp)) }
+    }
+}
+
+@Composable
+private fun LightNodeCard(name: String, on: Boolean, canWrite: Boolean, store: GatewayStore?, address: Int) {
+    val scope = rememberCoroutineScope()
+    // Optymistyczny stan: pokaż od razu żądany, wyczyść gdy telemetria potwierdzi (WS) lub po timeoucie.
+    var desired by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(on) { if (desired == on) desired = null }
+    val shown = desired ?: on
+    val col = deviceColor(NodeTypes.toUiType(NodeTypes.LIGHT))
+    Row(
+        Modifier.fillMaxWidth()
+            .shadow(4.dp, RoundedCornerShape(20.dp), spotColor = Sh.cardShadow, ambientColor = Sh.cardShadow)
+            .clip(RoundedCornerShape(20.dp)).background(Sh.surface).padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(if (shown) col.bg else Sh.hairline),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(ShIcons.Bolt, null, tint = if (shown) col.c else Sh.textMuted, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(name, color = Sh.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.W500)
+            Text(if (shown) "Włączone" else "Wyłączone", color = if (shown) col.c else Sh.textMuted, fontSize = 12.sp)
+        }
+        LightToggle(on = shown, enabled = canWrite && store != null) { want ->
+            desired = want
+            scope.launch {
+                val r = store?.pump(want, address)
+                if (r?.isFailure == true) desired = null                 // odrzucone -> cofnij
+                delay(6000); if (desired == want && on != want) desired = null  // brak potwierdzenia -> cofnij
+            }
+        }
+    }
+}
+
+@Composable
+private fun LightToggle(on: Boolean, enabled: Boolean, onToggle: (Boolean) -> Unit) {
+    val track = if (on) Sh.online else Color(0xFFD9D3C7)
+    val noRipple = remember { MutableInteractionSource() }
+    Box(
+        Modifier.size(width = 46.dp, height = 26.dp).clip(RoundedCornerShape(13.dp)).background(track)
+            .then(if (enabled) Modifier.clickable(noRipple, null) { onToggle(!on) } else Modifier.alpha(0.5f)),
+    ) {
+        Box(Modifier.padding(start = if (on) 22.dp else 2.dp, top = 2.dp).size(22.dp).clip(CircleShape).background(Color.White))
     }
 }
 

@@ -1,0 +1,9 @@
+[21:40:21] === START ===
+[21:40:21] Laczenie z KiCad...
+[21:40:21] Mam plytke.
+[21:40:21] Folder projektu: C:\SmartHome\Nodes\LightSwitchNode\Hardware\TouchButtonPCB
+[21:40:21] Folder eksportu: C:\SmartHome\Nodes\LightSwitchNode\Hardware\TouchButtonPCB\JLCPCBExport_BOM_CPL
+[21:40:21]   footprintow: 56, BOM: 31, CPL: 48
+[21:40:21] Zapisano BOM: C:\SmartHome\Nodes\LightSwitchNode\Hardware\TouchButtonPCB\JLCPCBExport_BOM_CPL\TouchButtonPCB_BOM.csv
+[21:40:21] Zapisano CPL: C:\SmartHome\Nodes\LightSwitchNode\Hardware\TouchButtonPCB\JLCPCBExport_BOM_CPL\TouchButtonPCB_CPL.csv
+[21:40:21] === KONIEC OK ===

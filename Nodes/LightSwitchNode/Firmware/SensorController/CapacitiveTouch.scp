@@ -1,0 +1,602 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="Capacitive Touch for ULPSENSE" version="2.9.0.208">
+    <desc><![CDATA[Demonstrates capacitive touch on LaunchPad with the ULP Sense BoosterPack (BOOSTXL-ULPSENSE), with processing.
+
+The Sensor Controller samples the two capacitive touch areas on the ULP Sense BoosterPack, using the COMPA, ISRC and TDC peripherals.
+The Sensor Controller processes the resulting TDC values in order to detect touch. Note that this touch detection algorithm is only an example of the Sensor Controller's processing capabilities, and should not be used in production.
+
+The default sampling frequency is 32 Hz while touch is not detected, and ~100 Hz while touch is detected.
+
+Touch detection is communicated to the System CPU application, which enables LEDs on the LaunchPad while touch is detected.
+
+Task Testing should only be used for debugging purposes, as it will not run the Capacitive Touch task at the correct rate. Use Run-Time Logging for testing, performance evaluation and tuning.
+
+BOOSTXL-ULPSENSE SETUP:
+- Make sure that the supplied plexiglass is securely mounted over the capacitive touch buttons, without any air gaps.
+- Remove all jumpers
+
+See the header in the application source file ("main_tirtos.c") for further details and instructions. This file is located in the source code output directory.]]></desc>
+    <pattr name="Apply default power mode">0</pattr>
+    <pattr name="Board">CC1312R1 LaunchPad + ULP Sense BoosterPack</pattr>
+    <pattr name="Chip name">CC1312R1F3</pattr>
+    <pattr name="Chip package">QFN48 7x7 RGZ</pattr>
+    <pattr name="Chip revision">E</pattr>
+    <pattr name="Clock in active mode">0</pattr>
+    <pattr name="Code prefix"></pattr>
+    <pattr name="Default power mode">0</pattr>
+    <pattr name="Operating system">TI-RTOS</pattr>
+    <pattr name="Output directory">C:/SmartHome/Nodes/LightSwitchNode/Firmware</pattr>
+    <pattr name="RTC tick interval (16.16 format)">2000</pattr>
+    <pattr name="Run-time logging UART RX pin"></pattr>
+    <pattr name="Run-time logging UART TX pin"></pattr>
+    <task name="Capacitive Touch">
+        <desc><![CDATA[Samples the capacitive touch buttons on the ULP Sense BoosterPack., using the COMPA, ISRC and TDC peripherals, and performs touch detection.
+
+The following is performed for each touch area:
+- The ISRC peripheral is used to charge the touch area to 0.6 V, which generates a rising edge on the COMPA output. The COMPA reference is then changed to 2.4 V (with a temporary boost to 3.3 V), and charging continues until a second rising edge occurs on the COMPA output.
+- The TDC is used to measure the time between these two COMPA output rising edges. The TDC value is used by the touch detection algorithm.
+- To filter out noise, such as 50/60 Hz, the touch detection algorithm works on the average value of the N last TDC values.
+- While touch is not detected, a baseline value is updated slowly. While touch is detected, a high value is updated.
+- The touch detection threshold is in the middle between the high value and the baseline value.
+
+The sample rate is increased while touch is detected on one or more touch areas.
+
+The System CPU application is notified for each task iteration during touch detection, and one time when touch detection ends.
+
+Task Testing should only be used for debugging purposes, as it will not run the Capacitive Touch task at the correct rate. Use Run-Time Logging for testing, performance evaluation and tuning.
+
+BOOSTXL-ULPSENSE SETUP:
+- Make sure that the supplied plexiglass is securely mounted over the capacitive touch buttons, without any air gaps.
+- Remove all jumpers]]></desc>
+        <tattr name="BASELINE_UPDATE_PERIOD" desc="Baseline update period when not touching" type="dec" content="const" scope="task" min="0" max="65535">32</tattr>
+        <tattr name="D_ISRC_CURRENT" desc="Default ISRC current = 1 uA (BV_ISRC_CURR_1P0U)" type="expr_hex" content="const" scope="task" min="0" max="65535">17</tattr>
+        <tattr name="D_MAX_SMPL_PERIOD" desc="Default maximum sample period" type="dec" content="const" scope="task" min="0" max="65535">128</tattr>
+        <tattr name="D_MIN_SMPL_PERIOD" desc="Default minimum sample period" type="dec" content="const" scope="task" min="0" max="65535">40</tattr>
+        <tattr name="LOW_MEAN_IIR_DIV_EXP" desc="Division exponent for IIR filter of mean value of the low-mean window" type="dec" content="const" scope="task" min="0" max="65535">2</tattr>
+        <tattr name="LOW_MEAN_IIR_UPDATE_PERIOD" desc="Update period of IIR filter of mean value of the low-mean window" type="expr" content="const" scope="task" min="0" max="65535">TDC_SMPL_WINDOW_SIZE * LOW_MEAN_WINDOW_SIZE</tattr>
+        <tattr name="LOW_MEAN_WINDOW_EXP" desc="Exponent that determines LOW_MEAN_WINDOW_SIZE" type="dec" content="const" scope="task" min="0" max="65535">3</tattr>
+        <tattr name="LOW_MEAN_WINDOW_SIZE" desc="Number of low mean values stored for each pin" type="expr" content="const" scope="task" min="0" max="65535">1 &lt;&lt; LOW_MEAN_WINDOW_EXP</tattr>
+        <tattr name="LOW_MEAN_WINDOW_TOTAL" desc="Total size of the low mean window array variable" type="expr" content="const" scope="task" min="0" max="65535">LOW_MEAN_WINDOW_SIZE * PIN_COUNT</tattr>
+        <tattr name="MAX_TDC_TIMEOUTS" desc="Maximum number of TDC timeouts before a pin is regarded as stuck" type="dec" content="const" scope="task" min="0" max="65535">5</tattr>
+        <tattr name="MAX_TOUCH_ITERATIONS" type="expr" content="const" scope="task" min="0" max="65535">1500</tattr>
+        <tattr name="PIN_COUNT" desc="Capactive touch pin count" type="expr" content="const" scope="task" min="0" max="8">'Analog Open-Drain Pins/Capacitive touch area/Pin count'</tattr>
+        <tattr name="TDC_SMPL_WINDOW_EXP" desc="Exponent that determines TDC_SMPL_WINDOW_SIZE" type="dec" content="const" scope="task" min="0" max="65535">3</tattr>
+        <tattr name="TDC_SMPL_WINDOW_SIZE" desc="Number of last TDC values stored per pin" type="expr" content="const" scope="task" min="0" max="65535">1 &lt;&lt; TDC_SMPL_WINDOW_EXP</tattr>
+        <tattr name="TDC_SMPL_WINDOW_TOTAL" desc="Total size of the TDC sample window array variable" type="expr" content="const" scope="task" min="0" max="65535">TDC_SMPL_WINDOW_SIZE * PIN_COUNT</tattr>
+        <tattr name="TOUCH_DETECT_OFFSET" type="expr" content="const" scope="task" min="0" max="65535">12</tattr>
+        <tattr name="TOUCH_RELEASE_OFFSET" type="expr" content="const" scope="task" min="0" max="65535">6</tattr>
+        <tattr name="cfg.isrcCurrent" desc="ISRC current used to charge the touch areas (logical OR of BV_ISRC_CURR_XYZ constants)" type="expr_hex" content="struct" scope="task" min="0" max="65535">D_ISRC_CURRENT</tattr>
+        <tattr name="cfg.maxSmplPeriod" desc="Maximum sample period [0.25 ms]" type="expr" content="struct" scope="task" min="0" max="65535">D_MAX_SMPL_PERIOD</tattr>
+        <tattr name="cfg.minSmplPeriod" desc="Minimum sample period [0.25 ms]" type="expr" content="struct" scope="task" min="0" max="65535">D_MIN_SMPL_PERIOD</tattr>
+        <tattr name="output.bvTdcTimeout" desc="Indicates TDC timeout error, one bit for each pin" type="hex" content="struct" scope="task" min="0000" max="ffff">0000</tattr>
+        <tattr name="output.bvTdcValueOverflow" desc="Indicates TDC value overflow error, one bit for each pin" type="hex" content="struct" scope="task" min="0000" max="ffff">0000</tattr>
+        <tattr name="output.pBaselineValue" desc="For observation, for each pin: Baseline value" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="-32768" max="32767">0</tattr>
+        <tattr name="output.pHighValue" desc="For observation, for each pin: High value" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="-32768" max="32767">0</tattr>
+        <tattr name="output.pTdcSmplWindowMean" desc="For observation, for each pin: Mean value of the TDC sample window" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="0" max="65535">0</tattr>
+        <tattr name="output.pTdcValueRaw" desc="For observation, for each pin: Unfiltered TDC value" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="0" max="65535">0</tattr>
+        <tattr name="output.pThresValue" desc="For observation, for each pin: Touch threshold value" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="-32768" max="32767">0</tattr>
+        <tattr name="output.pTouchDet" desc="For each pin: Touch detected" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="0" max="65535">0</tattr>
+        <tattr name="state.bvTdcTimeout" desc="Indicates TDC timeout error, one bit for each pin" type="hex" content="struct" scope="task" min="0000" max="ffff">0000</tattr>
+        <tattr name="state.bvTdcValueOverflow" desc="Indicates TDC value overflow error, one bit for each pin" type="hex" content="struct" scope="task" min="0000" max="ffff">0000</tattr>
+        <tattr name="state.genOutput" desc="Generate output after the current iteration?" type="dec" content="struct" scope="task" min="0" max="65535">1</tattr>
+        <tattr name="state.pBaselineValue" desc="For each pin: Baseline value (expected TDC value when not touching)" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="0" max="65535">0</tattr>
+        <tattr name="state.pHighValue" desc="For each pin: High value (expected TDC value when not touching)" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="0" max="65535">0</tattr>
+        <tattr name="state.pLowMeanIirFilter" desc="For each pin: IIR-filtered mean value of the low mean window (used to update the baseline)" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="-32768" max="32767">0</tattr>
+        <tattr name="state.pLowMeanWindow" desc="For each pin: Window of mean values of qualified TDC values while not touching" size="LOW_MEAN_WINDOW_TOTAL" type="dec" content="struct_array" scope="task" min="0" max="65535">0</tattr>
+        <tattr name="state.pTdcSmplLowCount" desc="For each pin: Number of low TDC samples in row, used to control baseline update" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="0" max="65535">0</tattr>
+        <tattr name="state.pTdcSmplWindow" desc="For each pin: Window of the last qualified TDC values" size="TDC_SMPL_WINDOW_TOTAL" type="dec" content="struct_array" scope="task" min="0" max="65535">0</tattr>
+        <tattr name="state.pTdcTimeoutCount" desc="For each pin: Number of consecutive TDC timeouts" size="PIN_COUNT" type="expr" content="struct_array" scope="task" min="0" max="65535">MAX_TDC_TIMEOUTS - 1</tattr>
+        <tattr name="state.pTouchDet" desc="For each pin: Touch currently detected" size="PIN_COUNT" type="dec" content="struct_array" scope="task" min="0" max="65535">0</tattr>
+        <tattr name="state.pTouchHoldCount" size="PIN_COUNT" type="expr" content="struct_array" scope="task" min="0" max="65535">0</tattr>
+        <tattr name="state.smplPeriod" desc="Sample period [0.25 ms]" type="expr" content="struct" scope="task" min="0" max="65535">D_MIN_SMPL_PERIOD</tattr>
+        <tattr name="state.startupIterCount" desc="Counts the number of task iterations performed during startup" type="dec" content="struct" scope="task" min="0" max="65535">0</tattr>
+        <resource_ref name="ADC" enabled="0"/>
+        <resource_ref name="AON Domain Functionality" enabled="0"/>
+        <resource_ref name="Accumulator-Based Math" enabled="0"/>
+        <resource_ref name="Analog Open-Drain Pins" enabled="1">
+            <io_usage name="CAP_TOUCH" label="Capacitive touch area">
+                <uattr name="Output drive strength">0</uattr>
+                <uattr name="Pin count">2</uattr>
+                <uattr name="Pin/0000">DIO27</uattr>
+                <uattr name="Pin/0001">DIO29</uattr>
+                <uattr name="Pin/0002"></uattr>
+                <uattr name="Pin/0003"></uattr>
+                <uattr name="Pin/0004"></uattr>
+                <uattr name="Pin/0005"></uattr>
+                <uattr name="Pin/0006"></uattr>
+                <uattr name="Pin/0007"></uattr>
+            </io_usage>
+        </resource_ref>
+        <resource_ref name="Analog Open-Source Pins" enabled="1">
+            <io_usage name="CAP_TOUCH_REF" label="Cap touch external reference resistor">
+                <uattr name="Output drive strength">0</uattr>
+                <uattr name="Pin count">0</uattr>
+                <uattr name="Pin/0000">DIO24</uattr>
+                <uattr name="Pin/0001"></uattr>
+                <uattr name="Pin/0002"></uattr>
+                <uattr name="Pin/0003"></uattr>
+                <uattr name="Pin/0004"></uattr>
+                <uattr name="Pin/0005"></uattr>
+                <uattr name="Pin/0006"></uattr>
+                <uattr name="Pin/0007"></uattr>
+            </io_usage>
+        </resource_ref>
+        <resource_ref name="Analog Pins" enabled="0"/>
+        <resource_ref name="COMPA" enabled="1"/>
+        <resource_ref name="COMPA Event Trigger" enabled="0"/>
+        <resource_ref name="COMPB" enabled="0"/>
+        <resource_ref name="COMPB Event Trigger" enabled="0"/>
+        <resource_ref name="Delay Insertion" enabled="1"/>
+        <resource_ref name="Differential Output Pins" enabled="0"/>
+        <resource_ref name="Digital Input Pins" enabled="0"/>
+        <resource_ref name="Digital Open-Drain Pins" enabled="0"/>
+        <resource_ref name="Digital Open-Source Pins" enabled="0"/>
+        <resource_ref name="Digital Output Pins" enabled="0"/>
+        <resource_ref name="Dynamic Power Control" enabled="0"/>
+        <resource_ref name="GPIO Event Trigger" enabled="0"/>
+        <resource_ref name="I2C Master" enabled="0">
+            <rattr name="SCL frequency">400</rattr>
+            <rattr name="SCL stretch timeout">1</rattr>
+            <io_usage>
+                <uattr name="Output drive strength">1</uattr>
+                <uattr name="SCL pin/0000"></uattr>
+                <uattr name="SDA pin/0000"></uattr>
+            </io_usage>
+        </resource_ref>
+        <resource_ref name="ISRC" enabled="1"/>
+        <resource_ref name="LCD Controller" enabled="0">
+            <rattr name="Waveform state count">8</rattr>
+            <io_usage>
+                <uattr name="Output drive strength">0</uattr>
+                <uattr name="Pin count">20</uattr>
+                <uattr name="Pin/0000"></uattr>
+                <uattr name="Pin/0001"></uattr>
+                <uattr name="Pin/0002"></uattr>
+                <uattr name="Pin/0003"></uattr>
+                <uattr name="Pin/0004"></uattr>
+                <uattr name="Pin/0005"></uattr>
+                <uattr name="Pin/0006"></uattr>
+                <uattr name="Pin/0007"></uattr>
+                <uattr name="Pin/0008"></uattr>
+                <uattr name="Pin/0009"></uattr>
+                <uattr name="Pin/0010"></uattr>
+                <uattr name="Pin/0011"></uattr>
+                <uattr name="Pin/0012"></uattr>
+                <uattr name="Pin/0013"></uattr>
+                <uattr name="Pin/0014"></uattr>
+                <uattr name="Pin/0015"></uattr>
+                <uattr name="Pin/0016"></uattr>
+                <uattr name="Pin/0017"></uattr>
+                <uattr name="Pin/0018"></uattr>
+                <uattr name="Pin/0019"></uattr>
+                <uattr name="Pin/0020"></uattr>
+                <uattr name="Pin/0021"></uattr>
+                <uattr name="Pin/0022"></uattr>
+                <uattr name="Pin/0023"></uattr>
+                <uattr name="Pin/0024"></uattr>
+                <uattr name="Pin/0025"></uattr>
+                <uattr name="Pin/0026"></uattr>
+                <uattr name="Pin/0027"></uattr>
+                <uattr name="Pin/0028"></uattr>
+                <uattr name="Pin/0029"></uattr>
+                <uattr name="Pin/0030"></uattr>
+                <uattr name="Pin/0031"></uattr>
+            </io_usage>
+        </resource_ref>
+        <resource_ref name="Math and Logic" enabled="1"/>
+        <resource_ref name="Multi-Buffered Output Data Exchange" enabled="1">
+            <rattr name="Buffer count">3</rattr>
+            <rattr name="Indicate overflow at buffer check">1</rattr>
+            <rattr name="Indicate overflow at buffer switch">1</rattr>
+            <rattr name="Prevent overflow at buffer switch">0</rattr>
+        </resource_ref>
+        <resource_ref name="Peripheral Sharing" enabled="1"/>
+        <resource_ref name="Pulse Counter" enabled="0"/>
+        <resource_ref name="RTC Multi-Event Capture" enabled="0"/>
+        <resource_ref name="RTC-Based Execution Scheduling" enabled="0"/>
+        <resource_ref name="Reference DAC" enabled="0"/>
+        <resource_ref name="Run-Time Logging" enabled="1"/>
+        <resource_ref name="SPI Chip Select" enabled="0"/>
+        <resource_ref name="SPI Data Transfer" enabled="0">
+            <rattr name="Bit rate">0</rattr>
+            <rattr name="MISO configuration when inactive">-1</rattr>
+            <rattr name="MOSI configuration on initialization">0</rattr>
+            <rattr name="MOSI configuration on uninitialization">0</rattr>
+            <rattr name="SCLK configuration on initialization">0</rattr>
+            <rattr name="SCLK configuration on uninitialization">0</rattr>
+            <io_usage>
+                <uattr name="MISO pin/0000"></uattr>
+                <uattr name="MOSI pin/0000"></uattr>
+                <uattr name="SCLK pin/0000"></uattr>
+            </io_usage>
+        </resource_ref>
+        <resource_ref name="Signal Observation" enabled="0"/>
+        <resource_ref name="System CPU Alert" enabled="1"/>
+        <resource_ref name="System Event Trigger" enabled="0"/>
+        <resource_ref name="TDC" enabled="1"/>
+        <resource_ref name="Timer 0" enabled="0"/>
+        <resource_ref name="Timer 0 Event Trigger" enabled="0"/>
+        <resource_ref name="Timer 1" enabled="0"/>
+        <resource_ref name="Timer 1 Event Trigger" enabled="1"/>
+        <resource_ref name="Timer 2" enabled="0"/>
+        <resource_ref name="Timer 2 Event Trigger" enabled="0"/>
+        <resource_ref name="UART Emulator" enabled="0">
+            <rattr name="RX buffer size">64</rattr>
+            <rattr name="Required idle period before enabling RX">11</rattr>
+            <rattr name="TX buffer size">64</rattr>
+            <io_usage>
+                <uattr name="RX pin/0000"></uattr>
+                <uattr name="TX pin/0000"></uattr>
+            </io_usage>
+        </resource_ref>
+        <sccode name="event0" init_power_mode="0"><![CDATA[// MACRO: Updates a first-order IIR filter
+// acc = acc - (acc / 2^divExp) + (add / 2^divExp)
+macro iirFilter(acc, add, divExp) {
+    U16 accInt = acc << 1;
+    accInt -= acc >> (divExp - 1);
+    accInt += add >> (divExp - 1);
+    acc = accInt >> 1;
+}
+
+
+// Acquire shared peripherals
+fwAcquirePeripheral(PERIPHERAL_COMPA_ISRC);
+fwAcquirePeripheral(PERIPHERAL_TDC);
+
+// Enable COMPA, including 2 uA through internal 400 kOhm in parallel with external
+// 1.2 MOhm = 0.6 V reference voltage for COMPA
+compaEnableWithCapTouchRef();
+compaSelectGpioRef(AUXIO_AXS_CAP_TOUCH_REF);
+
+// Enable ISRC (set current from cfg register)
+isrcEnable(cfg.isrcCurrent);
+
+// Select 2 x 48 MHz from RCOSC_HF as TDC counter clock source
+tdcSetCntSource(TDC_CNTSRC_96M_RCOSC);
+
+// Enable the TDC with start trigger on ISRC reset release and stop trigger on COMPA
+tdcSetTriggers(TDC_STARTTRIG_COMPA_HIGH, TDC_STOPTRIG_COMPA_HIGH, 1);
+tdcEnable();
+
+// For each pin ...
+U16* pTdcSmplWindowPinBase = #state.pTdcSmplWindow;
+U16* pLowMeanWindowPinBase = #state.pLowMeanWindow;
+for (U16 n = 0; n < PIN_COUNT; n++) {
+
+    // Select COMPA input/ISRC output
+    compaSelectGpioInput(cfg.pAuxioAxdCapTouch[n]);
+
+    // Prepare the TDC value window for inserting the new sample, start calculating
+    // the mean value of the TDC value window
+    U16* pTdcSmplItem = pTdcSmplWindowPinBase + (TDC_SMPL_WINDOW_SIZE - 2);
+    U16 tdcSmplWindowMean = 0;
+    while (pTdcSmplItem >= pTdcSmplWindowPinBase) {
+        U16 tdcSmplItemValue = *(pTdcSmplItem++);
+        *pTdcSmplItem = tdcSmplItemValue;
+        pTdcSmplItem -= 2;
+        tdcSmplWindowMean += tdcSmplItemValue;
+    }
+
+    // Prepare the TDC and trigger start of measurement
+    tdcArm(TDC_START_ASYNC);
+    isrcRelease(cfg.pAuxioAxdCapTouch[n]);
+
+    // Wait for the COMPA output to go high, and then disconnect the internal 400 kOhm resistor.
+    // This raises the COMPA referance voltage from 0.6 V to 2.4 V. Drive to VDDS for 1+ us to
+    // ensure that the reference rises quickly, and then let it fall to 2.4 V.
+    do {
+        U16 compaValue;
+        compaGetOutput(compaValue);
+    } while (compaValue == 0);
+    gpioSetOutput(AUXIO_AXS_CAP_TOUCH_REF);
+    compaDisconnectCapTouchRefIntRes();
+    fwDelayInstrCycles(12);
+    gpioClearOutput(AUXIO_AXS_CAP_TOUCH_REF);
+
+    // Wait for the TDC stop trigger with 100 us timeout
+    U16 isTdcDone;
+    tdcWaitUs(100);
+    tdcCheckDoneEv(isTdcDone);
+
+    // Re-clamp the pin to ground
+    isrcClamp(cfg.pAuxioAxdCapTouch[n]);
+
+    // Reconnect the internal 400 kOhm resistor. This returns the COMPA reference voltage to 0.6 V.
+    compaConnectCapTouchRefIntRes();
+
+    // Check whether the TDC measurement actually finished, and then read and store the TDC value
+    U16 tdcValueL;
+    U16 tdcValueH;
+    tdcGetValue(tdcValueH, tdcValueL);
+    output.pTdcValueRaw[n] = tdcValueL;
+
+    // Handle TDC timeout: Reuse last value until MAX_TDC_TIMEOUTS timeouts in a row, then it's an error
+    // For the very first iteration the timeout count is initialized to MAX_TDC_TIMEOUTS - 1
+    U16 tdcTimeoutCount = state.pTdcTimeoutCount[n];
+    if (isTdcDone == 1) {
+        tdcTimeoutCount = 0;
+    } else {
+        tdcValueL = *pTdcSmplWindowPinBase;
+        utilIncrAndSat(tdcTimeoutCount, MAX_TDC_TIMEOUTS; tdcTimeoutCount);
+        if (tdcTimeoutCount == MAX_TDC_TIMEOUTS) {
+            state.bvTdcTimeout |= 1 << n;
+        }
+    }
+    state.pTdcTimeoutCount[n] = tdcTimeoutCount;
+
+    // Handle TDC value overflow: Hard-limit so that arithmetic overflow cannot occur
+    if (TDC_SMPL_WINDOW_EXP >= LOW_MEAN_WINDOW_EXP) {
+        if (tdcValueL >= (0xFFFF >> TDC_SMPL_WINDOW_EXP)) {
+            tdcValueL = 0xFFFF >> TDC_SMPL_WINDOW_EXP;
+            state.bvTdcValueOverflow |= 1 << n;
+        }
+    } else {
+        if (tdcValueL >= (0xFFFF >> LOW_MEAN_WINDOW_EXP)) {
+            tdcValueL = 0xFFFF >> LOW_MEAN_WINDOW_EXP;
+            state.bvTdcValueOverflow |= 1 << n;
+        }
+    }
+
+    // Handle TDC value spikes: Saturate the TDC value to a range around the current baseline
+    if (state.startupIterCount > TDC_SMPL_WINDOW_SIZE) {
+
+        // The TDC value's maximum deviation from the baseline is 1.25 * (filterHighVal - baseline)
+        U16 baselineValue = state.pBaselineValue[n];
+        U16 highBaselineDiff = state.pHighValue[n] - baselineValue;
+
+        // Ensure that the TDC value is in the range [baseline - margin, baseline + 2 * margin]
+        U16 minTdcValueL = baselineValue - highBaselineDiff;
+        U16 maxTdcValueL = baselineValue + (highBaselineDiff << 1);
+        if (tdcValueL < minTdcValueL) {
+            tdcValueL = minTdcValueL;
+        } else if (tdcValueL > maxTdcValueL) {
+            tdcValueL = maxTdcValueL;
+        }
+    }
+
+    // Store the new TDC value
+    *pTdcSmplWindowPinBase = tdcValueL;
+
+    // Finalize the TDC value window mean
+    tdcSmplWindowMean += tdcValueL;
+    tdcSmplWindowMean >>= TDC_SMPL_WINDOW_EXP;
+    output.pTdcSmplWindowMean[n] = tdcSmplWindowMean;
+
+    // Each time the TDC value window has been replaced while not detecting a touch, add the
+    // low TDC value window mean to the low mean window
+    if (state.pTdcSmplLowCount[n] >= TDC_SMPL_WINDOW_SIZE) {
+        ifnot (state.pTdcSmplLowCount[n] & (TDC_SMPL_WINDOW_SIZE - 1)) {
+
+            // Shift the current low mean window, and calculate the mean value of the moved values
+            U16* pLowMeanItem = pLowMeanWindowPinBase + (LOW_MEAN_WINDOW_SIZE - 2);
+            U16 lowMeanWindowMean = 0;
+            while (pLowMeanItem >= pLowMeanWindowPinBase) {
+                U16 lowMeanItemValue = *(pLowMeanItem++);
+                *pLowMeanItem = lowMeanItemValue;
+                pLowMeanItem -= 2;
+
+                // Add to the average, using the TDC value window mean for uninitialized entries
+                if (lowMeanItemValue == 0) {
+                    lowMeanWindowMean += tdcSmplWindowMean;
+                } else {
+                    lowMeanWindowMean += lowMeanItemValue;
+                }
+            }
+
+            // Insert the new TDC value window mean, and finalize the sum
+            *pLowMeanWindowPinBase = tdcSmplWindowMean;
+            lowMeanWindowMean += tdcSmplWindowMean;
+            lowMeanWindowMean >>= LOW_MEAN_WINDOW_EXP;
+
+            // Calculate the low mean value by IIR filtering
+            if (state.startupIterCount < LOW_MEAN_IIR_UPDATE_PERIOD) {
+                state.pLowMeanIirFilter[n] = lowMeanWindowMean;
+            } else {
+                iirFilter(state.pLowMeanIirFilter[n], lowMeanWindowMean, LOW_MEAN_IIR_DIV_EXP);
+            }
+        }
+    }
+
+    // During initialization we do this for every iteration. This wastes a few cycles, but reduces complexity
+    if (state.startupIterCount < TDC_SMPL_WINDOW_SIZE) {
+        state.pTdcSmplLowCount[n] += 1;
+        state.pBaselineValue[n] = tdcSmplWindowMean;
+        state.pHighValue[n] = tdcSmplWindowMean + (tdcSmplWindowMean >> 5); // Baseline + 1/32
+
+    // After initialization ...
+    } else {
+
+        // If not touched after the last measurement ...
+        U16 baselineValue = state.pBaselineValue[n];
+        U16 highValue = state.pHighValue[n];
+        if (state.pTouchDet[n] == 0) {
+
+            // Update the baseline after a backoff period
+            U16 lowMeanIirFilter = state.pLowMeanIirFilter[n];
+            if (state.pTdcSmplLowCount[n] > (LOW_MEAN_IIR_UPDATE_PERIOD + BASELINE_UPDATE_PERIOD)) {
+
+                // The baseline value tracks faster when going down than when going up
+                if (lowMeanIirFilter < baselineValue) {
+                    iirFilter(baselineValue, lowMeanIirFilter, 1);
+                } else {
+                    iirFilter(baselineValue, lowMeanIirFilter, 3);
+                }
+                state.pBaselineValue[n] = baselineValue;
+
+                // Back off
+                state.pTdcSmplLowCount[n] -= BASELINE_UPDATE_PERIOD;
+            }
+
+        // Otherwise ...
+        } else {
+
+            // Update the high value
+            iirFilter(highValue, tdcSmplWindowMean, 4);
+        }
+        output.pBaselineValue[n] = baselineValue;
+
+        // Limit the high value to the range [baseline + 1/32, baseline + 1/4]
+        U16 minHighValue = baselineValue + (baselineValue >> 5);
+        if (highValue < minHighValue) {
+            highValue = minHighValue;
+        }
+        U16 maxHighValue = baselineValue + (baselineValue >> 2);
+        if (highValue > maxHighValue) {
+            highValue = maxHighValue;
+        }
+        state.pHighValue[n] = highValue;
+        output.pHighValue[n] = highValue;
+
+        // Set the touch detection threshold to 1/2 between the baseline and the high value
+        //U16 thresValue = baselineValue + ((highValue - baselineValue) >> 1);
+        //output.pThresValue[n] = thresValue;
+
+        // --- STAŁY offset nad śledzonym baseline + histereza ---
+        // (adaptacyjny midpoint nie działał przez szkło: podłoga minHighValue
+        //  wymuszała próg >= ~+28, a delta through-glass to ~+25)
+        U16 thresValue;
+        if (state.pTouchDet[n] != 0) {
+            thresValue = baselineValue + TOUCH_RELEASE_OFFSET;  // zwolnij niżej
+        } else {
+            thresValue = baselineValue + TOUCH_DETECT_OFFSET;   // załącz wyżej
+        }
+        output.pThresValue[n] = thresValue;
+
+        // Detect touch
+     //   U16 touchDetNow;
+     //   if (tdcSmplWindowMean > thresValue){
+     //       touchDetNow = 1;
+     //       state.pTdcSmplLowCount[n] = 0;
+     //       state.smplPeriod = cfg.minSmplPeriod;
+     //   } else {
+     //       touchDetNow = 0;
+     //       state.pTdcSmplLowCount[n] += 1;
+     //   }
+
+        // Detect touch
+        U16 touchDetNow;
+        if (tdcSmplWindowMean > thresValue){
+            touchDetNow = 1;
+            state.pTdcSmplLowCount[n] = 0;
+            state.smplPeriod = cfg.minSmplPeriod;
+
+            // Anti-stuck: "dotyk" dłuższy niż realny palec (> MAX_TOUCH_ITERATIONS)
+            // to skok środowiskowy, nie palec -> przeskocz baseline i zwolnij.
+            state.pTouchHoldCount[n] += 1;
+            if (state.pTouchHoldCount[n] > MAX_TOUCH_ITERATIONS) {
+                state.pBaselineValue[n] = tdcSmplWindowMean;
+                state.pTouchHoldCount[n] = 0;
+                touchDetNow = 0;
+            }
+        } else {
+            touchDetNow = 0;
+            state.pTdcSmplLowCount[n] += 1;
+            state.pTouchHoldCount[n] = 0;
+        }
+
+        // Find whether we should generate any output
+        if (touchDetNow != state.pTouchDet[n]) {
+            state.pTouchDet[n] = touchDetNow;
+            state.genOutput = 1;
+        } else {
+            state.genOutput |= touchDetNow;
+        }
+        output.pTouchDet[n] = touchDetNow;
+    }
+
+    // Move on to the next window of TDC samples
+    pTdcSmplWindowPinBase += TDC_SMPL_WINDOW_SIZE;
+    pLowMeanWindowPinBase += LOW_MEAN_WINDOW_SIZE;
+}
+
+// Disable COMPA, ISRC and TDC
+tdcDisable();
+isrcDisable();
+compaDisable();
+
+// Release shared peripherals
+fwReleasePeripheral(PERIPHERAL_COMPA_ISRC);
+fwReleasePeripheral(PERIPHERAL_TDC);
+
+// If filter initialization has not been done ...
+U16 smplPeriod = state.smplPeriod;
+if (state.startupIterCount < 100) {
+    state.startupIterCount += 1;
+
+    // Set minimum sampling period
+    smplPeriod = cfg.minSmplPeriod;
+
+// Otherwise ...
+} else {
+
+    // Ensure that the sampling period is not less than the minimum (for example while tuning)
+    U16 minSmplPeriod = cfg.minSmplPeriod;
+    if (smplPeriod < minSmplPeriod) {
+        smplPeriod = minSmplPeriod;
+    }
+
+    // Increase the sample period, slowly at first and then faster until reaching the maximum.
+    // When touch is detected, the sampling period is set back to the minimum below.
+    smplPeriod += ((smplPeriod - minSmplPeriod) >> 4);
+    U16 maxSmplPeriod = cfg.maxSmplPeriod;
+    if (smplPeriod < maxSmplPeriod) {
+        smplPeriod += 1;
+    } else {
+        smplPeriod = maxSmplPeriod;
+    }
+}
+state.smplPeriod = smplPeriod;
+
+// Always generate output during run-time logging
+U16 logMask;
+rtlGetLogMask(logMask);
+if (logMask != 0) {
+    state.genOutput = 1;
+}
+
+// Indicate errors
+output.bvTdcTimeout = state.bvTdcTimeout;
+output.bvTdcValueOverflow = state.bvTdcValueOverflow;
+
+// Generate output:
+// - While touch is detected
+// - When touch detection ends
+// - Every time during run-time logging
+if (state.genOutput != 0) {
+    fwSwitchOutputBuffer();
+    state.genOutput = 0;
+
+    // Run-time logging
+    rtlLogStructs(BV_RTL_LOG_OUTPUT | BV_RTL_LOG_STATE);
+}
+
+// Schedule the next execution
+evhSetupTimer1Trigger(0, state.smplPeriod, 0);]]></sccode>
+        <sccode name="event1" init_power_mode="0"><![CDATA[]]></sccode>
+        <sccode name="event2" init_power_mode="0"><![CDATA[]]></sccode>
+        <sccode name="event3" init_power_mode="0"><![CDATA[]]></sccode>
+        <sccode name="execute" init_power_mode="0"><![CDATA[]]></sccode>
+        <sccode name="initialize" init_power_mode="0"><![CDATA[// Clamp all capactive touch pins to ground
+for (U16 n = 0; n < PIN_COUNT; n++) {
+    isrcClamp(cfg.pAuxioAxdCapTouch[n]);
+}
+
+// Do not drive the reference high
+gpioClearOutput(AUXIO_AXS_CAP_TOUCH_REF);
+
+// Schedule the first execution
+evhSetupTimer1Trigger(0, 1, 5);]]></sccode>
+        <sccode name="terminate" init_power_mode="0"><![CDATA[// Stop triggering the event handler code
+evhCancelTrigger(0);]]></sccode>
+        <event_trigger active_count="1">0,1,2,3</event_trigger>
+        <tt_iter>run_event0</tt_iter>
+        <tt_struct>output.pTdcValueRaw.[0],output.pTdcValueRaw.[1],output.pTouchDet.[0],output.pTouchDet.[1],state.pLowMeanIirFilter.[0],state.pTdcSmplLowCount.[0],state.pTouchHoldCount.[0]</tt_struct>
+        <rtl_struct>output.pTdcValueRaw.[0],output.pTouchDet.[0],output.pTouchDet.[1]</rtl_struct>
+        <rtl_task_sel en="1" struct_log_list="output"/>
+        <rtl_cfg_slider name="ISRC Current" struct_member="cfg.isrcCurrent" min="1" max="63" value="4"><![CDATA[value = (slider << 2) | 0x01;]]></rtl_cfg_slider>
+        <tt_child_graph name="Baseline" parent_struct_member="output.pTdcValueRaw" child_struct_member="output.pBaselineValue" parent_array_index="0" child_array_index="0" scaling_factor="1" scaling_offset="0"/>
+        <tt_child_graph name="Threshold" parent_struct_member="output.pTdcValueRaw" child_struct_member="output.pThresValue" parent_array_index="0" child_array_index="0" scaling_factor="1" scaling_offset="0"/>
+        <tt_child_graph name="High" parent_struct_member="output.pTdcValueRaw" child_struct_member="output.pHighValue" parent_array_index="0" child_array_index="0" scaling_factor="1" scaling_offset="0"/>
+        <tt_child_graph name="TdcSmplMean" parent_struct_member="output.pTdcValueRaw" child_struct_member="output.pTdcSmplWindowMean" parent_array_index="0" child_array_index="0" scaling_factor="1" scaling_offset="0"/>
+    </task>
+</project>

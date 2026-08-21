@@ -1,0 +1,9 @@
+Designator,Mid X,Mid Y,Layer,Rotation
+C1,134.06mm,115.01mm,Top,90.0
+C2,125.19mm,115.97mm,Top,90.0
+R2,102.78mm,108.33mm,Top,90.0
+R3,98.42mm,96.82mm,Top,270.0
+U1,129.49mm,115.97mm,Top,0.0
+U2,126.49mm,100.63mm,Top,0.0
+U3,120.365mm,116.265mm,Bottom,180.0
+U4,104.07mm,119.03mm,Top,45.0

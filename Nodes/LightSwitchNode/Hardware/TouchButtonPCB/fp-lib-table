@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "SmartHome") (type "KiCad") (uri "C:/SmartHome/Shared/KiCadLib/SmartHome.pretty") (options "") (descr ""))
+)
